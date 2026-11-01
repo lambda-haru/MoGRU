@@ -122,11 +122,12 @@ CANDIDATE_MODEL_DIRS=()
 [ -d "./models" ] && CANDIDATE_MODEL_DIRS+=("./models")
 
 UNIQUE_MODEL_DIRS=()
-for d in "${CANDIDATE_MODEL_DIRS[@]}"; do
+# macOS's Bash 3.2 treats an empty array as unbound with set -u.
+for d in "${CANDIDATE_MODEL_DIRS[@]+"${CANDIDATE_MODEL_DIRS[@]}"}"; do
   if [ -d "$d" ]; then
     abs_d="$(cd "$d" 2>/dev/null && pwd || echo "$d")"
     already=0
-    for u in "${UNIQUE_MODEL_DIRS[@]}"; do
+    for u in "${UNIQUE_MODEL_DIRS[@]+"${UNIQUE_MODEL_DIRS[@]}"}"; do
       if [ "$u" = "$abs_d" ]; then
         already=1
         break
@@ -142,7 +143,7 @@ echo "=== Installing MoGRU Models ==="
 for dir in "${TARGET_DIRS[@]}"; do
   mkdir -p "$dir"
   COPIED_MODELS=0
-  for d in "${UNIQUE_MODEL_DIRS[@]}"; do
+  for d in "${UNIQUE_MODEL_DIRS[@]+"${UNIQUE_MODEL_DIRS[@]}"}"; do
     for file in "$d"/*; do
       if [ -f "$file" ]; then
         filename="$(basename "$file")"
@@ -158,7 +159,7 @@ for dir in "${TARGET_DIRS[@]}"; do
   # Deploy or upgrade gru_config.ini
   TARGET_INI="$dir/gru_config.ini"
   CONFIG_SRC=""
-  for d in "${UNIQUE_MODEL_DIRS[@]}"; do
+  for d in "${UNIQUE_MODEL_DIRS[@]+"${UNIQUE_MODEL_DIRS[@]}"}"; do
     if [ -f "$d/gru_config.ini" ]; then
       CONFIG_SRC="$d/gru_config.ini"
       break
