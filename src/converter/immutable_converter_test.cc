@@ -779,10 +779,18 @@ TEST(ImmutableConverterTest,
                                                           &segments));
   ASSERT_EQ(segments.history_segments_size(), 1);
   EXPECT_EQ(segments.history_segment(0).key(), "2");
-  EXPECT_EQ(segments.history_segment(0).candidate(0).key, "12");
+  EXPECT_EQ(segments.history_segment(0).candidate(0).key, "2");
   EXPECT_EQ(segments.history_segment(0).candidate(0).value, "2");
   EXPECT_TRUE(
       segments.history_segment(0).candidate(0).inner_segment_boundary.empty());
+
+  // Ensure idempotency: re-running Convert does not revert key back to "12".
+  EXPECT_TRUE(data_and_converter->GetConverter()->Convert(request.options(),
+                                                          &segments));
+  ASSERT_EQ(segments.history_segments_size(), 1);
+  EXPECT_EQ(segments.history_segment(0).key(), "2");
+  EXPECT_EQ(segments.history_segment(0).candidate(0).key, "2");
+  EXPECT_EQ(segments.history_segment(0).candidate(0).value, "2");
 }
 
 }  // namespace mozc
