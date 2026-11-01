@@ -35,11 +35,19 @@ jobs:
           # Unset the Android NDK setting to skip the unnecessary configuration.
           echo "ANDROID_NDK_HOME=" >> $GITHUB_ENV
 
+      - name: Restore Bazel repository cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/bazel-repo
+          key: bazel-repo-${{ runner.os }}-${{ hashFiles('src/MODULE.bazel', 'src/MODULE.bazel.lock') }}
+          restore-keys: |
+            bazel-repo-${{ runner.os }}-
+
       - name: bazel build
         working-directory: ./src
         run: |
-          bazelisk build package --config release_build
-          bazelisk build -c opt //unix/fcitx5:fcitx5-mogru.so //unix/fcitx5:fcitx5-mozc-gru.so //gui/tool:mozc_tool --//unix/fcitx5:use_server=False
+          bazelisk build --repository_cache=${HOME}/.cache/bazel-repo package --config release_build
+          bazelisk build --repository_cache=${HOME}/.cache/bazel-repo -c opt //unix/fcitx5:fcitx5-mogru.so //unix/fcitx5:fcitx5-mozc-gru.so //gui/tool:mozc_tool --//unix/fcitx5:use_server=False
 
       - name: Prepare MoGRU Linux Package
         run: |
@@ -100,7 +108,6 @@ jobs:
           chmod 755 package_linux/install.sh
 
       - name: Upload MoGRU Linux Artifact
-        if: github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: MoGRU-linux
@@ -108,7 +115,6 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload fcitx5-mogru Artifact
-        if: github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: fcitx5-mogru.so
@@ -135,19 +141,27 @@ jobs:
           # Unset the Android NDK setting to skip the unnecessary configuration.
           echo "ANDROID_NDK_HOME=" >> $GITHUB_ENV
 
+      - name: Restore Bazel repository cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/bazel-repo
+          key: bazel-repo-${{ runner.os }}-${{ hashFiles('src/MODULE.bazel', 'src/MODULE.bazel.lock') }}
+          restore-keys: |
+            bazel-repo-${{ runner.os }}-
+
       - name: bazel test
         working-directory: ./src
         run: |
-          bazelisk test ... -c dbg --build_tests_only --test_output=errors --build_event_json_file=bep.jsonl
+          bazelisk test --repository_cache=${HOME}/.cache/bazel-repo ... -c dbg --build_tests_only --test_output=errors --build_event_json_file=bep.jsonl
 
       - name: Collect failing test logs
-        if: failure() && github.event_name == 'push'
+        if: failure()
         working-directory: ./src
         run: |
           python3 build_tools/collect_test_logs.py --bep bep.jsonl --out "${GITHUB_WORKSPACE}/test_logs"
 
       - name: Upload failing test logs
-        if: failure() && github.event_name == 'push'
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: test-logs-${{ runner.os }}

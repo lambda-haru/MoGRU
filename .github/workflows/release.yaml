@@ -132,10 +132,32 @@ jobs:
         run: |
           python3 build_tools/update_deps.py
 
+      - name: Identify Qt build environment
+        id: qt-env
+        run: |
+          echo "macos=$(sw_vers -productVersion)" >> "$GITHUB_OUTPUT"
+          xcode=$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f 1)
+          echo "xcode=$xcode" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Qt build cache
+        id: qt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: src/third_party/qt
+          key: qt-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.qt-env.outputs.macos }}-${{ steps.qt-env.outputs.xcode }}-arm64-release-${{ hashFiles('src/build_tools/build_qt.py', 'src/build_tools/update_deps.py') }}
+
       - name: Build Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         working-directory: ./src
         run: |
           python3 build_tools/build_qt.py --release --confirm_license --macos_cpus=arm64
+
+      - name: Save Qt build cache
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: src/third_party/qt
+          key: ${{ steps.qt-cache.outputs.cache-primary-key }}
 
       - name: bazel build
         working-directory: ./src
@@ -183,17 +205,45 @@ jobs:
         run: |
           python build_tools/update_deps.py
 
+      - name: Identify Qt build environment
+        id: qt-env
+        shell: pwsh
+        run: |
+          $os = [System.Environment]::OSVersion.Version.ToString()
+          "os=$os" >> $env:GITHUB_OUTPUT
+          $vswhere = if (Get-Command vswhere -ErrorAction SilentlyContinue) { "vswhere" } else { "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" }
+          $vs = & $vswhere -latest -property installationVersion
+          if (-not $vs) { $vs = "default" }
+          "vs=$vs" >> $env:GITHUB_OUTPUT
+
+      - name: Restore Qt build cache
+        id: qt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: src/third_party/qt
+          key: qt-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.qt-env.outputs.os }}-${{ steps.qt-env.outputs.vs }}-x64-release-${{ hashFiles('src/build_tools/build_qt.py', 'src/build_tools/update_deps.py') }}
+
       - name: Build Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
           python build_tools/build_qt.py --release --confirm_license
 
+      # This is needed only for GitHub Actions where free disk space is quite limited.
       - name: Delete Qt src to save disk space
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
           rmdir third_party\qt_src /s /q
+
+      - name: Save Qt build cache
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: src/third_party/qt
+          key: ${{ steps.qt-cache.outputs.cache-primary-key }}
 
       - name: bazel build
         shell: cmd
@@ -244,17 +294,45 @@ jobs:
         run: |
           python build_tools/update_deps.py
 
+      - name: Identify Qt build environment
+        id: qt-env
+        shell: pwsh
+        run: |
+          $os = [System.Environment]::OSVersion.Version.ToString()
+          "os=$os" >> $env:GITHUB_OUTPUT
+          $vswhere = if (Get-Command vswhere -ErrorAction SilentlyContinue) { "vswhere" } else { "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" }
+          $vs = & $vswhere -latest -property installationVersion
+          if (-not $vs) { $vs = "default" }
+          "vs=$vs" >> $env:GITHUB_OUTPUT
+
+      - name: Restore Qt build cache
+        id: qt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: src/third_party/qt
+          key: qt-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.qt-env.outputs.os }}-${{ steps.qt-env.outputs.vs }}-arm64-release-${{ hashFiles('src/build_tools/build_qt.py', 'src/build_tools/update_deps.py') }}
+
       - name: Build Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
           python build_tools/build_qt.py --release --confirm_license
 
+      # This is needed only for GitHub Actions where free disk space is quite limited.
       - name: Delete Qt src to save disk space
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
           rmdir third_party\qt_src /s /q
+
+      - name: Save Qt build cache
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: src/third_party/qt
+          key: ${{ steps.qt-cache.outputs.cache-primary-key }}
 
       - name: bazel build
         shell: cmd
