@@ -212,6 +212,7 @@ void NormalizeHistorySegments(Segments* segments) {
       c->value = key;
       c->content_value = key;
       c->content_key = key;
+      c->key = key;
     }
     if (c->key.size() != original_key_size ||
         c->value.size() != original_value_size ||
@@ -1268,8 +1269,7 @@ bool ImmutableConverter::MakeLatticeNodesForHistorySegments(
     const bool is_prediction =
         (options.request_type == RequestType::SUGGESTION ||
          options.request_type == RequestType::PREDICTION);
-    if (!is_prediction && s + 1 == history_segments_size &&
-        +!pos_matcher_.IsNumber(candidate.lid)) {
+    if (!is_prediction && s + 1 == history_segments_size) {
       for (const Node* compound_node :
            Lookup(segments_pos, options, is_reverse, lattice)) {
         // No overlaps
