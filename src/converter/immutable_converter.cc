@@ -1268,7 +1268,8 @@ bool ImmutableConverter::MakeLatticeNodesForHistorySegments(
     const bool is_prediction =
         (options.request_type == RequestType::SUGGESTION ||
          options.request_type == RequestType::PREDICTION);
-    if (!is_prediction && s + 1 == history_segments_size) {
+    if (!is_prediction && s + 1 == history_segments_size &&
+        +!pos_matcher_.IsNumber(candidate.lid)) {
       for (const Node* compound_node :
            Lookup(segments_pos, options, is_reverse, lattice)) {
         // No overlaps
