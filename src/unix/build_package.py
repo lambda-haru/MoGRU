@@ -94,9 +94,13 @@ class Packager:
     for icon in glob.glob(os.path.join(mozc_icons_dir, '*.png')):
       shutil.copy(icon, ibus_icons_dir)
 
-    # Rename mozc.png to product_icon.png in ibus_icons_dir.
-    shutil.move(os.path.join(ibus_icons_dir, 'mozc.png'),
-                os.path.join(ibus_icons_dir, 'product_icon.png'))
+    # Rename mogru.png or mozc.png to product_icon.png in ibus_icons_dir.
+    for icon_name in ('mogru.png', 'mozc.png'):
+      src_icon_path = os.path.join(ibus_icons_dir, icon_name)
+      if os.path.exists(src_icon_path):
+        shutil.move(src_icon_path,
+                    os.path.join(ibus_icons_dir, 'product_icon.png'))
+        break
 
 
 def ParseArguments() -> argparse.Namespace:
