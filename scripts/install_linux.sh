@@ -90,12 +90,16 @@ if [ -z "$SOURCE_SO" ] || [ ! -f "$SOURCE_SO" ]; then
   exit 1
 fi
 
-SOURCE_TOOL="$(find "$PACKAGE_DIR" -name "mozc_tool" -type f -print -quit 2>/dev/null || true)"
+SOURCE_TOOL="$(find "$PACKAGE_DIR" -name "mogru_tool" -type f -print -quit 2>/dev/null || true)"
 if [ -z "$SOURCE_TOOL" ]; then
-  SOURCE_TOOL="$(find "$PACKAGE_DIR" -name "mogru_tool" -type f -print -quit 2>/dev/null || true)"
+  SOURCE_TOOL="$(find "$PACKAGE_DIR" -name "mozc_tool" -type f -print -quit 2>/dev/null || true)"
 fi
 
-ICONS_DIR="$(find "$PACKAGE_DIR" -type d -name "icons" -print -quit 2>/dev/null || true)"
+if [ -d "$PACKAGE_DIR/icons" ]; then
+  ICONS_DIR="$PACKAGE_DIR/icons"
+else
+  ICONS_DIR="$(find "$PACKAGE_DIR" -type d -name "icons" -print -quit 2>/dev/null || true)"
+fi
 MODELS_DIR="$(find "$PACKAGE_DIR" -type d -name "models" -print -quit 2>/dev/null || true)"
 if [ -z "$MODELS_DIR" ] && [ -d "$REPO_ROOT/models" ]; then
   MODELS_DIR="$REPO_ROOT/models"
@@ -148,22 +152,26 @@ echo "=== Installing MoGRU Icons ==="
 
 # Clean up any previously overwritten Mozc icons in user directories.
 # This ensures standard Mozc uses system-installed icons and is not affected by MoGRU.
+cleanup_mozc_icons() {
+  for mozc_icon in \
+      "$HOME/.local/share/icons/hicolor/128x128/apps/fcitx_mozc.png" \
+      "$HOME/.local/share/icons/hicolor/128x128/apps/fcitx-mozc.png" \
+      "$HOME/.local/share/icons/hicolor/32x32/apps/fcitx_mozc.png" \
+      "$HOME/.local/share/icons/hicolor/32x32/apps/fcitx-mozc.png" \
+      "$HOME/.local/share/icons/hicolor/32x32/apps/org.fcitx.Fcitx5.fcitx_mozc.png" \
+      "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mozc_tool.png" \
+      "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mozc_properties.png" \
+      "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mozc_dictionary.png" \
+      "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mozc_"*.png; do
+    if [ -e "$mozc_icon" ]; then
+      rm -f "$mozc_icon"
+    fi
+  done
+  rm -rf "$HOME/.local/share/icons/mozc"
+}
+
 echo "[*] Cleaning up overwritten Mozc icons in ~/.local/share/icons..."
-for mozc_icon in \
-    "$HOME/.local/share/icons/hicolor/128x128/apps/fcitx_mozc.png" \
-    "$HOME/.local/share/icons/hicolor/128x128/apps/fcitx-mozc.png" \
-    "$HOME/.local/share/icons/hicolor/32x32/apps/fcitx_mozc.png" \
-    "$HOME/.local/share/icons/hicolor/32x32/apps/fcitx-mozc.png" \
-    "$HOME/.local/share/icons/hicolor/32x32/apps/org.fcitx.Fcitx5.fcitx_mozc.png" \
-    "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mozc_tool.png" \
-    "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mozc_properties.png" \
-    "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mozc_dictionary.png" \
-    "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mozc_"*.png; do
-  if [ -e "$mozc_icon" ]; then
-    rm -f "$mozc_icon"
-  fi
-done
-rm -rf "$HOME/.local/share/icons/mozc"
+cleanup_mozc_icons
 
 if [ -n "$ICONS_DIR" ] && [ -d "$ICONS_DIR" ]; then
   if [ -d "$ICONS_DIR/hicolor" ]; then
@@ -172,6 +180,8 @@ if [ -n "$ICONS_DIR" ] && [ -d "$ICONS_DIR" ]; then
   if [ -d "$ICONS_DIR/mogru" ]; then
     cp -rf "$ICONS_DIR/mogru/"* "$HOME/.local/share/icons/mogru/" 2>/dev/null || true
   fi
+  # Re-run cleanup in case package archive contained any legacy mozc icon files
+  cleanup_mozc_icons
 fi
 
 if [ -d "$REPO_ROOT/src/data/images" ]; then

@@ -50,6 +50,13 @@ jobs:
 
           # 既存 package (旧 mozc.zip) の全成果物を展開
           unzip -q src/bazel-bin/unix/mozc.zip -d package_linux/
+          # 不要な IBus / Emacs / 旧 mozc ディレクトリを削除しスリム化
+          rm -rf package_linux/usr/share/ibus* package_linux/usr/lib/ibus* package_linux/usr/share/icons/mozc package_linux/tmp package_linux/usr/bin/mozc_emacs_helper package_linux/usr/share/emacs package_linux/mozc_tool
+          if [ -d package_linux/usr/lib/mozc ]; then
+            mkdir -p package_linux/usr/lib/mogru
+            mv -f package_linux/usr/lib/mozc/* package_linux/usr/lib/mogru/ 2>/dev/null || true
+            rm -rf package_linux/usr/lib/mozc
+          fi
 
           # fcitx5-mogru.so を追加（ルート直下および usr/lib/fcitx5 配下）
           cp -f src/bazel-bin/unix/fcitx5/fcitx5-mogru.so package_linux/
