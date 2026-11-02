@@ -38,7 +38,7 @@
     <x>0</x>
     <y>0</y>
     <width>490</width>
-    <height>250</height>
+    <height>265</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -50,13 +50,13 @@
   <property name="minimumSize">
    <size>
     <width>490</width>
-    <height>250</height>
+    <height>265</height>
    </size>
   </property>
   <property name="maximumSize">
    <size>
     <width>490</width>
-    <height>250</height>
+    <height>265</height>
    </size>
   </property>
   <property name="windowTitle">
@@ -68,7 +68,7 @@
      <x>-10</x>
      <y>120</y>
      <width>511</width>
-     <height>161</height>
+     <height>175</height>
     </rect>
    </property>
    <property name="frameShape">
@@ -81,7 +81,7 @@
     <property name="geometry">
      <rect>
       <x>400</x>
-      <y>90</y>
+      <y>105</y>
       <width>91</width>
       <height>32</height>
      </rect>
@@ -96,7 +96,7 @@
       <x>20</x>
       <y>10</y>
       <width>471</width>
-      <height>82</height>
+      <height>95</height>
      </rect>
     </property>
     <layout class="QGridLayout" name="gridLayout_3">
@@ -108,7 +108,8 @@
         </font>
        </property>
        <property name="text">
-        <string>Copyright 2026 Google LLC. All rights reserved.</string>
+        <string>Copyright 2026 Haruhiro Obora.
+Copyright 2010-2026 Google LLC. All rights reserved.</string>
        </property>
        <property name="alignment">
         <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
