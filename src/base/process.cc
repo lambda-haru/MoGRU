@@ -245,10 +245,43 @@ bool Process::SpawnMozcProcess(absl::string_view filename,
     if (FileUtil::FileExists(local_path).ok()) {
       return Process::SpawnProcess(local_path, arg, pid);
     }
+    // Fallback: search mogru_tool or mozc_tool interchangeably
+    if (filename == "mozc_tool") {
+      const std::string alt_path = FileUtil::JoinPath(
+          home, FileUtil::JoinPath(".local/lib/mogru", "mogru_tool"));
+      if (FileUtil::FileExists(alt_path).ok()) {
+        return Process::SpawnProcess(alt_path, arg, pid);
+      }
+    } else if (filename == "mogru_tool") {
+      const std::string alt_path = FileUtil::JoinPath(
+          home, FileUtil::JoinPath(".local/lib/mogru", "mozc_tool"));
+      if (FileUtil::FileExists(alt_path).ok()) {
+        return Process::SpawnProcess(alt_path, arg, pid);
+      }
+    }
   }
 #endif  // __linux__
-  return Process::SpawnProcess(
-      FileUtil::JoinPath(SystemUtil::GetServerDirectory(), filename), arg, pid);
+  const std::string server_path =
+      FileUtil::JoinPath(SystemUtil::GetServerDirectory(), filename);
+  if (FileUtil::FileExists(server_path).ok()) {
+    return Process::SpawnProcess(server_path, arg, pid);
+  }
+#ifdef __linux__
+  if (filename == "mozc_tool") {
+    const std::string alt_server_path =
+        FileUtil::JoinPath(SystemUtil::GetServerDirectory(), "mogru_tool");
+    if (FileUtil::FileExists(alt_server_path).ok()) {
+      return Process::SpawnProcess(alt_server_path, arg, pid);
+    }
+  } else if (filename == "mogru_tool") {
+    const std::string alt_server_path =
+        FileUtil::JoinPath(SystemUtil::GetServerDirectory(), "mozc_tool");
+    if (FileUtil::FileExists(alt_server_path).ok()) {
+      return Process::SpawnProcess(alt_server_path, arg, pid);
+    }
+  }
+#endif  // __linux__
+  return Process::SpawnProcess(server_path, arg, pid);
 }
 
 bool Process::WaitProcess(size_t pid, int timeout) {

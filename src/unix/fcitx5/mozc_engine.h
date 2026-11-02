@@ -86,6 +86,11 @@ FCITX_CONFIGURATION(
           return local_tool;
         }
       }
+      const std::string sys_mogru =
+          mozc::FileUtil::JoinPath(mozc::SystemUtil::GetServerDirectory(), "mogru_tool");
+      if (mozc::FileUtil::FileExists(sys_mogru).ok()) {
+        return sys_mogru;
+      }
       return mozc::FileUtil::JoinPath(mozc::SystemUtil::GetServerDirectory(),
                                       "mozc_tool");
     }

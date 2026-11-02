@@ -202,7 +202,7 @@ MozcEngine::MozcEngine(Instance* instance, std::string addonName)
   configToolAction_.setShortText(_("Configuration Tool"));
   configToolAction_.setIcon("fcitx_mogru_properties");
   configToolAction_.connect<SimpleAction::Activated>([](InputContext*) {
-    mozc::Process::SpawnMozcProcess("mozc_tool", "--mode=config_dialog");
+    mozc::Process::SpawnMozcProcess("mogru_tool", "--mode=config_dialog");
   });
 
   instance_->userInterfaceManager().registerAction("mogru-tool-dict",
@@ -210,21 +210,21 @@ MozcEngine::MozcEngine(Instance* instance, std::string addonName)
   dictionaryToolAction_.setShortText(_("Dictionary Tool"));
   dictionaryToolAction_.setIcon("fcitx_mogru_dictionary");
   dictionaryToolAction_.connect<SimpleAction::Activated>([](InputContext*) {
-    mozc::Process::SpawnMozcProcess("mozc_tool", "--mode=dictionary_tool");
+    mozc::Process::SpawnMozcProcess("mogru_tool", "--mode=dictionary_tool");
   });
 
   instance_->userInterfaceManager().registerAction("mogru-tool-add",
                                                    &addWordAction_);
   addWordAction_.setShortText(_("Add Word"));
   addWordAction_.connect<SimpleAction::Activated>([](InputContext*) {
-    mozc::Process::SpawnMozcProcess("mozc_tool", "--mode=word_register_dialog");
+    mozc::Process::SpawnMozcProcess("mogru_tool", "--mode=word_register_dialog");
   });
 
   instance_->userInterfaceManager().registerAction("mogru-tool-about",
                                                    &aboutAction_);
   aboutAction_.setShortText(_("About MoGRU"));
   aboutAction_.connect<SimpleAction::Activated>([](InputContext*) {
-    mozc::Process::SpawnMozcProcess("mozc_tool", "--mode=about_dialog");
+    mozc::Process::SpawnMozcProcess("mogru_tool", "--mode=about_dialog");
   });
 
   toolMenu_.addAction(&configToolAction_);

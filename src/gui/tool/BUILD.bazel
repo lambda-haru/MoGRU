@@ -131,6 +131,12 @@ mozc_cc_qt_binary(
     ),
 )
 
+alias(
+    name = "mogru_tool",
+    actual = ":mozc_tool",
+    visibility = ["//:__subpackages__"],
+)
+
 mozc_win32_cc_prod_binary(
     name = "mozc_tool_win",
     executable_name_map = {
