@@ -45,54 +45,58 @@ jobs:
           mkdir -p package_linux/icons/hicolor/128x128/apps
           mkdir -p package_linux/icons/hicolor/48x48/apps
           mkdir -p package_linux/icons/hicolor/32x32/apps
-          mkdir -p package_linux/icons/mozc
+          mkdir -p package_linux/icons/mogru
           mkdir -p package_linux/models
 
           # 既存 package (旧 mozc.zip) の全成果物を展開
           unzip -q src/bazel-bin/unix/mozc.zip -d package_linux/
+          # 不要な IBus / Emacs / 旧 mozc ディレクトリを削除しスリム化
+          rm -rf package_linux/usr/share/ibus* package_linux/usr/lib/ibus* package_linux/usr/share/icons/mozc package_linux/tmp package_linux/usr/bin/mozc_emacs_helper package_linux/usr/share/emacs package_linux/mozc_tool
+          if [ -d package_linux/usr/lib/mozc ]; then
+            mkdir -p package_linux/usr/lib/mogru
+            mv -f package_linux/usr/lib/mozc/* package_linux/usr/lib/mogru/ 2>/dev/null || true
+            rm -rf package_linux/usr/lib/mozc
+          fi
 
           # fcitx5-mogru.so を追加（ルート直下および usr/lib/fcitx5 配下）
           cp -f src/bazel-bin/unix/fcitx5/fcitx5-mogru.so package_linux/
           mkdir -p package_linux/usr/lib/fcitx5
           cp -f src/bazel-bin/unix/fcitx5/fcitx5-mogru.so package_linux/usr/lib/fcitx5/
 
-          # mozc_tool をルート直下にコピー
-          cp -f src/bazel-bin/gui/tool/mozc_tool package_linux/
+          # GUI ツールをルート直下にコピー (mogru_tool のみ配置し、mozc_tool は排除)
+          cp -f src/bazel-bin/gui/tool/mozc_tool package_linux/mogru_tool
+          rm -f package_linux/mozc_tool
+          if [ -f package_linux/usr/lib/mogru/mozc_tool ]; then
+            mv -f package_linux/usr/lib/mogru/mozc_tool package_linux/usr/lib/mogru/mogru_tool
+          fi
 
           # モデルファイル
           cp -f models/*.bin package_linux/models/ 2>/dev/null || true
           cp -f models/*.ini package_linux/models/ 2>/dev/null || true
 
           # アイコンアセット（128x128）
-          cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/hicolor/128x128/apps/fcitx_mozc.png
-          cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/hicolor/128x128/apps/fcitx-mozc.png
           cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/hicolor/128x128/apps/fcitx_mogru.png
           cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/hicolor/128x128/apps/mogru.png
+          cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/mogru/product_icon_32bpp-128.png
 
           # アイコンアセット（32x32）
-          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/fcitx_mozc.png
-          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/fcitx-mozc.png
           cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/fcitx_mogru.png
           cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/mogru.png
-          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/org.fcitx.Fcitx5.fcitx_mozc.png
+          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/org.fcitx.Fcitx5.Addon.MoGRU.png
+          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/mogru/ime_product_icon_opensource-32.png
 
           # アイコンアセット（48x48）
           for mode in direct hiragana katakana_full katakana_half alpha_full alpha_half; do
             if [ -f "src/data/images/unix/48x48/${mode}.png" ]; then
-              cp -f "src/data/images/unix/48x48/${mode}.png" "package_linux/icons/hicolor/48x48/apps/fcitx_mozc_${mode}.png"
               cp -f "src/data/images/unix/48x48/${mode}.png" "package_linux/icons/hicolor/48x48/apps/fcitx_mogru_${mode}.png"
             fi
           done
 
           # ツールメニュー用アイコン（48x48）
-          cp -f src/data/images/unix/ui-tool.png package_linux/icons/hicolor/48x48/apps/fcitx_mozc_tool.png
-          cp -f src/data/images/unix/ui-properties.png package_linux/icons/hicolor/48x48/apps/fcitx_mozc_properties.png
-          cp -f src/data/images/unix/ui-dictionary.png package_linux/icons/hicolor/48x48/apps/fcitx_mozc_dictionary.png
-
-          # mozc 互換アイコン
-          cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/mozc/product_icon_32bpp-128.png
-          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/mozc/ime_product_icon_opensource-32.png
-          cp -f src/data/images/unix/ui-*.png package_linux/icons/mozc/ 2>/dev/null || true
+          cp -f src/data/images/unix/ui-tool.png package_linux/icons/hicolor/48x48/apps/fcitx_mogru_tool.png
+          cp -f src/data/images/unix/ui-properties.png package_linux/icons/hicolor/48x48/apps/fcitx_mogru_properties.png
+          cp -f src/data/images/unix/ui-dictionary.png package_linux/icons/hicolor/48x48/apps/fcitx_mogru_dictionary.png
+          cp -f src/data/images/unix/ui-*.png package_linux/icons/mogru/ 2>/dev/null || true
 
           # スタンドアロンインストーラスクリプトの同梱
           cp -f scripts/install_linux.sh package_linux/install.sh
@@ -132,10 +136,32 @@ jobs:
         run: |
           python3 build_tools/update_deps.py
 
+      - name: Identify Qt build environment
+        id: qt-env
+        run: |
+          echo "macos=$(sw_vers -productVersion)" >> "$GITHUB_OUTPUT"
+          xcode=$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f 1)
+          echo "xcode=$xcode" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Qt build cache
+        id: qt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: src/third_party/qt
+          key: qt-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.qt-env.outputs.macos }}-${{ steps.qt-env.outputs.xcode }}-arm64-release-${{ hashFiles('src/build_tools/build_qt.py', 'src/build_tools/update_deps.py') }}
+
       - name: Build Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         working-directory: ./src
         run: |
           python3 build_tools/build_qt.py --release --confirm_license --macos_cpus=arm64
+
+      - name: Save Qt build cache
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: src/third_party/qt
+          key: ${{ steps.qt-cache.outputs.cache-primary-key }}
 
       - name: bazel build
         working-directory: ./src
@@ -144,12 +170,10 @@ jobs:
 
       - name: Prepare MoGRU macOS Package
         run: |
-          mkdir -p package_mac/models
+          mkdir -p package_mac
           cp -f src/bazel-bin/mac/*.pkg package_mac/
           cp -f scripts/install_macos.sh package_mac/install.sh
           chmod 755 package_mac/install.sh
-          cp -f models/*.bin package_mac/models/ 2>/dev/null || true
-          cp -f models/*.ini package_mac/models/ 2>/dev/null || true
 
           mv package_mac MoGRU-macOS-arm64
           zip -r MoGRU-macOS-arm64.zip MoGRU-macOS-arm64
@@ -185,17 +209,45 @@ jobs:
         run: |
           python build_tools/update_deps.py
 
+      - name: Identify Qt build environment
+        id: qt-env
+        shell: pwsh
+        run: |
+          $os = [System.Environment]::OSVersion.Version.ToString()
+          "os=$os" >> $env:GITHUB_OUTPUT
+          $vswhere = if (Get-Command vswhere -ErrorAction SilentlyContinue) { "vswhere" } else { "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" }
+          $vs = & $vswhere -latest -property installationVersion
+          if (-not $vs) { $vs = "default" }
+          "vs=$vs" >> $env:GITHUB_OUTPUT
+
+      - name: Restore Qt build cache
+        id: qt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: src/third_party/qt
+          key: qt-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.qt-env.outputs.os }}-${{ steps.qt-env.outputs.vs }}-x64-release-${{ hashFiles('src/build_tools/build_qt.py', 'src/build_tools/update_deps.py') }}
+
       - name: Build Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
           python build_tools/build_qt.py --release --confirm_license
 
+      # This is needed only for GitHub Actions where free disk space is quite limited.
       - name: Delete Qt src to save disk space
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
           rmdir third_party\qt_src /s /q
+
+      - name: Save Qt build cache
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: src/third_party/qt
+          key: ${{ steps.qt-cache.outputs.cache-primary-key }}
 
       - name: bazel build
         shell: cmd
@@ -208,10 +260,9 @@ jobs:
       - name: Prepare MoGRU Windows Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path package_win\models -Force | Out-Null
+          New-Item -ItemType Directory -Path package_win -Force | Out-Null
           Copy-Item src\bazel-bin\win32\installer\*.msi package_win\ -Force
           Copy-Item scripts\install_windows.ps1 package_win\install.ps1 -Force
-          Copy-Item -Path models\* -Destination package_win\models\ -Force -Recurse -ErrorAction SilentlyContinue
 
           Rename-Item package_win MoGRU-windows-x64
           Compress-Archive -Path MoGRU-windows-x64 -DestinationPath MoGRU-windows-x64.zip -Force
@@ -247,17 +298,45 @@ jobs:
         run: |
           python build_tools/update_deps.py
 
+      - name: Identify Qt build environment
+        id: qt-env
+        shell: pwsh
+        run: |
+          $os = [System.Environment]::OSVersion.Version.ToString()
+          "os=$os" >> $env:GITHUB_OUTPUT
+          $vswhere = if (Get-Command vswhere -ErrorAction SilentlyContinue) { "vswhere" } else { "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" }
+          $vs = & $vswhere -latest -property installationVersion
+          if (-not $vs) { $vs = "default" }
+          "vs=$vs" >> $env:GITHUB_OUTPUT
+
+      - name: Restore Qt build cache
+        id: qt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: src/third_party/qt
+          key: qt-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.qt-env.outputs.os }}-${{ steps.qt-env.outputs.vs }}-arm64-release-${{ hashFiles('src/build_tools/build_qt.py', 'src/build_tools/update_deps.py') }}
+
       - name: Build Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
           python build_tools/build_qt.py --release --confirm_license
 
+      # This is needed only for GitHub Actions where free disk space is quite limited.
       - name: Delete Qt src to save disk space
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
           rmdir third_party\qt_src /s /q
+
+      - name: Save Qt build cache
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: src/third_party/qt
+          key: ${{ steps.qt-cache.outputs.cache-primary-key }}
 
       - name: bazel build
         shell: cmd
@@ -270,10 +349,9 @@ jobs:
       - name: Prepare MoGRU Windows ARM64 Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path package_win_arm64\models -Force | Out-Null
+          New-Item -ItemType Directory -Path package_win_arm64 -Force | Out-Null
           Copy-Item src\bazel-bin\win32\installer\*.msi package_win_arm64\ -Force
           Copy-Item scripts\install_windows.ps1 package_win_arm64\install.ps1 -Force
-          Copy-Item -Path models\* -Destination package_win_arm64\models\ -Force -Recurse -ErrorAction SilentlyContinue
 
           Rename-Item package_win_arm64 MoGRU-windows-arm64
           Compress-Archive -Path MoGRU-windows-arm64 -DestinationPath MoGRU-windows-arm64.zip -Force

@@ -22,29 +22,21 @@
 
 ## インストール
 
-[Releases](https://github.com/lambda-haru/MoGRU/releases) からお使いの OS に合わせた配布パッケージ（zip）を展開し、インストーラを実行してください（ビルド不要）。
+[Releases](https://github.com/lambda-haru/MoGRU/releases) からお使いの OS に合わせたインストーラをダウンロードして実行してください（ビルド不要・言語モデル同梱）。
+
+### Windows
+`MoGRU-windows-x64.msi`（ARM64 環境は `MoGRU-windows-arm64.msi`）を実行してインストールしてください（または `MoGRU-windows-*.zip` を展開して `install.ps1` を実行することも可能です）。
+
+### macOS
+`MoGRU-macOS-arm64.pkg` を実行してインストールしてください（または `MoGRU-macOS-arm64.zip` を展開して `install.sh` を実行することも可能です）。
 
 ### Linux (Fcitx5)
+`MoGRU-linux.zip` を展開し、付属の `install.sh` を実行してください（`sudo` 不要・`~/.local` に導入されます）。
 ```bash
+unzip MoGRU-linux.zip
 cd MoGRU-linux
 ./install.sh
 ```
-
-### macOS
-```bash
-cd MoGRU-macOS-arm64
-./install.sh
-```
-
-### Windows (管理者 PowerShell)
-```powershell
-cd MoGRU-windows-x64  # ARM64: MoGRU-windows-arm64
-Set-ExecutionPolicy Bypass -Scope Process -Force
-.\install.ps1
-```
-
-> [!TIP]
-> 再起動を求めるダイアログが表示される場合がありますが，その場で再起動するとスクリプトの実行が完了しないため，後で再起動を選択してください．
 
 <details>
 <summary>ソースコードから自前ビルドする場合（開発者向け）</summary>

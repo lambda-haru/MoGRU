@@ -35,72 +35,83 @@ jobs:
           # Unset the Android NDK setting to skip the unnecessary configuration.
           echo "ANDROID_NDK_HOME=" >> $GITHUB_ENV
 
+      - name: Restore Bazel repository cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/bazel-repo
+          key: bazel-repo-${{ runner.os }}-${{ hashFiles('src/MODULE.bazel', 'src/MODULE.bazel.lock') }}
+          restore-keys: |
+            bazel-repo-${{ runner.os }}-
+
       - name: bazel build
         working-directory: ./src
         run: |
-          bazelisk build package --config release_build
-          bazelisk build -c opt //unix/fcitx5:fcitx5-mogru.so //unix/fcitx5:fcitx5-mozc-gru.so //gui/tool:mozc_tool --//unix/fcitx5:use_server=False
+          bazelisk build --repository_cache=${HOME}/.cache/bazel-repo package --config release_build
+          bazelisk build --repository_cache=${HOME}/.cache/bazel-repo -c opt //unix/fcitx5:fcitx5-mogru.so //unix/fcitx5:fcitx5-mozc-gru.so //gui/tool:mozc_tool --//unix/fcitx5:use_server=False
 
       - name: Prepare MoGRU Linux Package
         run: |
           mkdir -p package_linux/icons/hicolor/128x128/apps
           mkdir -p package_linux/icons/hicolor/48x48/apps
           mkdir -p package_linux/icons/hicolor/32x32/apps
-          mkdir -p package_linux/icons/mozc
+          mkdir -p package_linux/icons/mogru
           mkdir -p package_linux/models
 
           # 既存 package (旧 mozc.zip) の全成果物を展開
           unzip -q src/bazel-bin/unix/mozc.zip -d package_linux/
+          # 不要な IBus / Emacs / 旧 mozc ディレクトリを削除しスリム化
+          rm -rf package_linux/usr/share/ibus* package_linux/usr/lib/ibus* package_linux/usr/share/icons/mozc package_linux/tmp package_linux/usr/bin/mozc_emacs_helper package_linux/usr/share/emacs package_linux/mozc_tool
+          if [ -d package_linux/usr/lib/mozc ]; then
+            mkdir -p package_linux/usr/lib/mogru
+            mv -f package_linux/usr/lib/mozc/* package_linux/usr/lib/mogru/ 2>/dev/null || true
+            rm -rf package_linux/usr/lib/mozc
+          fi
 
           # fcitx5-mogru.so を追加（ルート直下および usr/lib/fcitx5 配下）
           cp -f src/bazel-bin/unix/fcitx5/fcitx5-mogru.so package_linux/
           mkdir -p package_linux/usr/lib/fcitx5
           cp -f src/bazel-bin/unix/fcitx5/fcitx5-mogru.so package_linux/usr/lib/fcitx5/
 
-          # mozc_tool をルート直下にコピー
-          cp -f src/bazel-bin/gui/tool/mozc_tool package_linux/
+          # GUI ツールをルート直下にコピー (mogru_tool のみ配置し、mozc_tool は排除)
+          cp -f src/bazel-bin/gui/tool/mozc_tool package_linux/mogru_tool
+          rm -f package_linux/mozc_tool
+          if [ -f package_linux/usr/lib/mogru/mozc_tool ]; then
+            mv -f package_linux/usr/lib/mogru/mozc_tool package_linux/usr/lib/mogru/mogru_tool
+          fi
 
           # モデルファイル
           cp -f models/*.bin package_linux/models/ 2>/dev/null || true
           cp -f models/*.ini package_linux/models/ 2>/dev/null || true
 
           # アイコンアセット（128x128）
-          cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/hicolor/128x128/apps/fcitx_mozc.png
-          cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/hicolor/128x128/apps/fcitx-mozc.png
           cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/hicolor/128x128/apps/fcitx_mogru.png
           cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/hicolor/128x128/apps/mogru.png
+          cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/mogru/product_icon_32bpp-128.png
 
           # アイコンアセット（32x32）
-          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/fcitx_mozc.png
-          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/fcitx-mozc.png
           cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/fcitx_mogru.png
           cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/mogru.png
-          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/org.fcitx.Fcitx5.fcitx_mozc.png
+          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/org.fcitx.Fcitx5.Addon.MoGRU.png
+          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/mogru/ime_product_icon_opensource-32.png
 
           # アイコンアセット（48x48）
           for mode in direct hiragana katakana_full katakana_half alpha_full alpha_half; do
             if [ -f "src/data/images/unix/48x48/${mode}.png" ]; then
-              cp -f "src/data/images/unix/48x48/${mode}.png" "package_linux/icons/hicolor/48x48/apps/fcitx_mozc_${mode}.png"
               cp -f "src/data/images/unix/48x48/${mode}.png" "package_linux/icons/hicolor/48x48/apps/fcitx_mogru_${mode}.png"
             fi
           done
 
           # ツールメニュー用アイコン（48x48）
-          cp -f src/data/images/unix/ui-tool.png package_linux/icons/hicolor/48x48/apps/fcitx_mozc_tool.png
-          cp -f src/data/images/unix/ui-properties.png package_linux/icons/hicolor/48x48/apps/fcitx_mozc_properties.png
-          cp -f src/data/images/unix/ui-dictionary.png package_linux/icons/hicolor/48x48/apps/fcitx_mozc_dictionary.png
-
-          # mozc 互換アイコン
-          cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/mozc/product_icon_32bpp-128.png
-          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/mozc/ime_product_icon_opensource-32.png
-          cp -f src/data/images/unix/ui-*.png package_linux/icons/mozc/ 2>/dev/null || true
+          cp -f src/data/images/unix/ui-tool.png package_linux/icons/hicolor/48x48/apps/fcitx_mogru_tool.png
+          cp -f src/data/images/unix/ui-properties.png package_linux/icons/hicolor/48x48/apps/fcitx_mogru_properties.png
+          cp -f src/data/images/unix/ui-dictionary.png package_linux/icons/hicolor/48x48/apps/fcitx_mogru_dictionary.png
+          cp -f src/data/images/unix/ui-*.png package_linux/icons/mogru/ 2>/dev/null || true
 
           # スタンドアロンインストーラスクリプトの同梱
           cp -f scripts/install_linux.sh package_linux/install.sh
           chmod 755 package_linux/install.sh
 
       - name: Upload MoGRU Linux Artifact
-        if: github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: MoGRU-linux
@@ -108,7 +119,6 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload fcitx5-mogru Artifact
-        if: github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: fcitx5-mogru.so
@@ -135,19 +145,27 @@ jobs:
           # Unset the Android NDK setting to skip the unnecessary configuration.
           echo "ANDROID_NDK_HOME=" >> $GITHUB_ENV
 
+      - name: Restore Bazel repository cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/bazel-repo
+          key: bazel-repo-${{ runner.os }}-${{ hashFiles('src/MODULE.bazel', 'src/MODULE.bazel.lock') }}
+          restore-keys: |
+            bazel-repo-${{ runner.os }}-
+
       - name: bazel test
         working-directory: ./src
         run: |
-          bazelisk test ... -c dbg --build_tests_only --test_output=errors --build_event_json_file=bep.jsonl
+          bazelisk test --repository_cache=${HOME}/.cache/bazel-repo ... -c dbg --build_tests_only --test_output=errors --build_event_json_file=bep.jsonl
 
       - name: Collect failing test logs
-        if: failure() && github.event_name == 'push'
+        if: failure()
         working-directory: ./src
         run: |
           python3 build_tools/collect_test_logs.py --bep bep.jsonl --out "${GITHUB_WORKSPACE}/test_logs"
 
       - name: Upload failing test logs
-        if: failure() && github.event_name == 'push'
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: test-logs-${{ runner.os }}

@@ -1213,6 +1213,35 @@ TEST_F(GruRewriterTest, HotReloadGuiSettingsFromConfigIni) {
   absl::SetFlag(&FLAGS_gru_config_path, "");
 }
 
+TEST_F(GruRewriterTest, ResolveDataFilePathSearchesSystemModelDirForRelativeName) {
+  std::error_code ec;
+  const std::string base_tmp = FileUtil::JoinPath(
+      std::filesystem::temp_directory_path().string(), "mogru_path_test");
+  const std::string models_dir = FileUtil::JoinPath(base_tmp, "mogru/models");
+  std::filesystem::create_directories(models_dir, ec);
+  const std::string custom_model =
+      FileUtil::JoinPath(models_dir, "custom_test_model.bin");
+  {
+    std::ofstream ofs(custom_model, std::ios::binary);
+    ofs << "dummy";
+  }
+
+#ifdef __linux__
+  setenv("XDG_DATA_HOME", base_tmp.c_str(), 1);
+  const std::string resolved = config::GruConfigManager::ResolveDataFilePath(
+      "custom_test_model.bin", "grumodel.bin");
+  EXPECT_EQ(resolved, custom_model);
+  unsetenv("XDG_DATA_HOME");
+#endif
+
+  // Non-existent absolute path should not fall back
+  EXPECT_EQ(config::GruConfigManager::ResolveDataFilePath(
+                "/non/existent/abs/custom_test_model.bin", "grumodel.bin"),
+            "");
+
+  std::filesystem::remove_all(base_tmp, ec);
+}
+
 }  // namespace
 }  // namespace mozc
 

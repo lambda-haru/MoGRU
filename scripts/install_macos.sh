@@ -108,80 +108,7 @@ fi
 
 echo "=== Installing MoGRU ==="
 
-# 1. Install GRU model files and configuration
-TARGET_DIRS=(
-  "$HOME/Library/Application Support/MoGRU"
-  "$HOME/.config/mogru"
-)
-
-# Collect candidate models directories
-CANDIDATE_MODEL_DIRS=()
-[ -n "$PACKAGE_MODELS_DIR" ] && [ -d "$PACKAGE_MODELS_DIR" ] && CANDIDATE_MODEL_DIRS+=("$PACKAGE_MODELS_DIR")
-[ -d "$SCRIPT_DIR/models" ] && CANDIDATE_MODEL_DIRS+=("$SCRIPT_DIR/models")
-[ -d "$REPO_ROOT/models" ] && CANDIDATE_MODEL_DIRS+=("$REPO_ROOT/models")
-[ -d "./models" ] && CANDIDATE_MODEL_DIRS+=("./models")
-
-UNIQUE_MODEL_DIRS=()
-# macOS's Bash 3.2 treats an empty array as unbound with set -u.
-for d in "${CANDIDATE_MODEL_DIRS[@]+"${CANDIDATE_MODEL_DIRS[@]}"}"; do
-  if [ -d "$d" ]; then
-    abs_d="$(cd "$d" 2>/dev/null && pwd || echo "$d")"
-    already=0
-    for u in "${UNIQUE_MODEL_DIRS[@]+"${UNIQUE_MODEL_DIRS[@]}"}"; do
-      if [ "$u" = "$abs_d" ]; then
-        already=1
-        break
-      fi
-    done
-    if [ "$already" -eq 0 ]; then
-      UNIQUE_MODEL_DIRS+=("$abs_d")
-    fi
-  fi
-done
-
-echo "=== Installing MoGRU Models ==="
-for dir in "${TARGET_DIRS[@]}"; do
-  mkdir -p "$dir"
-  COPIED_MODELS=0
-  for d in "${UNIQUE_MODEL_DIRS[@]+"${UNIQUE_MODEL_DIRS[@]}"}"; do
-    for file in "$d"/*; do
-      if [ -f "$file" ]; then
-        filename="$(basename "$file")"
-        if [ "$filename" != "gru_config.ini" ]; then
-          echo "[+] Copying model file: $filename (from $d) -> $dir/"
-          cp -f "$file" "$dir/"
-          COPIED_MODELS=$((COPIED_MODELS + 1))
-        fi
-      fi
-    done
-  done
-
-  # Deploy or upgrade gru_config.ini
-  TARGET_INI="$dir/gru_config.ini"
-  CONFIG_SRC=""
-  for d in "${UNIQUE_MODEL_DIRS[@]+"${UNIQUE_MODEL_DIRS[@]}"}"; do
-    if [ -f "$d/gru_config.ini" ]; then
-      CONFIG_SRC="$d/gru_config.ini"
-      break
-    fi
-  done
-
-  if [ -n "$CONFIG_SRC" ]; then
-    if [ ! -f "$TARGET_INI" ]; then
-      echo "[+] Initializing $TARGET_INI from default template ..."
-      cp -f "$CONFIG_SRC" "$TARGET_INI"
-    elif grep -q "katakana_penalty" "$TARGET_INI" || ! grep -q "enable_live_conversion" "$TARGET_INI"; then
-      echo "[+] Upgrading $TARGET_INI to unified MoGRU config format (backup saved to $TARGET_INI.bak) ..."
-      cp -f "$TARGET_INI" "$TARGET_INI.bak"
-      cp -f "$CONFIG_SRC" "$TARGET_INI"
-    else
-      echo "[*] Preserving existing configuration: $TARGET_INI"
-    fi
-  fi
-done
-echo "[+] GRU model files and configuration installed to Application Support and ~/.config/mogru/"
-
-# 2. Clean up legacy MoGRU files from Mozc directories
+# 1. Clean up legacy MoGRU files from Mozc directories and stale duplicate base models
 for legacy_dir in \
   "$HOME/Library/Application Support/Mozc" \
   "$HOME/Library/Application Support/Google/JapaneseInput" \
@@ -191,7 +118,19 @@ for legacy_dir in \
   fi
 done
 
-# 3. Install binary package or application bundle
+for user_dir in \
+  "$HOME/Library/Application Support/MoGRU" \
+  "$HOME/.config/mogru"; do
+  if [ -d "$user_dir" ]; then
+    rm -f "$user_dir/grumodel.bin" "$user_dir/chardata.bin" "$user_dir/grumodel_new.bin" "$user_dir/chardata_new.bin"
+  fi
+done
+
+# 2. Install binary package or application bundle
+# Note: MoGRU.pkg already bundles the base models inside
+# /Library/Input Methods/MoGRU.app/Contents/Resources/models/, and
+# GruConfigManager initializes ~/Library/Application Support/MoGRU/gru_config.ini
+# automatically on first launch.
 if [ -n "$SOURCE_PKG" ] && [ -e "$SOURCE_PKG" ]; then
   echo "[+] Installing package: $SOURCE_PKG"
   if command -v sudo &>/dev/null; then
@@ -214,6 +153,10 @@ elif [ -n "$SOURCE_APP" ] && [ -d "$SOURCE_APP" ]; then
   killall Mozc 2>/dev/null || true
   rm -rf "$TARGET_APP_DIR/MoGRU.app" "$TARGET_APP_DIR/Mozc.app"
   cp -R "$SOURCE_APP" "$TARGET_APP_DIR/MoGRU.app"
+  if [ ! -f "$TARGET_APP_DIR/MoGRU.app/Contents/Resources/models/grumodel.bin" ] && [ -d "$REPO_ROOT/models" ]; then
+    mkdir -p "$TARGET_APP_DIR/MoGRU.app/Contents/Resources/models"
+    cp -f "$REPO_ROOT/models/"*.bin "$TARGET_APP_DIR/MoGRU.app/Contents/Resources/models/" 2>/dev/null || true
+  fi
   echo "[+] MoGRU.app copied to $TARGET_APP_DIR/"
 fi
 

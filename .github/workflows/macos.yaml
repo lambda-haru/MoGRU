@@ -73,12 +73,10 @@ jobs:
 
       - name: Prepare MoGRU macOS Package
         run: |
-          mkdir -p package_mac/models
+          mkdir -p package_mac
           cp -f src/bazel-bin/mac/*.pkg package_mac/
           cp -f scripts/install_macos.sh package_mac/install.sh
           chmod 755 package_mac/install.sh
-          cp -f models/*.bin package_mac/models/ 2>/dev/null || true
-          cp -f models/*.ini package_mac/models/ 2>/dev/null || true
 
       - name: upload MoGRU-macOS-arm64.zip
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

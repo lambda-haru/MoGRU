@@ -90,12 +90,16 @@ if [ -z "$SOURCE_SO" ] || [ ! -f "$SOURCE_SO" ]; then
   exit 1
 fi
 
-SOURCE_TOOL="$(find "$PACKAGE_DIR" -name "mozc_tool" -type f -print -quit 2>/dev/null || true)"
+SOURCE_TOOL="$(find "$PACKAGE_DIR" -name "mogru_tool" -type f -print -quit 2>/dev/null || true)"
 if [ -z "$SOURCE_TOOL" ]; then
-  SOURCE_TOOL="$(find "$PACKAGE_DIR" -name "mogru_tool" -type f -print -quit 2>/dev/null || true)"
+  SOURCE_TOOL="$(find "$PACKAGE_DIR" -name "mozc_tool" -type f -print -quit 2>/dev/null || true)"
 fi
 
-ICONS_DIR="$(find "$PACKAGE_DIR" -type d -name "icons" -print -quit 2>/dev/null || true)"
+if [ -d "$PACKAGE_DIR/icons" ]; then
+  ICONS_DIR="$PACKAGE_DIR/icons"
+else
+  ICONS_DIR="$(find "$PACKAGE_DIR" -type d -name "icons" -print -quit 2>/dev/null || true)"
+fi
 MODELS_DIR="$(find "$PACKAGE_DIR" -type d -name "models" -print -quit 2>/dev/null || true)"
 if [ -z "$MODELS_DIR" ] && [ -d "$REPO_ROOT/models" ]; then
   MODELS_DIR="$REPO_ROOT/models"
@@ -121,7 +125,7 @@ mkdir -p "$HOME/.local/share/fcitx5/inputmethod"
 mkdir -p "$HOME/.local/share/icons/hicolor/128x128/apps"
 mkdir -p "$HOME/.local/share/icons/hicolor/48x48/apps"
 mkdir -p "$HOME/.local/share/icons/hicolor/32x32/apps"
-mkdir -p "$HOME/.local/share/icons/mozc"
+mkdir -p "$HOME/.local/share/icons/mogru"
 mkdir -p "$HOME/.local/share/metainfo"
 mkdir -p "$HOME/.local/share/applications"
 mkdir -p "$HOME/.config/mogru"
@@ -136,29 +140,75 @@ echo "[+] Installed fcitx5-mogru.so"
 
 # 3. Install GUI configuration tool
 if [ -n "$SOURCE_TOOL" ] && [ -f "$SOURCE_TOOL" ]; then
-  cp -f "$SOURCE_TOOL" "$HOME/.local/lib/mogru/mozc_tool"
-  chmod 755 "$HOME/.local/lib/mogru/mozc_tool"
-  ln -sf "$HOME/.local/lib/mogru/mozc_tool" "$HOME/.local/lib/mogru/mogru_tool"
-  echo "[+] Installed GUI tool to $HOME/.local/lib/mogru/mozc_tool"
+  # Clean up existing tools and legacy mozc_tool to ensure mogru_tool is a clean standalone binary
+  rm -f "$HOME/.local/lib/mogru/mogru_tool" "$HOME/.local/lib/mogru/mozc_tool"
+  cp -f "$SOURCE_TOOL" "$HOME/.local/lib/mogru/mogru_tool"
+  chmod 755 "$HOME/.local/lib/mogru/mogru_tool"
+  echo "[+] Installed GUI tool: $HOME/.local/lib/mogru/mogru_tool"
 fi
 
 # 4. Install Icons
 echo "=== Installing MoGRU Icons ==="
+
+# Clean up any previously overwritten Mozc icons in user directories.
+# This ensures standard Mozc uses system-installed icons and is not affected by MoGRU.
+cleanup_mozc_icons() {
+  for mozc_icon in \
+      "$HOME/.local/share/icons/hicolor/128x128/apps/fcitx_mozc.png" \
+      "$HOME/.local/share/icons/hicolor/128x128/apps/fcitx-mozc.png" \
+      "$HOME/.local/share/icons/hicolor/32x32/apps/fcitx_mozc.png" \
+      "$HOME/.local/share/icons/hicolor/32x32/apps/fcitx-mozc.png" \
+      "$HOME/.local/share/icons/hicolor/32x32/apps/org.fcitx.Fcitx5.fcitx_mozc.png" \
+      "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mozc_tool.png" \
+      "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mozc_properties.png" \
+      "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mozc_dictionary.png" \
+      "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mozc_"*.png; do
+    if [ -e "$mozc_icon" ]; then
+      rm -f "$mozc_icon"
+    fi
+  done
+  rm -rf "$HOME/.local/share/icons/mozc"
+}
+
+echo "[*] Cleaning up overwritten Mozc icons in ~/.local/share/icons..."
+cleanup_mozc_icons
+
 if [ -n "$ICONS_DIR" ] && [ -d "$ICONS_DIR" ]; then
   if [ -d "$ICONS_DIR/hicolor" ]; then
     cp -rf "$ICONS_DIR/hicolor/"* "$HOME/.local/share/icons/hicolor/" 2>/dev/null || true
   fi
-  if [ -d "$ICONS_DIR/mozc" ]; then
-    cp -rf "$ICONS_DIR/mozc/"* "$HOME/.local/share/icons/mozc/" 2>/dev/null || true
+  if [ -d "$ICONS_DIR/mogru" ]; then
+    cp -rf "$ICONS_DIR/mogru/"* "$HOME/.local/share/icons/mogru/" 2>/dev/null || true
   fi
+  # Re-run cleanup in case package archive contained any legacy mozc icon files
+  cleanup_mozc_icons
 fi
 
 if [ -d "$REPO_ROOT/src/data/images" ]; then
-  # Fallback to repo assets if available
-  [ -f "$REPO_ROOT/src/data/images/product_icon_32bpp-128.png" ] && \
-    cp -f "$REPO_ROOT/src/data/images/product_icon_32bpp-128.png" "$HOME/.local/share/icons/hicolor/128x128/apps/fcitx_mozc.png"
-  [ -f "$REPO_ROOT/src/data/images/unix/ime_product_icon_opensource-32.png" ] && \
-    cp -f "$REPO_ROOT/src/data/images/unix/ime_product_icon_opensource-32.png" "$HOME/.local/share/icons/hicolor/32x32/apps/fcitx_mozc.png"
+  # Deploy exclusive MoGRU icon assets
+  [ -f "$REPO_ROOT/src/data/images/product_icon_32bpp-128.png" ] && {
+    cp -f "$REPO_ROOT/src/data/images/product_icon_32bpp-128.png" "$HOME/.local/share/icons/hicolor/128x128/apps/fcitx_mogru.png"
+    cp -f "$REPO_ROOT/src/data/images/product_icon_32bpp-128.png" "$HOME/.local/share/icons/hicolor/128x128/apps/mogru.png"
+    cp -f "$REPO_ROOT/src/data/images/product_icon_32bpp-128.png" "$HOME/.local/share/icons/mogru/product_icon_32bpp-128.png"
+  }
+  [ -f "$REPO_ROOT/src/data/images/unix/ime_product_icon_opensource-32.png" ] && {
+    cp -f "$REPO_ROOT/src/data/images/unix/ime_product_icon_opensource-32.png" "$HOME/.local/share/icons/hicolor/32x32/apps/fcitx_mogru.png"
+    cp -f "$REPO_ROOT/src/data/images/unix/ime_product_icon_opensource-32.png" "$HOME/.local/share/icons/hicolor/32x32/apps/mogru.png"
+    cp -f "$REPO_ROOT/src/data/images/unix/ime_product_icon_opensource-32.png" "$HOME/.local/share/icons/hicolor/32x32/apps/org.fcitx.Fcitx5.Addon.MoGRU.png"
+    cp -f "$REPO_ROOT/src/data/images/unix/ime_product_icon_opensource-32.png" "$HOME/.local/share/icons/mogru/ime_product_icon_opensource-32.png"
+  }
+  for mode in direct hiragana katakana_full katakana_half alpha_full alpha_half; do
+    if [ -f "$REPO_ROOT/src/data/images/unix/48x48/${mode}.png" ]; then
+      cp -f "$REPO_ROOT/src/data/images/unix/48x48/${mode}.png" "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mogru_${mode}.png"
+    fi
+  done
+  [ -f "$REPO_ROOT/src/data/images/unix/ui-tool.png" ] && \
+    cp -f "$REPO_ROOT/src/data/images/unix/ui-tool.png" "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mogru_tool.png"
+  [ -f "$REPO_ROOT/src/data/images/unix/ui-properties.png" ] && \
+    cp -f "$REPO_ROOT/src/data/images/unix/ui-properties.png" "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mogru_properties.png"
+  [ -f "$REPO_ROOT/src/data/images/unix/ui-dictionary.png" ] && \
+    cp -f "$REPO_ROOT/src/data/images/unix/ui-dictionary.png" "$HOME/.local/share/icons/hicolor/48x48/apps/fcitx_mogru_dictionary.png"
+  cp -f "$REPO_ROOT/src/data/images/unix/ui-"*.png "$HOME/.local/share/icons/mogru/" 2>/dev/null || true
 fi
 
 if command -v gtk-update-icon-cache &>/dev/null; then
@@ -185,9 +235,9 @@ cat << EOF > "$HOME/.local/share/applications/mogru-tool.desktop"
 Name=MoGRU Settings
 Name[ja]=MoGRU 設定
 Comment=MoGRU Configuration Dialog
-Comment[ja]=MoGRU (ニューラル言語モデルMozc) の設定ツール
-Exec=$HOME/.local/lib/mogru/mozc_tool --mode=config_dialog
-Icon=fcitx_mozc
+Comment[ja]=MoGRU (ニューラル言語モデル日本語入力) の設定ツール
+Exec=$HOME/.local/lib/mogru/mogru_tool --mode=config_dialog
+Icon=fcitx_mogru
 Terminal=false
 Type=Application
 Categories=Settings;Utility;
@@ -199,8 +249,8 @@ Name=MoGRU Dictionary Tool
 Name[ja]=MoGRU 辞書ツール
 Comment=MoGRU Dictionary Management Tool
 Comment[ja]=MoGRU ユーザー辞書の管理
-Exec=$HOME/.local/lib/mogru/mozc_tool --mode=dictionary_tool
-Icon=fcitx_mozc
+Exec=$HOME/.local/lib/mogru/mogru_tool --mode=dictionary_tool
+Icon=fcitx_mogru
 Terminal=false
 Type=Application
 Categories=Settings;Utility;
@@ -223,7 +273,7 @@ EOF
 cat << 'EOF' > "$HOME/.local/share/fcitx5/inputmethod/mogru.conf"
 [InputMethod]
 Name=MoGRU
-Icon=fcitx_mozc
+Icon=fcitx_mogru
 Label=あ(M)
 LangCode=ja
 Addon=mogru
@@ -254,9 +304,13 @@ if [ -d "$HOME/.config/mozc" ] || [ -d "$HOME/.mozc" ]; then
 fi
 
 # 8. Install models from models/ directory
-# All files in models/ except gru_config.ini are unconditionally copied as model files
-TARGET_MODELS_DIR="$HOME/.config/mogru"
+# Base model files are installed to ~/.local/share/mogru/models (read-only data dir),
+# while user configuration (gru_config.ini) and learned user model (grumodel_user.bin)
+# reside in ~/.config/mogru.
+TARGET_MODELS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/mogru/models"
+TARGET_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mogru"
 mkdir -p "$TARGET_MODELS_DIR"
+mkdir -p "$TARGET_CONFIG_DIR"
 
 # Collect unique candidate models directories (package models takes top priority, then repo models)
 CANDIDATE_MODEL_DIRS=()
@@ -299,10 +353,14 @@ done
 
 if [ "$COPIED_MODELS" -eq 0 ]; then
   echo "[!] Warning: No model files found in: ${UNIQUE_MODEL_DIRS[*]}"
+else
+  # Clean up duplicate base models previously copied into ~/.config/mogru/
+  rm -f "$TARGET_CONFIG_DIR/grumodel.bin" "$TARGET_CONFIG_DIR/chardata.bin" \
+        "$TARGET_CONFIG_DIR/grumodel_new.bin" "$TARGET_CONFIG_DIR/chardata_new.bin"
 fi
 
 # Deploy or upgrade gru_config.ini
-TARGET_INI="$TARGET_MODELS_DIR/gru_config.ini"
+TARGET_INI="$TARGET_CONFIG_DIR/gru_config.ini"
 CONFIG_SRC=""
 for d in "${UNIQUE_MODEL_DIRS[@]}"; do
   if [ -f "$d/gru_config.ini" ]; then
@@ -337,4 +395,4 @@ fi
 
 echo "=== Installation Complete! ==="
 echo "You can now add 'MoGRU' in Fcitx5 Configuration (fcitx5-config-qt)."
-echo "MoGRU settings can be customized via 'Configuration Tool' (mozc_tool) or ~/.config/mogru/gru_config.ini."
+echo "MoGRU settings can be customized via 'Configuration Tool' (mogru_tool) or ~/.config/mogru/gru_config.ini."

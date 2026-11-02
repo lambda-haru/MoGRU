@@ -43,7 +43,7 @@ LANGUAGE LANG_JAPANESE, SUBLANG_DEFAULT
   #if defined(GOOGLE_JAPANESE_INPUT_BUILD)
     #define MOZC_RES_FILE_DESCRIPTION "Google 日本語入力 コンバーター"
   #elif defined(MOZC_BUILD)
-    #define MOZC_RES_FILE_DESCRIPTION "Mozc Converter"
+    #define MOZC_RES_FILE_DESCRIPTION "MoGRU Converter"
   #endif
 #endif
 #ifndef MOZC_RES_FILETYPE

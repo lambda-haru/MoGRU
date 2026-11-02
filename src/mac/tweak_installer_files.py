@@ -189,6 +189,20 @@ def TweakForProductbuild(
   os.chmod('scripts/postinstall', 0o755)
   os.chmod('scripts/preinstall', 0o755)
 
+  model_files = [
+      'grumodel.bin',
+      'chardata.bin',
+      'grumodel_new.bin',
+      'chardata_new.bin',
+  ]
+  models_dst_dir = (
+      f'root/Library/Input Methods/{name}.app/Contents/Resources/models'
+  )
+  for model_file in model_files:
+    if os.path.exists(model_file):
+      os.makedirs(models_dst_dir, exist_ok=True)
+      os.replace(model_file, os.path.join(models_dst_dir, model_file))
+
   if tweak_qt:
     resources_dir = f'/Library/Input Methods/{name}.app/Contents/Resources/'
     # /Applications/MoGRU/ConfigDialog.app is a symlink to

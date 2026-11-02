@@ -212,6 +212,7 @@ void NormalizeHistorySegments(Segments* segments) {
       c->value = key;
       c->content_value = key;
       c->content_key = key;
+      c->key = key;
     }
     if (c->key.size() != original_key_size ||
         c->value.size() != original_value_size ||

@@ -33,6 +33,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -69,7 +70,8 @@ std::string ExpandTilde(const std::string& path) {
   return path;
 }
 
-std::vector<std::string> GetCandidateProfileDirs() {
+// Writable user-specific directories for gru_config.ini and grumodel_user.bin.
+std::vector<std::string> GetUserProfileCandidateDirs() {
   std::vector<std::string> dirs;
   auto add_unique = [&dirs](const std::string& d) {
     if (!d.empty() && std::find(dirs.begin(), dirs.end(), d) == dirs.end()) {
@@ -78,6 +80,11 @@ std::vector<std::string> GetCandidateProfileDirs() {
   };
 
 #ifdef __linux__
+  if (const char* xdg_config = std::getenv("XDG_CONFIG_HOME")) {
+    if (xdg_config[0] != '\0') {
+      add_unique(FileUtil::JoinPath(xdg_config, "mogru"));
+    }
+  }
   if (const char* home = std::getenv("HOME")) {
     add_unique(FileUtil::JoinPath(home, ".config/mogru"));
     add_unique(FileUtil::JoinPath(home, ".mogru"));
@@ -94,24 +101,171 @@ std::vector<std::string> GetCandidateProfileDirs() {
     add_unique(FileUtil::JoinPath(userprofile, "AppData/LocalLow/MoGRU"));
   }
 #endif
+  return dirs;
+}
+
+// Read-only system/application directories for bundled base models
+// (grumodel.bin, chardata.bin, grumodel_new.bin, chardata_new.bin).
+std::vector<std::string> GetSystemModelCandidateDirs() {
+  std::vector<std::string> dirs;
+  auto add_unique = [&dirs](const std::string& d) {
+    if (!d.empty() && std::find(dirs.begin(), dirs.end(), d) == dirs.end()) {
+      dirs.push_back(d);
+    }
+  };
+
+#ifdef __linux__
+  if (const char* xdg_data = std::getenv("XDG_DATA_HOME")) {
+    if (xdg_data[0] != '\0') {
+      add_unique(FileUtil::JoinPath(xdg_data, "mogru/models"));
+      add_unique(FileUtil::JoinPath(xdg_data, "mogru"));
+    }
+  }
+  if (const char* home = std::getenv("HOME")) {
+    add_unique(FileUtil::JoinPath(home, ".local/share/mogru/models"));
+    add_unique(FileUtil::JoinPath(home, ".local/share/mogru"));
+  }
+  add_unique("/usr/local/share/mogru/models");
+  add_unique("/usr/share/mogru/models");
+#endif
   const std::string server_dir = SystemUtil::GetServerDirectory();
   if (!server_dir.empty()) {
-    add_unique(server_dir);
     add_unique(FileUtil::JoinPath(server_dir, "models"));
+    add_unique(server_dir);
   }
   return dirs;
+}
+
+// Combined search directories for base models and chardata.
+// System model directories are searched first so bundled/updated models take
+// precedence over stale copies left by older installer scripts, followed by
+// user profile directories for backward compatibility.
+std::vector<std::string> GetCandidateModelSearchDirs() {
+  std::vector<std::string> dirs = GetSystemModelCandidateDirs();
+  for (const auto& d : GetUserProfileCandidateDirs()) {
+    if (std::find(dirs.begin(), dirs.end(), d) == dirs.end()) {
+      dirs.push_back(d);
+    }
+  }
+  return dirs;
+}
+
+void MigrateLegacyFilesOnce() {
+  if (IsInTestEnvironment()) {
+    return;
+  }
+  static std::once_flag once;
+  std::call_once(once, []() {
+    const auto user_dirs = GetUserProfileCandidateDirs();
+    if (user_dirs.empty()) {
+      return;
+    }
+    const std::string primary_user_dir = user_dirs.front();
+
+    std::vector<std::string> legacy_mozc_dirs;
+    auto add_legacy = [&legacy_mozc_dirs](const std::string& d) {
+      if (!d.empty() &&
+          std::find(legacy_mozc_dirs.begin(), legacy_mozc_dirs.end(), d) ==
+              legacy_mozc_dirs.end()) {
+        legacy_mozc_dirs.push_back(d);
+      }
+    };
+#ifdef __linux__
+    if (const char* home = std::getenv("HOME")) {
+      add_legacy(FileUtil::JoinPath(home, ".config/mozc"));
+      add_legacy(FileUtil::JoinPath(home, ".mozc"));
+    }
+#else
+    if (const char* home = std::getenv("HOME")) {
+      add_legacy(FileUtil::JoinPath(home, "Library/Application Support/Mozc"));
+      add_legacy(FileUtil::JoinPath(
+          home, "Library/Application Support/Google/JapaneseInput"));
+      add_legacy(FileUtil::JoinPath(home, ".config/mozc"));
+    }
+    if (const char* userprofile = std::getenv("USERPROFILE")) {
+      add_legacy(FileUtil::JoinPath(userprofile, "AppData/LocalLow/Mozc"));
+      add_legacy(FileUtil::JoinPath(userprofile,
+                                    "AppData/LocalLow/Google/JapaneseInput"));
+    }
+#endif
+
+    std::error_code ec;
+    for (const auto& legacy_dir : legacy_mozc_dirs) {
+      if (!std::filesystem::exists(legacy_dir, ec)) {
+        continue;
+      }
+      const std::string legacy_ini =
+          FileUtil::JoinPath(legacy_dir, "gru_config.ini");
+      const std::string target_ini =
+          FileUtil::JoinPath(primary_user_dir, "gru_config.ini");
+      if (std::filesystem::exists(legacy_ini, ec) &&
+          !std::filesystem::exists(target_ini, ec)) {
+        std::filesystem::create_directories(primary_user_dir, ec);
+        std::filesystem::copy_file(
+            legacy_ini, target_ini,
+            std::filesystem::copy_options::overwrite_existing, ec);
+      }
+
+      const std::string legacy_user_model =
+          FileUtil::JoinPath(legacy_dir, "grumodel_user.bin");
+      const std::string target_user_model =
+          FileUtil::JoinPath(primary_user_dir, "grumodel_user.bin");
+      if (std::filesystem::exists(legacy_user_model, ec) &&
+          !std::filesystem::exists(target_user_model, ec)) {
+        std::filesystem::create_directories(primary_user_dir, ec);
+        std::filesystem::copy_file(
+            legacy_user_model, target_user_model,
+            std::filesystem::copy_options::overwrite_existing, ec);
+      }
+
+      for (const char* fname :
+           {"grumodel.bin", "chardata.bin", "gru_config.ini",
+            "gru_config.ini.bak", "grumodel_user.bin"}) {
+        std::filesystem::remove(FileUtil::JoinPath(legacy_dir, fname), ec);
+      }
+    }
+
+    // If system model directory already provides grumodel.bin, clean up
+    // duplicate base model copies placed in user profile dirs by older scripts.
+    const auto sys_dirs = GetSystemModelCandidateDirs();
+    bool has_system_model = false;
+    for (const auto& sdir : sys_dirs) {
+      if (std::filesystem::exists(FileUtil::JoinPath(sdir, "grumodel.bin"),
+                                  ec)) {
+        has_system_model = true;
+        break;
+      }
+    }
+    if (has_system_model) {
+      for (const auto& udir : user_dirs) {
+        if (std::find(sys_dirs.begin(), sys_dirs.end(), udir) !=
+            sys_dirs.end()) {
+          continue;
+        }
+        for (const char* fname : {"grumodel.bin", "chardata.bin",
+                                  "grumodel_new.bin", "chardata_new.bin"}) {
+          std::filesystem::remove(FileUtil::JoinPath(udir, fname), ec);
+        }
+      }
+    }
+  });
 }
 
 }  // namespace
 
 std::string GruConfigManager::GetDefaultDataFilePath(
     const std::string& filename) {
-  const auto dirs = GetCandidateProfileDirs();
+  MigrateLegacyFilesOnce();
+  const auto dirs = GetCandidateModelSearchDirs();
   for (const auto& dir : dirs) {
     const std::string p = FileUtil::JoinPath(dir, filename);
     if (std::filesystem::exists(p)) {
       return p;
     }
+  }
+  const auto sys_dirs = GetSystemModelCandidateDirs();
+  if (!sys_dirs.empty()) {
+    return FileUtil::JoinPath(sys_dirs.front(), filename);
   }
   if (!dirs.empty()) {
     return FileUtil::JoinPath(dirs.front(), filename);
@@ -122,10 +276,22 @@ std::string GruConfigManager::GetDefaultDataFilePath(
 std::string GruConfigManager::ResolveDataFilePath(
     const std::string& user_specified,
     const std::string& default_filename) {
+  MigrateLegacyFilesOnce();
   if (!user_specified.empty()) {
     const std::string expanded = ExpandTilde(user_specified);
     if (std::filesystem::exists(expanded)) {
       return expanded;
+    }
+    if (std::filesystem::path(expanded).is_relative()) {
+      for (const auto& dir : GetCandidateModelSearchDirs()) {
+        const std::string p = FileUtil::JoinPath(dir, expanded);
+        if (std::filesystem::exists(p)) return p;
+      }
+      for (const auto& dev_prefix :
+           {"models", "../models", "gru_scorer", "../gru_scorer"}) {
+        const std::string p = FileUtil::JoinPath(dev_prefix, expanded);
+        if (std::filesystem::exists(p)) return p;
+      }
     }
     if (const char* test_srcdir = std::getenv("TEST_SRCDIR")) {
       std::string p = FileUtil::JoinPath(test_srcdir, user_specified);
@@ -137,8 +303,8 @@ std::string GruConfigManager::ResolveDataFilePath(
     return "";
   }
 
-  // 1. User profile directories
-  for (const auto& dir : GetCandidateProfileDirs()) {
+  // 1. System model directories and user profile directories
+  for (const auto& dir : GetCandidateModelSearchDirs()) {
     const std::string p = FileUtil::JoinPath(dir, default_filename);
     if (std::filesystem::exists(p)) return p;
   }
@@ -177,6 +343,7 @@ std::string GruConfigManager::ResolveDataFilePath(
 std::string GruConfigManager::ResolveConfigFilePath(
     const std::string& user_specified,
     bool allow_in_test) {
+  MigrateLegacyFilesOnce();
   if (!user_specified.empty()) {
     const std::string expanded = ExpandTilde(user_specified);
     if (std::filesystem::exists(expanded)) {
@@ -196,7 +363,7 @@ std::string GruConfigManager::ResolveConfigFilePath(
     return "";
   }
 
-  const auto dirs = GetCandidateProfileDirs();
+  const auto dirs = GetUserProfileCandidateDirs();
   for (const auto& dir : dirs) {
     const std::string p = FileUtil::JoinPath(dir, "gru_config.ini");
     if (std::filesystem::exists(p)) {
@@ -212,6 +379,7 @@ std::string GruConfigManager::ResolveConfigFilePath(
 
 std::string GruConfigManager::ResolveUserModelFilePath(
     const std::string& user_specified) {
+  MigrateLegacyFilesOnce();
   if (!user_specified.empty()) {
     return ExpandTilde(user_specified);
   }
@@ -220,7 +388,7 @@ std::string GruConfigManager::ResolveUserModelFilePath(
       return FileUtil::JoinPath(test_tmpdir, "grumodel_user.bin");
     }
   }
-  const auto dirs = GetCandidateProfileDirs();
+  const auto dirs = GetUserProfileCandidateDirs();
   for (const auto& dir : dirs) {
     const std::string p = FileUtil::JoinPath(dir, "grumodel_user.bin");
     if (std::filesystem::exists(p)) {
@@ -854,7 +1022,7 @@ bool GruConfigManager::SaveConfig(const GruPenaltyConfig& config,
       targets.push_back(primary);
     }
     if (!IsInTestEnvironment()) {
-      for (const auto& dir : GetCandidateProfileDirs()) {
+      for (const auto& dir : GetUserProfileCandidateDirs()) {
         const std::string candidate = FileUtil::JoinPath(dir, "gru_config.ini");
         if (std::filesystem::exists(candidate) &&
             std::find(targets.begin(), targets.end(), candidate) ==

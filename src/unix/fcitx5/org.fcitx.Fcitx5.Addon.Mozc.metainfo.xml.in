@@ -1,17 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <component type="addon">
-  <id>org.fcitx.Fcitx5.Addon.Mozc</id>
+  <id>org.fcitx.Fcitx5.Addon.MoGRU</id>
   <extends>org.fcitx.Fcitx5</extends>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-2.0+</project_license>
-  <name>Mozc for Fcitx 5</name>
-  <summary>Japanese input method based on Mozc</summary>
+  <name>MoGRU for Fcitx 5</name>
+  <summary>Neural Language Model (GRU) Integrated Mozc Japanese Input Method</summary>
   <developer id="org.fcitx-im">
-    <name>The Fcitx Team</name>
+    <name>The MoGRU Team</name>
   </developer>
-  <url type="homepage">https://fcitx-im.org</url>
-  <url type="bugtracker">https://github.com/fcitx/mozc/issues</url>
-  <url type="vcs-browser">https://github.com/fcitx/mozc</url>
+  <url type="homepage">https://github.com/lambda-haru/MoGRU</url>
+  <url type="bugtracker">https://github.com/lambda-haru/MoGRU/issues</url>
+  <url type="vcs-browser">https://github.com/lambda-haru/MoGRU</url>
   <project_group>Fcitx</project_group>
   <releases>
     <release version="3.35.6354.102" date="2026-10-16"></release>

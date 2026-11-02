@@ -111,83 +111,14 @@ try {
     Write-Host "[+] Installing MSI: $MsiPath" -ForegroundColor Green
 
     # 1. Run MSI Installation
+    # Note: The MSI installer already bundles base models in C:\Program Files\MoGRU\models\,
+    # and GruConfigManager automatically initializes %USERPROFILE%\AppData\LocalLow\MoGRU\gru_config.ini
+    # on first launch.
     Write-Host "=== Installing MoGRU ===" -ForegroundColor Cyan
     $Process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$MsiPath`" /qb" -Wait -PassThru
     if ($Process.ExitCode -ne 0 -and $Process.ExitCode -ne 3010) {
         Write-Error "msiexec.exe failed with exit code $($Process.ExitCode)."
         exit $Process.ExitCode
-    }
-
-    # 2. Install GRU model files to AppData\LocalLow\MoGRU
-    # All files in models/ except gru_config.ini are unconditionally copied as model files
-    $CandidateModelDirs = @(
-        $PackageModelsDir,
-        (Join-Path $ScriptDir "models"),
-        (Join-Path $RepoRoot "models"),
-        (Join-Path (Get-Location) "models")
-    ) | Where-Object { $_ -and (Test-Path $_) }
-
-    # Resolve unique candidate directories
-    $UniqueDirs = @()
-    foreach ($dir in $CandidateModelDirs) {
-        $resolved = (Resolve-Path $dir -ErrorAction SilentlyContinue).Path
-        if ($resolved -and (-not ($UniqueDirs -contains $resolved))) {
-            $UniqueDirs += $resolved
-        }
-    }
-
-    $TargetDirs = @(
-        (Join-Path $env:USERPROFILE "AppData\LocalLow\MoGRU")
-    )
-
-    if ($UniqueDirs.Count -gt 0) {
-        Write-Host "=== Installing MoGRU Models ===" -ForegroundColor Cyan
-        foreach ($ModelDestDir in $TargetDirs) {
-            if (-not (Test-Path $ModelDestDir)) {
-                New-Item -ItemType Directory -Path $ModelDestDir -Force | Out-Null
-            }
-
-            # Unconditionally copy all files except gru_config.ini
-            $CopiedCount = 0
-            foreach ($d in $UniqueDirs) {
-                $ModelFiles = Get-ChildItem -Path $d -File -ErrorAction SilentlyContinue
-                foreach ($file in $ModelFiles) {
-                    if ($file.Name -ne "gru_config.ini") {
-                        Write-Host "[+] Copying model file: $($file.Name) (from $d) -> $ModelDestDir" -ForegroundColor Green
-                        Copy-Item -Path $file.FullName -Destination $ModelDestDir -Force
-                        $CopiedCount++
-                    }
-                }
-            }
-
-            if ($CopiedCount -eq 0) {
-                Write-Warning "[!] No model files found in candidate directories: $($UniqueDirs -join ', ')"
-            }
-
-            # Copy or upgrade gru_config.ini from the first candidate directory that has it
-            foreach ($d in $UniqueDirs) {
-                $ConfigSrc = Join-Path $d "gru_config.ini"
-                if (Test-Path $ConfigSrc) {
-                    $ConfigDest = Join-Path $ModelDestDir "gru_config.ini"
-                    if (-not (Test-Path $ConfigDest)) {
-                        Write-Host "[+] Initializing $ConfigDest from default template ..." -ForegroundColor Green
-                        Copy-Item -Path $ConfigSrc -Destination $ConfigDest -Force
-                    } else {
-                        $ExistingContent = Get-Content -Path $ConfigDest -Raw -ErrorAction SilentlyContinue
-                        if ($ExistingContent -and (($ExistingContent -match "katakana_penalty") -or ($ExistingContent -notmatch "enable_live_conversion"))) {
-                            Write-Host "[+] Upgrading $ConfigDest to unified MoGRU config format (backup saved to $ConfigDest.bak) ..." -ForegroundColor Green
-                            Copy-Item -Path $ConfigDest -Destination "$ConfigDest.bak" -Force
-                            Copy-Item -Path $ConfigSrc -Destination $ConfigDest -Force
-                        } else {
-                            Write-Host "[*] Preserving existing configuration: $ConfigDest" -ForegroundColor Gray
-                        }
-                    }
-                    break
-                }
-            }
-        }
-    } else {
-        Write-Warning "[!] No candidate model directories found."
     }
 } finally {
     if ($TempExtractDir -and (Test-Path -LiteralPath $TempExtractDir)) {
@@ -195,7 +126,14 @@ try {
     }
 }
 
-# 3. Clean up legacy MoGRU files from Mozc directories
+# 2. Clean up stale duplicate base models in user profile and legacy Mozc directories
+$UserMoGruDir = Join-Path $env:USERPROFILE "AppData\LocalLow\MoGRU"
+if (Test-Path $UserMoGruDir) {
+    foreach ($ModelName in @("grumodel.bin", "chardata.bin", "grumodel_new.bin", "chardata_new.bin")) {
+        Remove-Item -Path (Join-Path $UserMoGruDir $ModelName) -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $LegacyDirs = @(
     (Join-Path $env:USERPROFILE "AppData\LocalLow\Mozc"),
     (Join-Path $env:USERPROFILE "AppData\LocalLow\Google\JapaneseInput")

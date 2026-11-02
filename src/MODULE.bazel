@@ -411,3 +411,23 @@ http_archive(
     sha256 = "3adc97d8e19e1168a6cdcb2fce759d0e9e613a9a3b630cc180aecfd56ae81eaf",
     url = "https://github.com/hiroyuki-komatsu/japanpost_zipcode/raw/621d059fbcbfae17bfca15b439692bae934268c3/ken_all.zip",
 )
+
+# MoGRU prebuilt language models
+new_local_repository(
+    name = "mogru_models",
+    build_file_content = """
+exports_files(glob(["*.bin", "*.ini"]))
+
+filegroup(
+    name = "model_files",
+    srcs = [
+        "chardata.bin",
+        "chardata_new.bin",
+        "grumodel.bin",
+        "grumodel_new.bin",
+    ],
+    visibility = ["//visibility:public"],
+)
+""",
+    path = "../models",
+)

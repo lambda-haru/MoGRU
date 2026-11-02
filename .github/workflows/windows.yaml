@@ -40,7 +40,26 @@ jobs:
         run: |
           python build_tools/update_deps.py
 
+      - name: Identify Qt build environment
+        id: qt-env
+        shell: pwsh
+        run: |
+          $os = [System.Environment]::OSVersion.Version.ToString()
+          "os=$os" >> $env:GITHUB_OUTPUT
+          $vswhere = if (Get-Command vswhere -ErrorAction SilentlyContinue) { "vswhere" } else { "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" }
+          $vs = & $vswhere -latest -property installationVersion
+          if (-not $vs) { $vs = "default" }
+          "vs=$vs" >> $env:GITHUB_OUTPUT
+
+      - name: Restore Qt build cache
+        id: qt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: src/third_party/qt
+          key: qt-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.qt-env.outputs.os }}-${{ steps.qt-env.outputs.vs }}-x64-release-${{ hashFiles('src/build_tools/build_qt.py', 'src/build_tools/update_deps.py') }}
+
       - name: Build Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
@@ -48,10 +67,18 @@ jobs:
 
       # This is needed only for GitHub Actions where free disk space is quite limited.
       - name: Delete Qt src to save disk space
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
           rmdir third_party\qt_src /s /q
+
+      - name: Save Qt build cache
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: src/third_party/qt
+          key: ${{ steps.qt-cache.outputs.cache-primary-key }}
 
       - name: build artifacts
         shell: cmd
@@ -64,10 +91,9 @@ jobs:
       - name: Prepare MoGRU Windows Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path package_win\models -Force | Out-Null
+          New-Item -ItemType Directory -Path package_win -Force | Out-Null
           Copy-Item src\bazel-bin\win32\installer\*.msi package_win\ -Force
           Copy-Item scripts\install_windows.ps1 package_win\install.ps1 -Force
-          Copy-Item -Path models\* -Destination package_win\models\ -Force -Recurse -ErrorAction SilentlyContinue
 
       - name: upload MoGRU-windows-x64.zip
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -108,7 +134,26 @@ jobs:
         run: |
           python build_tools/update_deps.py
 
+      - name: Identify Qt build environment
+        id: qt-env
+        shell: pwsh
+        run: |
+          $os = [System.Environment]::OSVersion.Version.ToString()
+          "os=$os" >> $env:GITHUB_OUTPUT
+          $vswhere = if (Get-Command vswhere -ErrorAction SilentlyContinue) { "vswhere" } else { "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" }
+          $vs = & $vswhere -latest -property installationVersion
+          if (-not $vs) { $vs = "default" }
+          "vs=$vs" >> $env:GITHUB_OUTPUT
+
+      - name: Restore Qt build cache
+        id: qt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: src/third_party/qt
+          key: qt-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.qt-env.outputs.os }}-${{ steps.qt-env.outputs.vs }}-arm64-release-${{ hashFiles('src/build_tools/build_qt.py', 'src/build_tools/update_deps.py') }}
+
       - name: Build Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
@@ -116,10 +161,18 @@ jobs:
 
       # This is needed only for GitHub Actions where free disk space is quite limited.
       - name: Delete Qt src to save disk space
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: cmd
         working-directory: .\src
         run: |
           rmdir third_party\qt_src /s /q
+
+      - name: Save Qt build cache
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: src/third_party/qt
+          key: ${{ steps.qt-cache.outputs.cache-primary-key }}
 
       - name: build artifacts
         shell: cmd
@@ -132,10 +185,9 @@ jobs:
       - name: Prepare MoGRU Windows ARM64 Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path package_win_arm64\models -Force | Out-Null
+          New-Item -ItemType Directory -Path package_win_arm64 -Force | Out-Null
           Copy-Item src\bazel-bin\win32\installer\*.msi package_win_arm64\ -Force
           Copy-Item scripts\install_windows.ps1 package_win_arm64\install.ps1 -Force
-          Copy-Item -Path models\* -Destination package_win_arm64\models\ -Force -Recurse -ErrorAction SilentlyContinue
 
       - name: upload MoGRU-windows-arm64.zip
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

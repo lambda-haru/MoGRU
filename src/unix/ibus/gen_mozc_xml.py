@@ -164,7 +164,7 @@ def main():
       'version': '0.0.0.0',
       'author': 'Google LLC',
       'license': 'New BSD',
-      'homepage': 'https://github.com/google/mozc',
+      'homepage': 'https://github.com/lambda-haru/MoGRU',
       'textdomain': 'ibus-mozc',
   }
 

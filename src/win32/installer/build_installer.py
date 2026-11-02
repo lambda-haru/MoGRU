@@ -106,6 +106,7 @@ def run_wix4(args) -> None:
   version = mozc_version.MozcVersion(version_file)
   credit_file = pathlib.Path(args.credit_file).resolve()
   document_dir = credit_file.parent
+  models_dir = pathlib.Path(args.gru_model_file).resolve().parent
   qt_dir = pathlib.Path(args.qt_core_dll).parent.parent.resolve()
   icon_path = pathlib.Path(args.icon_path).resolve()
   mozc_tip32 = pathlib.Path(args.mozc_tip32).resolve()
@@ -159,6 +160,7 @@ def run_wix4(args) -> None:
       '-define', f'MozcToolPath={mozc_tool}',
       '-define', f'CustomActions64Path={custom_action}',
       '-define', f'DocumentsDir={document_dir}',
+      '-define', f'ModelsDir={models_dir}',
       '-define', f'QtDir={qt_dir}',
       '-define', 'QtVer=6',
       '-out', args.output,
@@ -192,6 +194,7 @@ def main():
   parser.add_argument('--custom_action', type=str)
   parser.add_argument('--icon_path', type=str)
   parser.add_argument('--credit_file', type=str)
+  parser.add_argument('--gru_model_file', type=str)
   parser.add_argument('--qt_core_dll', type=str)
   parser.add_argument('--wxs_path', type=str)
   parser.add_argument('--wix_path', type=str)

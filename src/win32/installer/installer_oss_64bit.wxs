@@ -170,6 +170,10 @@
       <ComponentRef Id="SysProcs" />
       <ComponentRef Id="PrelaunchProcesses" />
       <ComponentRef Id="CreditsEn" />
+      <ComponentRef Id="GruModelBin" />
+      <ComponentRef Id="GruCharDataBin" />
+      <ComponentRef Id="GruModelNewBin" />
+      <ComponentRef Id="GruCharDataNewBin" />
     </Feature>
 
     <Binary Id="mozc_installer_helper.dll" SourceFile="$(var.CustomActions64Path)" />
@@ -344,6 +348,24 @@
         <Directory Id="DocumentsDir" Name="documents">
           <Component Id="CreditsEn">
             <File Id="credits_en.html" Name="credits_en.html" DiskId="1" Checksum="yes" Vital="yes" Source="$(var.DocumentsDir)/credits_en.html" />
+          </Component>
+        </Directory>
+        <Directory Id="ModelsDir" Name="models">
+          <Component Id="GruModelBin">
+            <RemoveFile Id="grumodel.bin" Name="grumodel.bin" On="install" />
+            <File Id="grumodel.bin" Name="grumodel.bin" DiskId="1" Checksum="yes" Vital="yes" Source="$(var.ModelsDir)/grumodel.bin" />
+          </Component>
+          <Component Id="GruCharDataBin">
+            <RemoveFile Id="chardata.bin" Name="chardata.bin" On="install" />
+            <File Id="chardata.bin" Name="chardata.bin" DiskId="1" Checksum="yes" Vital="yes" Source="$(var.ModelsDir)/chardata.bin" />
+          </Component>
+          <Component Id="GruModelNewBin">
+            <RemoveFile Id="grumodel_new.bin" Name="grumodel_new.bin" On="install" />
+            <File Id="grumodel_new.bin" Name="grumodel_new.bin" DiskId="1" Checksum="yes" Vital="yes" Source="$(var.ModelsDir)/grumodel_new.bin" />
+          </Component>
+          <Component Id="GruCharDataNewBin">
+            <RemoveFile Id="chardata_new.bin" Name="chardata_new.bin" On="install" />
+            <File Id="chardata_new.bin" Name="chardata_new.bin" DiskId="1" Checksum="yes" Vital="yes" Source="$(var.ModelsDir)/chardata_new.bin" />
           </Component>
         </Directory>
         <Directory Id="QtPlatformsPluginDir" Name="platforms">

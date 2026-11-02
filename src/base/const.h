@@ -141,7 +141,7 @@ inline constexpr char kEventPathPrefix[] = "MoGRU.event.";
 inline constexpr char kMozcServerName[] = "mozc_server";
 inline constexpr char kMozcRenderer[] = "mozc_renderer";
 inline constexpr char kEventPathPrefix[] = "mogru.event.";
-inline constexpr char kMozcTool[] = "mozc_tool";
+inline constexpr char kMozcTool[] = "mogru_tool";
 #endif  // _WIN32, __APPLE__, or else
 
 inline constexpr char kWordRegisterEnvironmentName[] =

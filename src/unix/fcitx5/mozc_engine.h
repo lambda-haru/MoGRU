@@ -75,11 +75,21 @@ FCITX_CONFIGURATION(
     MozcEngineConfig,
     static std::string ResolveToolPath() {
       if (const char* home = std::getenv("HOME")) {
+        const std::string local_mogru_tool =
+            mozc::FileUtil::JoinPath(home, ".local/lib/mogru/mogru_tool");
+        if (mozc::FileUtil::FileExists(local_mogru_tool).ok()) {
+          return local_mogru_tool;
+        }
         const std::string local_tool =
             mozc::FileUtil::JoinPath(home, ".local/lib/mogru/mozc_tool");
         if (mozc::FileUtil::FileExists(local_tool).ok()) {
           return local_tool;
         }
+      }
+      const std::string sys_mogru =
+          mozc::FileUtil::JoinPath(mozc::SystemUtil::GetServerDirectory(), "mogru_tool");
+      if (mozc::FileUtil::FileExists(sys_mogru).ok()) {
+        return sys_mogru;
       }
       return mozc::FileUtil::JoinPath(mozc::SystemUtil::GetServerDirectory(),
                                       "mozc_tool");

@@ -93,6 +93,10 @@ genrule(
         "//base:mozc_version_txt",
         "//data/images/win:product_icon.ico",
         "//data/installer:credits_en.html",
+        "@mogru_models//:chardata.bin",
+        "@mogru_models//:chardata_new.bin",
+        "@mogru_models//:grumodel.bin",
+        "@mogru_models//:grumodel_new.bin",
         "@qt_win//:bin/Qt6Core.dll",
         "@wix//:wix.exe",
     ] + select({
@@ -117,6 +121,7 @@ genrule(
         "--custom_action=$(location //win32/custom_action)",
         "--icon_path=$(location //data/images/win:product_icon.ico)",
         "--credit_file=$(location //data/installer:credits_en.html)",
+        "--gru_model_file=$(location @mogru_models//:grumodel.bin)",
         "--qt_core_dll=$(location @qt_win//:bin/Qt6Core.dll)",
         "--wxs_path=$(location " + _WXS_FILE + ")",
         "--wix_path=$(location @wix//:wix.exe)",
