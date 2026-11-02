@@ -56,9 +56,12 @@ jobs:
           mkdir -p package_linux/usr/lib/fcitx5
           cp -f src/bazel-bin/unix/fcitx5/fcitx5-mogru.so package_linux/usr/lib/fcitx5/
 
-          # GUI ツールをルート直下にコピー (mogru_tool および mozc_tool)
-          cp -f src/bazel-bin/gui/tool/mozc_tool package_linux/mozc_tool
+          # GUI ツールをルート直下にコピー (mogru_tool のみ配置し、mozc_tool は排除)
           cp -f src/bazel-bin/gui/tool/mozc_tool package_linux/mogru_tool
+          rm -f package_linux/mozc_tool
+          if [ -f package_linux/usr/lib/mogru/mozc_tool ]; then
+            mv -f package_linux/usr/lib/mogru/mozc_tool package_linux/usr/lib/mogru/mogru_tool
+          fi
 
           # モデルファイル
           cp -f models/*.bin package_linux/models/ 2>/dev/null || true

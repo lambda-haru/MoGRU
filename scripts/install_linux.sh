@@ -136,11 +136,10 @@ echo "[+] Installed fcitx5-mogru.so"
 
 # 3. Install GUI configuration tool
 if [ -n "$SOURCE_TOOL" ] && [ -f "$SOURCE_TOOL" ]; then
-  # Remove existing files/symlinks to avoid symlink overwriting issues
+  # Clean up existing tools and legacy mozc_tool to ensure mogru_tool is a clean standalone binary
   rm -f "$HOME/.local/lib/mogru/mogru_tool" "$HOME/.local/lib/mogru/mozc_tool"
   cp -f "$SOURCE_TOOL" "$HOME/.local/lib/mogru/mogru_tool"
   chmod 755 "$HOME/.local/lib/mogru/mogru_tool"
-  ln -sf "$HOME/.local/lib/mogru/mogru_tool" "$HOME/.local/lib/mogru/mozc_tool"
   echo "[+] Installed GUI tool: $HOME/.local/lib/mogru/mogru_tool"
 fi
 
