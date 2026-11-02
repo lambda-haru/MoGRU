@@ -75,45 +75,45 @@ const struct CompositionModeInfo {
   mozc::commands::CompositionMode mode;
 } kPropCompositionModes[] = {
     {
-        "mozc-gru-mode-direct",
-        "fcitx_mozc_direct",
+        "mogru-mode-direct",
+        "fcitx_mogru_direct",
         "A",
         N_("Direct"),
         mozc::commands::DIRECT,
     },
     {
-        "mozc-gru-mode-hiragana",
-        "fcitx_mozc_hiragana",
+        "mogru-mode-hiragana",
+        "fcitx_mogru_hiragana",
         "\xe3\x81\x82",  // Hiragana letter A in UTF-8.
         N_("Hiragana"),
         mozc::commands::HIRAGANA,
     },
     {
-        "mozc-gru-mode-katakana_full",
-        "fcitx_mozc_katakana_full",
+        "mogru-mode-katakana_full",
+        "fcitx_mogru_katakana_full",
         "\xe3\x82\xa2",  // Katakana letter A.
         N_("Full Katakana"),
         mozc::commands::FULL_KATAKANA,
     },
     {
 
-        "mozc-gru-mode-alpha_half",
-        "fcitx_mozc_alpha_half",
+        "mogru-mode-alpha_half",
+        "fcitx_mogru_alpha_half",
         "A",
         N_("Half ASCII"),
         mozc::commands::HALF_ASCII,
     },
     {
 
-        "mozc-gru-mode-alpha_full",
-        "fcitx_mozc_alpha_full",
+        "mogru-mode-alpha_full",
+        "fcitx_mogru_alpha_full",
         "\xef\xbc\xa1",  // Full width ASCII letter A.
         N_("Full ASCII"),
         mozc::commands::FULL_ASCII,
     },
     {
-        "mozc-gru-mode-katakana_half",
-        "fcitx_mozc_katakana_half",
+        "mogru-mode-katakana_half",
+        "fcitx_mogru_katakana_half",
         "\xef\xbd\xb1",  // Half width Katakana letter A.
         N_("Half Katakana"),
         mozc::commands::HALF_KATAKANA,
@@ -147,7 +147,7 @@ static_assert(mozc::commands::NUM_OF_COMPOSITIONS == kNumCompositionModes,
 
 Instance* Init(Instance* instance) {
   int argc = 1;
-  char argv0[] = "fcitx_mozc";
+  char argv0[] = "fcitx_mogru";
   char* _argv[] = {argv0};
   char** argv = _argv;
   mozc::InitMozc(argv[0], &argc, &argv);
@@ -168,12 +168,12 @@ MozcEngine::MozcEngine(Instance* instance, std::string addonName)
     modeActions_.push_back(std::make_unique<MozcModeSubAction>(this, command));
   }
 
-  instance_->inputContextManager().registerProperty("mozcGruState", &factory_);
-  instance_->userInterfaceManager().registerAction("mozc-gru-tool",
+  instance_->inputContextManager().registerProperty("mogruState", &factory_);
+  instance_->userInterfaceManager().registerAction("mogru-tool",
                                                    &toolAction_);
   toolAction_.setShortText(_("MoGRU Settings"));
   toolAction_.setLongText(_("MoGRU Settings"));
-  toolAction_.setIcon("fcitx_mozc_tool");
+  toolAction_.setIcon("fcitx_mogru_tool");
 
   int i = 0;
   for (auto& modeAction : modeActions_) {
@@ -184,7 +184,7 @@ MozcEngine::MozcEngine(Instance* instance, std::string addonName)
   }
 
   separatorAction_.setSeparator(true);
-  instance_->userInterfaceManager().registerAction("mozc-gru-separator",
+  instance_->userInterfaceManager().registerAction("mogru-separator",
                                                    &separatorAction_);
 
   SemanticVersion version;
@@ -197,30 +197,30 @@ MozcEngine::MozcEngine(Instance* instance, std::string addonName)
     toolMenu_.addAction(&separatorAction_);
   }
 
-  instance_->userInterfaceManager().registerAction("mozc-gru-tool-config",
+  instance_->userInterfaceManager().registerAction("mogru-tool-config",
                                                    &configToolAction_);
   configToolAction_.setShortText(_("Configuration Tool"));
-  configToolAction_.setIcon("fcitx_mozc_properties");
+  configToolAction_.setIcon("fcitx_mogru_properties");
   configToolAction_.connect<SimpleAction::Activated>([](InputContext*) {
     mozc::Process::SpawnMozcProcess("mozc_tool", "--mode=config_dialog");
   });
 
-  instance_->userInterfaceManager().registerAction("mozc-gru-tool-dict",
+  instance_->userInterfaceManager().registerAction("mogru-tool-dict",
                                                    &dictionaryToolAction_);
   dictionaryToolAction_.setShortText(_("Dictionary Tool"));
-  dictionaryToolAction_.setIcon("fcitx_mozc_dictionary");
+  dictionaryToolAction_.setIcon("fcitx_mogru_dictionary");
   dictionaryToolAction_.connect<SimpleAction::Activated>([](InputContext*) {
     mozc::Process::SpawnMozcProcess("mozc_tool", "--mode=dictionary_tool");
   });
 
-  instance_->userInterfaceManager().registerAction("mozc-gru-tool-add",
+  instance_->userInterfaceManager().registerAction("mogru-tool-add",
                                                    &addWordAction_);
   addWordAction_.setShortText(_("Add Word"));
   addWordAction_.connect<SimpleAction::Activated>([](InputContext*) {
     mozc::Process::SpawnMozcProcess("mozc_tool", "--mode=word_register_dialog");
   });
 
-  instance_->userInterfaceManager().registerAction("mozc-gru-tool-about",
+  instance_->userInterfaceManager().registerAction("mogru-tool-about",
                                                    &aboutAction_);
   aboutAction_.setShortText(_("About MoGRU"));
   aboutAction_.connect<SimpleAction::Activated>([](InputContext*) {

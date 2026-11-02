@@ -54,7 +54,7 @@ jobs:
           mkdir -p package_linux/icons/hicolor/128x128/apps
           mkdir -p package_linux/icons/hicolor/48x48/apps
           mkdir -p package_linux/icons/hicolor/32x32/apps
-          mkdir -p package_linux/icons/mozc
+          mkdir -p package_linux/icons/mogru
           mkdir -p package_linux/models
 
           # 既存 package (旧 mozc.zip) の全成果物を展開
@@ -65,43 +65,37 @@ jobs:
           mkdir -p package_linux/usr/lib/fcitx5
           cp -f src/bazel-bin/unix/fcitx5/fcitx5-mogru.so package_linux/usr/lib/fcitx5/
 
-          # mozc_tool をルート直下にコピー
-          cp -f src/bazel-bin/gui/tool/mozc_tool package_linux/
+          # GUI ツールをルート直下にコピー (mogru_tool および mozc_tool)
+          cp -f src/bazel-bin/gui/tool/mozc_tool package_linux/mozc_tool
+          cp -f src/bazel-bin/gui/tool/mozc_tool package_linux/mogru_tool
 
           # モデルファイル
           cp -f models/*.bin package_linux/models/ 2>/dev/null || true
           cp -f models/*.ini package_linux/models/ 2>/dev/null || true
 
           # アイコンアセット（128x128）
-          cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/hicolor/128x128/apps/fcitx_mozc.png
-          cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/hicolor/128x128/apps/fcitx-mozc.png
           cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/hicolor/128x128/apps/fcitx_mogru.png
           cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/hicolor/128x128/apps/mogru.png
+          cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/mogru/product_icon_32bpp-128.png
 
           # アイコンアセット（32x32）
-          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/fcitx_mozc.png
-          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/fcitx-mozc.png
           cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/fcitx_mogru.png
           cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/mogru.png
-          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/org.fcitx.Fcitx5.fcitx_mozc.png
+          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/hicolor/32x32/apps/org.fcitx.Fcitx5.Addon.MoGRU.png
+          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/mogru/ime_product_icon_opensource-32.png
 
           # アイコンアセット（48x48）
           for mode in direct hiragana katakana_full katakana_half alpha_full alpha_half; do
             if [ -f "src/data/images/unix/48x48/${mode}.png" ]; then
-              cp -f "src/data/images/unix/48x48/${mode}.png" "package_linux/icons/hicolor/48x48/apps/fcitx_mozc_${mode}.png"
               cp -f "src/data/images/unix/48x48/${mode}.png" "package_linux/icons/hicolor/48x48/apps/fcitx_mogru_${mode}.png"
             fi
           done
 
           # ツールメニュー用アイコン（48x48）
-          cp -f src/data/images/unix/ui-tool.png package_linux/icons/hicolor/48x48/apps/fcitx_mozc_tool.png
-          cp -f src/data/images/unix/ui-properties.png package_linux/icons/hicolor/48x48/apps/fcitx_mozc_properties.png
-          cp -f src/data/images/unix/ui-dictionary.png package_linux/icons/hicolor/48x48/apps/fcitx_mozc_dictionary.png
-
-          # mozc 互換アイコン
-          cp -f src/data/images/product_icon_32bpp-128.png package_linux/icons/mozc/product_icon_32bpp-128.png
-          cp -f src/data/images/unix/ime_product_icon_opensource-32.png package_linux/icons/mozc/ime_product_icon_opensource-32.png
-          cp -f src/data/images/unix/ui-*.png package_linux/icons/mozc/ 2>/dev/null || true
+          cp -f src/data/images/unix/ui-tool.png package_linux/icons/hicolor/48x48/apps/fcitx_mogru_tool.png
+          cp -f src/data/images/unix/ui-properties.png package_linux/icons/hicolor/48x48/apps/fcitx_mogru_properties.png
+          cp -f src/data/images/unix/ui-dictionary.png package_linux/icons/hicolor/48x48/apps/fcitx_mogru_dictionary.png
+          cp -f src/data/images/unix/ui-*.png package_linux/icons/mogru/ 2>/dev/null || true
 
           # スタンドアロンインストーラスクリプトの同梱
           cp -f scripts/install_linux.sh package_linux/install.sh
