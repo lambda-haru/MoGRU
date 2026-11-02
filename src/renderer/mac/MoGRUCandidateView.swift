@@ -1,8 +1,3 @@
-// Standalone Xcode Preview copy of MoGRU/src/renderer/mac/MoGRUCandidateView.swift.
-// Copy view changes back to the renderer source after trying them here.
-// Candidate layout adapted from nagi (https://github.com/nvalleo/nagi),
-// licensed under Apache License 2.0; see Nagi-LICENSE.txt.
-
 import AppKit
 import Observation
 import SwiftUI
@@ -127,21 +122,10 @@ public final class MoGRUCandidateView: NSView {
     }
 }
 
-private extension HorizontalAlignment {
-    struct CandidateTextLeading: AlignmentID {
-        static func defaultValue(in dimensions: ViewDimensions) -> CGFloat {
-            dimensions[.leading]
-        }
-    }
-    
-    static let candidateTextLeading = HorizontalAlignment(CandidateTextLeading.self)
-}
-
 /// Nagi's candidate layout adapted to MoGRU's renderer data.
 private struct CandidateListView: View {
     let state: CandidateListState
     let selectCandidate: (Int32) -> Void
-    @Namespace private var focusNamespace
     
     private static let animationEnabled = true
     private static let animationDuration = 0.1
@@ -170,6 +154,10 @@ private struct CandidateListView: View {
         )
         return Array(candidates[start..<(start + Self.maxRows)])
     }
+
+    private var focusedVisiblePosition: Int? {
+        visibleCandidates.firstIndex { $0.index == state.focusedIndex }
+    }
     
     /// Finds the visible row for a candidate in AppKit's bottom-up coordinates.
     func frame(forCandidateAt index: Int, in size: NSSize) -> NSRect? {
@@ -193,20 +181,64 @@ private struct CandidateListView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(visibleCandidates.enumerated()), id: \.element.id) { position, candidate in
-                VStack(alignment: .candidateTextLeading, spacing: 0) {
+            Grid(alignment: .leading, verticalSpacing: 0) {
+                ForEach(Array(visibleCandidates.enumerated()), id: \.element.id) { position, candidate in
                     if position > 0 {
-                        Divider()
-                            .frame(height: Self.dividerHeight)
-                            .alignmentGuide(.candidateTextLeading) { dimensions in
-                                dimensions[.leading]
-                            }
-                            .opacity(
-                                candidate.index == state.focusedIndex ||
-                                visibleCandidates[position - 1].index == state.focusedIndex ? 0 : 0.5
-                            )
+                        GridRow {
+                            Color.clear
+                                .frame(height: Self.dividerHeight)
+                                .gridCellUnsizedAxes([.horizontal, .vertical])
+                            Divider()
+                                .frame(height: Self.dividerHeight)
+                                .gridCellColumns(2)
+                                .gridCellUnsizedAxes(.horizontal)
+                                .opacity(
+                                    candidate.index == state.focusedIndex ||
+                                    visibleCandidates[position - 1].index == state.focusedIndex ? 0 : 0.5
+                                )
+                        }
                     }
-                    candidateRow(candidate)
+
+                    GridRow(alignment: .center) {
+                        Text(candidate.shortcut.isEmpty ? String(candidate.index + 1) : candidate.shortcut)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Text(candidate.text)
+                            .font(.system(size: Self.fontSize))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                        
+                        if candidate.hasSubCandidates {
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.secondary)
+                                    .rotationEffect(.degrees(candidate.index == state.focusedIndex ? 90 : 0))
+                                    .padding(.trailing, 5)
+                                    .gridCellAnchor(.trailing)
+                            
+                        } else {
+                            Text(candidate.descriptionText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                    }
+                    .frame(height: Self.rowHeight)
+                    .contentShape(Rectangle())
+                    .onTapGesture { selectCandidate(candidate.candidateID) }
+                }
+            }
+            .padding(.horizontal, 8)
+            .background(alignment: .topLeading) {
+                if let focusedVisiblePosition {
+                    RoundedRectangle(cornerRadius: Self.focusCornerRadius)
+                        .fill(Color.accentColor)
+                        .frame(height: Self.rowHeight)
+                        .offset(
+                            y: CGFloat(focusedVisiblePosition) *
+                                (Self.rowHeight + Self.dividerHeight)
+                        )
                 }
             }
             if Self.footerEnabled && !state.footer.isEmpty {
@@ -220,47 +252,10 @@ private struct CandidateListView: View {
         .padding(4)
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .fixedSize(horizontal: true, vertical: false)
+        .fixedSize(horizontal: false, vertical: true)
         .animation(
             Self.animationEnabled ? .easeInOut(duration: Self.animationDuration) : nil,
             value: state.focusedIndex
         )
-    }
-    
-    private func candidateRow(_ candidate: MoGRUCandidateItem) -> some View {
-        HStack(spacing: 6) {
-            Text(candidate.shortcut.isEmpty ? String(candidate.index + 1) : candidate.shortcut)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(candidate.text)
-                .font(.system(size: Self.fontSize))
-                .alignmentGuide(.candidateTextLeading) { dimensions in
-                    dimensions[.leading]
-                }
-            if candidate.hasSubCandidates {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            if !candidate.descriptionText.isEmpty {
-                Text(candidate.descriptionText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 8)
-        .frame(minHeight: Self.rowHeight)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            if candidate.index == state.focusedIndex {
-                RoundedRectangle(cornerRadius: Self.focusCornerRadius)
-                    .fill(Color.accentColor)
-                    .matchedGeometryEffect(id: "focus", in: focusNamespace)
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { selectCandidate(candidate.candidateID) }
-        .accessibilityLabel("\(candidate.index + 1). \(candidate.text)")
     }
 }
