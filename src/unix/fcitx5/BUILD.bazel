@@ -57,6 +57,7 @@ mozc_cc_library(
     ],
     deps = [
         ":mozc_client_interface",
+        "//base:config_file_stream",
         "//base:vlog",
         "//config:config_handler",
         "//data_manager/oss:oss_data_manager",

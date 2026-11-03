@@ -381,9 +381,11 @@ bool MozcResponseParser::ParseResponse(const mozc::commands::Output& response,
   // We should check the mode field first since the response for a
   // SWITCH_COMPOSITION_MODE request only contains mode and id fields.
   if (response.has_mode()) {
+    const std::string im = engine_->instance()->inputMethod(ic);
+    const bool is_active_im =
+        (im == "mozc" || im == "mogru" || im == "mozc-gru");
     mozc_state->SetCompositionMode(
-        response.mode(), !engine_->deactivating() &&
-                             engine_->instance()->inputMethod(ic) == "mozc");
+        response.mode(), !engine_->deactivating() && is_active_im);
   }
 
   if (!response.consumed()) {

@@ -46,6 +46,7 @@
 #include "absl/strings/str_format.h"
 #include "base/init_mozc.h"
 #include "base/process.h"
+#include "config/config_handler.h"
 #include "config/gru_config.h"
 #include "protocol/commands.pb.h"
 #include "unix/fcitx5/i18nwrapper.h"
@@ -307,6 +308,7 @@ void MozcEngine::reloadConfig() {
   readAsIni(config_, GetConfigPath());
   safeSaveAsIni(config_, GetConfigPath());
   SyncGruFlags();
+  mozc::config::ConfigHandler::Reload();
   ResetClientPool();
 }
 void MozcEngine::activate(const fcitx::InputMethodEntry& /*entry*/,

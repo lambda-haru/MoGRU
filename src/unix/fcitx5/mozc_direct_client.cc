@@ -1,6 +1,7 @@
 #include "unix/fcitx5/mozc_direct_client.h"
 
 #include <Fcitx5/Utils/fcitx-utils/macros.h>
+#include <sys/stat.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include "absl/flags/flag.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "base/config_file_stream.h"
 #include "config/config_handler.h"
 #include "data_manager/oss/oss_data_manager.h"
 #include "engine/engine.h"
@@ -46,6 +48,26 @@ mozc::SessionHandler* GetSessionHandler() {
   static std::unique_ptr<mozc::SessionHandler> g_session_handler =
       CreateSessionHandler();
   return g_session_handler.get();
+}
+
+bool MaybeReloadConfig() {
+  static uint64_t last_mtime = 0;
+  const std::string config_path =
+      mozc::ConfigFileStream::GetFileName("user://config1.db");
+  struct stat st;
+  if (::stat(config_path.c_str(), &st) == 0) {
+    const uint64_t mtime = static_cast<uint64_t>(st.st_mtime);
+    if (last_mtime != 0 && mtime != last_mtime) {
+      last_mtime = mtime;
+      mozc::config::ConfigHandler::Reload();
+      mozc::commands::Command reload_cmd;
+      reload_cmd.mutable_input()->set_type(mozc::commands::Input::RELOAD);
+      GetSessionHandler()->EvalCommand(&reload_cmd);
+      return true;
+    }
+    last_mtime = mtime;
+  }
+  return false;
 }
 
 }  // namespace
@@ -124,6 +146,10 @@ bool MozcDirectClient::SendCommandWithContext(
 
 bool MozcDirectClient::EnsureCallCommand(mozc::commands::Input* input,
                                          mozc::commands::Output* output) {
+  if (MaybeReloadConfig()) {
+    direct_mode_keys_ = mozc::KeyInfoUtil::ExtractSortedDirectModeKeys(
+        *mozc::config::ConfigHandler::GetSharedConfig());
+  }
   if (!EnsureSession()) {
     LOG(ERROR) << "EnsureSession failed";
     return false;
@@ -190,6 +216,10 @@ bool MozcDirectClient::IsDirectModeCommand(
 }
 
 bool MozcDirectClient::GetConfig(mozc::config::Config* config) {
+  if (MaybeReloadConfig()) {
+    direct_mode_keys_ = mozc::KeyInfoUtil::ExtractSortedDirectModeKeys(
+        *mozc::config::ConfigHandler::GetSharedConfig());
+  }
   mozc::commands::Input input;
   InitInput(&input);
   input.set_type(mozc::commands::Input::GET_CONFIG);
