@@ -117,9 +117,8 @@ EnglishFallbackRewriter::EnglishFallbackRewriter(
       dictionary_(std::move(dictionary)) {}
 
 int EnglishFallbackRewriter::capability(const ConversionRequest& request) const {
-  const auto config = GruConfigManager::LoadConfig();
-  if (config.enable_live_conversion_english_fallback) {
-    return CONVERSION | PREDICTION | SUGGESTION;
+  if (request.config().preedit_method() == config::Config::KANA) {
+    return NOT_AVAILABLE;
   }
   return CONVERSION;
 }
@@ -128,43 +127,18 @@ void EnglishFallbackRewriter::AddEnglishCandidates(
     absl::string_view word, absl::string_view key, Segment* segment) const {
   const std::string lower = absl::AsciiStrToLower(word);
 
-  std::string capitalized = lower;
-  Util::CapitalizeString(&capitalized);
-
-  const std::string upper = absl::AsciiStrToUpper(word);
-  const std::string fullwidth = japanese_util::HalfWidthToFullWidth(lower);
-
-  struct CandidateVariant {
-    std::string value;
-    int32_t cost;
-  };
-
-  std::vector<CandidateVariant> variants;
-  variants.push_back({lower, 6000});
-  if (capitalized != lower) {
-    variants.push_back({capitalized, 6100});
-  }
-  if (upper != lower && upper != capitalized) {
-    variants.push_back({upper, 6200});
-  }
-  if (!fullwidth.empty() && fullwidth != lower) {
-    variants.push_back({fullwidth, 6300});
-  }
-
-  for (const auto& variant : variants) {
-    converter::Candidate* cand = segment->add_candidate();
-    cand->key = std::string(key);
-    cand->content_key = std::string(key);
-    cand->value = variant.value;
-    cand->content_value = variant.value;
-    cand->cost = variant.cost;
-    cand->wcost = variant.cost - 1000;
-    cand->structure_cost = 1000;
-    cand->lid = unknown_id_;
-    cand->rid = unknown_id_;
-    cand->converted_segment_count = 1;
-    cand->attributes = converter::Attribute::NO_VARIANTS_EXPANSION;
-  }
+  converter::Candidate* cand = segment->add_candidate();
+  cand->key = std::string(key);
+  cand->content_key = std::string(key);
+  cand->value = lower;
+  cand->content_value = lower;
+  cand->cost = 6000;
+  cand->wcost = 5000;
+  cand->structure_cost = 1000;
+  cand->lid = unknown_id_;
+  cand->rid = unknown_id_;
+  cand->converted_segment_count = 1;
+  cand->attributes = converter::Attribute::NO_VARIANTS_EXPANSION;
 }
 
 bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
@@ -174,9 +148,17 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
     return false;
   }
 
-  const bool is_conversion =
-      (request.request_type() == ConversionRequest::CONVERSION);
-  if (!is_conversion && !config.enable_live_conversion_english_fallback) {
+  if (request.request_type() != ConversionRequest::CONVERSION) {
+    return false;
+  }
+  if (request.config().preedit_method() == config::Config::KANA) {
+    return false;
+  }
+
+  const bool is_live_conversion =
+      (request.options().composer_key_selection ==
+       ConversionRequest::PREDICTION_KEY);
+  if (is_live_conversion && !config.enable_live_conversion_english_fallback) {
     return false;
   }
 

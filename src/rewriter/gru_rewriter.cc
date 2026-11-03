@@ -149,11 +149,14 @@ float ScoreCandidateWithContext(const gruscorer::GruModel& model,
                                 const Segment::Candidate& cand,
                                 const gruscorer::GruContext& context,
                                 const GruPenaltyConfig& config) {
+  if (IsAlphabetCandidate(cand)) {
+    // English words are kept in lower case and do not need to be passed
+    // through the GRU model.
+    return 0.0f;
+  }
   float score =
       model.ScoreStringWithContext(indexer, cand.value, context, true);
-  if (IsAlphabetCandidate(cand)) {
-    score *= static_cast<float>(config.alphabet_multiplier);
-  } else if (IsKatakanaCandidate(cand)) {
+  if (IsKatakanaCandidate(cand)) {
     score *= static_cast<float>(config.katakana_multiplier);
   } else if (IsHiraganaCandidate(cand)) {
     const size_t char_len = Util::CharsLen(cand.value);
@@ -686,6 +689,9 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
     if (seg->candidates_size() <= 1) {
       if (seg->candidates_size() == 1 && show_score) {
         auto* cand = seg->mutable_candidate(0);
+        if (IsAlphabetCandidate(*cand)) {
+          return false;
+        }
         const bool is_emoji = IsCandidateEmoji(*indexer_, *cand);
         const float s =
             ScoreCandidateWithContext(*model_, *indexer_, *cand, init_context,

@@ -149,14 +149,11 @@ TEST_F(EnglishFallbackRewriterTest, HighCostFallbackMergesSegments) {
 
   const Segment& merged_seg = segments.conversion_segment(0);
   EXPECT_EQ(merged_seg.key(), "めｒげ");
-  ASSERT_GE(merged_seg.candidates_size(), 3);
+  ASSERT_EQ(merged_seg.candidates_size(), 1);
   EXPECT_EQ(merged_seg.candidate(0).value, "merge");
   EXPECT_EQ(merged_seg.candidate(0).cost, 6000);
   EXPECT_EQ(merged_seg.candidate(0).lid, pos_matcher_->GetUnknownId());
   EXPECT_EQ(merged_seg.candidate(0).rid, pos_matcher_->GetUnknownId());
-
-  EXPECT_EQ(merged_seg.candidate(1).value, "Merge");
-  EXPECT_EQ(merged_seg.candidate(2).value, "MERGE");
 
   const Segment& tail_seg = segments.conversion_segment(1);
   EXPECT_EQ(tail_seg.key(), "する");
@@ -306,19 +303,22 @@ TEST_F(EnglishFallbackRewriterTest, LiveConversionToggle) {
   seg3->set_key("する");
   seg3->add_candidate()->cost = 4000;
 
-  const ConversionRequest suggestion_request =
+  ConversionRequest::Options live_options;
+  live_options.composer_key_selection = ConversionRequest::PREDICTION_KEY;
+  const ConversionRequest live_request =
       ConversionRequestBuilder()
           .SetComposer(composer)
-          .SetRequestType(ConversionRequest::SUGGESTION)
+          .SetOptions(std::move(live_options))
+          .SetRequestType(ConversionRequest::CONVERSION)
           .Build();
 
-  EXPECT_FALSE(rewriter.Rewrite(suggestion_request, &segments));
+  EXPECT_FALSE(rewriter.Rewrite(live_request, &segments));
 
   // 2. Live conversion fallback enabled
   config.enable_live_conversion_english_fallback = true;
   GruConfigManager::SaveConfig(config);
 
-  EXPECT_TRUE(rewriter.Rewrite(suggestion_request, &segments));
+  EXPECT_TRUE(rewriter.Rewrite(live_request, &segments));
   EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "merge");
 }
 
