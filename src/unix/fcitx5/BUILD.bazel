@@ -175,15 +175,15 @@ mozc_cc_binary(
     srcs = [
         "mozc_engine_factory.cc",
     ],
-    copts = ["-fvisibility=hidden"],
     additional_linker_inputs = [":fcitx5_mogru.lds"],
+    copts = ["-fvisibility=hidden"],
     linkopts = mozc_select(
+        default = [],
         linux = [
             "-Wl,--version-script=$(location :fcitx5_mogru.lds)",
             "-Wl,-Bsymbolic",
             "-Wl,-Bsymbolic-functions",
         ],
-        default = [],
     ),
     linkshared = 1,
     linkstatic = 1,
@@ -197,15 +197,15 @@ mozc_cc_binary(
     srcs = [
         "mozc_engine_factory.cc",
     ],
-    copts = ["-fvisibility=hidden"],
     additional_linker_inputs = [":fcitx5_mogru.lds"],
+    copts = ["-fvisibility=hidden"],
     linkopts = mozc_select(
+        default = [],
         linux = [
             "-Wl,--version-script=$(location :fcitx5_mogru.lds)",
             "-Wl,-Bsymbolic",
             "-Wl,-Bsymbolic-functions",
         ],
-        default = [],
     ),
     linkshared = 1,
     linkstatic = 1,
@@ -219,15 +219,15 @@ mozc_cc_binary(
     srcs = [
         "mozc_engine_factory.cc",
     ],
-    copts = ["-fvisibility=hidden"],
     additional_linker_inputs = [":fcitx5_mogru.lds"],
+    copts = ["-fvisibility=hidden"],
     linkopts = mozc_select(
+        default = [],
         linux = [
             "-Wl,--version-script=$(location :fcitx5_mogru.lds)",
             "-Wl,-Bsymbolic",
             "-Wl,-Bsymbolic-functions",
         ],
-        default = [],
     ),
     linkshared = 1,
     linkstatic = 1,
