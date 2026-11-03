@@ -56,6 +56,7 @@
 #include "base/protobuf/text_format.h"
 #include "base/system_util.h"
 #include "composer/composer.h"
+#include "composer/table.h"
 #include "config/config_handler.h"
 #include "converter/attribute.h"
 #include "converter/candidate.h"
@@ -275,7 +276,10 @@ class ConverterMain {
         request_(std::move(request)),
         config_(std::move(config)),
         converter_(engine_->GetConverter()),
-        composer_(request_, config_) {}
+        table_(std::make_shared<composer::Table>()),
+        composer_(table_, request_, config_) {
+    table_->InitializeWithRequestAndConfig(request_, config_);
+  }
 
   void LoadSupplementalModel(std::string path);
   void RunLoop();
@@ -289,6 +293,7 @@ class ConverterMain {
   config::Config config_;
   std::shared_ptr<const ConverterInterface> converter_;
   Segments segments_;
+  std::shared_ptr<composer::Table> table_;
   composer::Composer composer_;
 };
 
@@ -335,7 +340,25 @@ bool ConverterMain::ExecCommand(absl::string_view line, Segments* segments) {
   };
 
   absl::string_view func = fields[0];
-  if (func == "startconversion" || func == "start" || func == "s") {
+  if (func == "rawstart" || func == "rs") {
+    options.request_type = ConversionRequest::CONVERSION;
+    options.create_partial_candidates = false;
+    CHECK_FIELDS_LENGTH(2);
+    composer_.Reset();
+    for (char c : fields[1]) {
+      commands::KeyEvent key;
+      key.set_key_code(c);
+      composer_.InsertCharacterKeyEvent(key);
+    }
+    const ConversionRequest conversion_request =
+        ConversionRequestBuilder()
+            .SetComposer(composer_)
+            .SetRequestView(request_)
+            .SetConfigView(config_)
+            .SetOptions(std::move(options))
+            .Build();
+    return converter_->StartConversion(conversion_request, segments);
+  } else if (func == "startconversion" || func == "start" || func == "s") {
     options.request_type = ConversionRequest::CONVERSION;
     options.create_partial_candidates = false;
     CHECK_FIELDS_LENGTH(2);

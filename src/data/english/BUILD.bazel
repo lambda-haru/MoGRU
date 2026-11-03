@@ -1,0 +1,6 @@
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "google_10000_english",
+    srcs = ["google-10000-english.txt"],
+)

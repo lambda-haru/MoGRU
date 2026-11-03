@@ -46,6 +46,7 @@
 #include "rewriter/dice_rewriter.h"
 #include "rewriter/emoji_rewriter.h"
 #include "rewriter/emoticon_rewriter.h"
+#include "rewriter/english_fallback_rewriter.h"
 #include "rewriter/english_variants_rewriter.h"
 #include "rewriter/environmental_filter_rewriter.h"
 #include "rewriter/focus_candidate_rewriter.h"
@@ -171,6 +172,7 @@ Rewriter::Rewriter(const engine::Modules& modules,
   AddRewriter(std::make_unique<ZipcodeRewriter>(pos_matcher));
   AddRewriter(std::make_unique<DiceRewriter>());
   AddRewriter(std::make_unique<SmallLetterRewriter>());
+  AddRewriter(std::make_unique<EnglishFallbackRewriter>(pos_matcher));
   AddRewriter(std::make_unique<GruRewriter>(immutable_converter));
 
   if (absl::GetFlag(FLAGS_use_history_rewriter)) {

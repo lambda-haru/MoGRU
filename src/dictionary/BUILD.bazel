@@ -726,3 +726,32 @@ run_binary(
         "//dictionary:__subpackages__",
     ],
 )
+
+
+mozc_cc_library(
+    name = "english_dictionary",
+    srcs = ["english_dictionary.cc"],
+    hdrs = ["english_dictionary.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//base:util",
+        "//base/container:trie",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+mozc_cc_test(
+    name = "english_dictionary_test",
+    size = "small",
+    srcs = ["english_dictionary_test.cc"],
+    data = [
+        "//data/english:google_10000_english",
+    ],
+    deps = [
+        ":english_dictionary",
+        "//base:file_util",
+        "//testing:gunit_main",
+        "//testing:mozctest",
+    ],
+)
