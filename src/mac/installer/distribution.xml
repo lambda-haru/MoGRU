@@ -33,7 +33,7 @@
 <installer-gui-script minSpecVersion="1">
     <title>MoGRU</title>
     <allowed-os-versions>
-        <os-version min="12.0"/>
+        <os-version min="14.0"/>
     </allowed-os-versions>
     <pkg-ref id="org.mogru.pkg.JapaneseInput"/>
     <domains enable_localSystem="true"/>
