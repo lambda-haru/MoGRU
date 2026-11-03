@@ -927,6 +927,17 @@ void ConfigDialog::SetupMogruUi() {
     gruResegmentThresholdLabel->setText(
         QString::fromUtf8("再分割トリガー閾値 (平均NLL × α):"));
 
+    gruEnglishFallbackGroupBox->setTitle(
+        QString::fromUtf8("英語自動フォールバック (高コスト未知語の英単語置換)"));
+    enableEnglishFallbackCheckBox->setText(
+        QString::fromUtf8("高コストセグメントの英語自動フォールバックを有効にする"));
+    enableLiveConversionEnglishFallbackCheckBox->setText(
+        QString::fromUtf8("ライブ変換中にも英語自動フォールバックを有効にする"));
+    englishFallbackCostThresholdLabel->setText(
+        QString::fromUtf8("フォールバック発動コスト閾値 (english_fallback_cost_threshold):"));
+    englishFallbackMinWordLengthLabel->setText(
+        QString::fromUtf8("対象最小英単語長 (english_fallback_min_word_length):"));
+
     gruPenaltyGroupBox->setTitle(
         QString::fromUtf8("文字種ペナルティ設定 (gru_config.ini)"));
     gruKatakanaMultiplierLabel->setText(
@@ -974,6 +985,13 @@ void ConfigDialog::SetupMogruUi() {
       config::GruConfigManager::GetDefaultDataFilePath("chardata.bin").c_str()));
   gruUserModelPathLineEdit->setPlaceholderText(QString::fromUtf8(
       config::GruConfigManager::ResolveUserModelFilePath("").c_str()));
+
+  QObject::connect(enableEnglishFallbackCheckBox, &QCheckBox::toggled,
+                   [this](bool checked) {
+                     enableLiveConversionEnglishFallbackCheckBox->setEnabled(checked);
+                     englishFallbackCostThresholdSpinBox->setEnabled(checked);
+                     englishFallbackMinWordLengthSpinBox->setEnabled(checked);
+                   });
 }
 
 void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
@@ -1007,6 +1025,18 @@ void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
   gruHiraganaLengthPowerSpinBox->setValue(gru_config.hiragana_length_power);
   gruAlphabetMultiplierSpinBox->setValue(gru_config.alphabet_multiplier);
   gruEmojiPenaltySpinBox->setValue(gru_config.emoji_penalty);
+
+  enableEnglishFallbackCheckBox->setChecked(gru_config.enable_english_fallback);
+  enableLiveConversionEnglishFallbackCheckBox->setChecked(
+      gru_config.enable_live_conversion_english_fallback);
+  englishFallbackCostThresholdSpinBox->setValue(
+      gru_config.english_fallback_cost_threshold);
+  englishFallbackMinWordLengthSpinBox->setValue(
+      gru_config.english_fallback_min_word_length);
+  const bool fallback_enabled = gru_config.enable_english_fallback;
+  enableLiveConversionEnglishFallbackCheckBox->setEnabled(fallback_enabled);
+  englishFallbackCostThresholdSpinBox->setEnabled(fallback_enabled);
+  englishFallbackMinWordLengthSpinBox->setEnabled(fallback_enabled);
 
   enableGruOnlineLearningCheckBox->setChecked(
       gru_config.enable_online_learning);
@@ -1056,6 +1086,14 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
   cfg.hiragana_length_power = gruHiraganaLengthPowerSpinBox->value();
   cfg.alphabet_multiplier = gruAlphabetMultiplierSpinBox->value();
   cfg.emoji_penalty = gruEmojiPenaltySpinBox->value();
+
+  cfg.enable_english_fallback = enableEnglishFallbackCheckBox->isChecked();
+  cfg.enable_live_conversion_english_fallback =
+      enableLiveConversionEnglishFallbackCheckBox->isChecked();
+  cfg.english_fallback_cost_threshold =
+      englishFallbackCostThresholdSpinBox->value();
+  cfg.english_fallback_min_word_length =
+      englishFallbackMinWordLengthSpinBox->value();
 
   cfg.enable_online_learning = enableGruOnlineLearningCheckBox->isChecked();
   cfg.online_learning_mode =
