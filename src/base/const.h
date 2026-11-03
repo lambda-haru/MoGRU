@@ -98,31 +98,31 @@ inline constexpr wchar_t kMozcRegKey[] =
 inline constexpr wchar_t kElevatedProcessDisabledKey[] =
     L"Software\\Policies\\Google\\Google Japanese Input\\Preferences";
 #else   // !GOOGLE_JAPANESE_INPUT_BUILD
-inline constexpr char kCompanyNameInEnglish[] = "Mozc Project";
+inline constexpr char kCompanyNameInEnglish[] = "MoGRU Project";
 // Use Local prefix so that modules running under AppContainer can access.
-inline constexpr char kEventPathPrefix[] = "Local\\Mozc.event.";
-inline constexpr char kMutexPathPrefix[] = "Local\\Mozc.mutex.";
-inline constexpr char kMozcServerName[] = "mozc_server.exe";
-inline constexpr char kIMEFile[] = "mozc_ja.ime";
-inline constexpr char kMozcTIP32[] = "mozc_tip32.dll";
-inline constexpr char kMozcTIP64[] = "mozc_tip64.dll";
-inline constexpr char kMozcTIP64X[] = "mozc_tip64x.dll";
-inline constexpr char kMozcBroker[] = "mozc_broker.exe";
-inline constexpr char kMozcTool[] = "mozc_tool.exe";
-inline constexpr char kMozcRenderer[] = "mozc_renderer.exe";
-inline constexpr char kMozcCacheServiceExeName[] = "mozc_cache_service.exe";
-inline constexpr wchar_t kMozcCacheServiceName[] = L"MozcCacheService";
+inline constexpr char kEventPathPrefix[] = "Local\\MoGRU.event.";
+inline constexpr char kMutexPathPrefix[] = "Local\\MoGRU.mutex.";
+inline constexpr char kMozcServerName[] = "mogru_server.exe";
+inline constexpr char kIMEFile[] = "mogru_ja.ime";
+inline constexpr char kMozcTIP32[] = "mogru_tip32.dll";
+inline constexpr char kMozcTIP64[] = "mogru_tip64.dll";
+inline constexpr char kMozcTIP64X[] = "mogru_tip64x.dll";
+inline constexpr char kMozcBroker[] = "mogru_broker.exe";
+inline constexpr char kMozcTool[] = "mogru_tool.exe";
+inline constexpr char kMozcRenderer[] = "mogru_renderer.exe";
+inline constexpr char kMozcCacheServiceExeName[] = "mogru_cache_service.exe";
+inline constexpr wchar_t kMozcCacheServiceName[] = L"MoGRUCacheService";
 inline constexpr wchar_t kMessageReceiverMessageName[] =
-    L"mozc.renderer.message";
-inline constexpr wchar_t kMessageReceiverClassName[] = L"mozc.renderer.window";
-inline constexpr wchar_t kCandidateWindowClassName[] = L"MozcCandidateWindow";
+    L"mogru.renderer.message";
+inline constexpr wchar_t kMessageReceiverClassName[] = L"mogru.renderer.window";
+inline constexpr wchar_t kCandidateWindowClassName[] = L"MoGRUCandidateWindow";
 inline constexpr wchar_t kCompositionWindowClassName[] =
-    L"MozcCompositionWindow";
-inline constexpr wchar_t kIndicatorWindowClassName[] = L"MozcIndicatorWindow";
-inline constexpr wchar_t kInfolistWindowClassName[] = L"MozcInfolistWindow";
-inline constexpr wchar_t kIMEUIWndClassName[] = L"MozcUIWindow";
+    L"MoGRUCompositionWindow";
+inline constexpr wchar_t kIndicatorWindowClassName[] = L"MoGRUIndicatorWindow";
+inline constexpr wchar_t kInfolistWindowClassName[] = L"MoGRUInfolistWindow";
+inline constexpr wchar_t kIMEUIWndClassName[] = L"MoGRUUIWindow";
 inline constexpr char kIPCPrefix[] = "\\\\.\\pipe\\mogru.";
-inline constexpr wchar_t kCandidateUIDescription[] = L"MozcCandidateUI";
+inline constexpr wchar_t kCandidateUIDescription[] = L"MoGRUCandidateUI";
 inline constexpr wchar_t kConfigurationDisplayname[] = L"MoGRU Configuration";
 inline constexpr wchar_t kMozcRegKey[] = L"Software\\MoGRU Project\\MoGRU";
 inline constexpr wchar_t kElevatedProcessDisabledKey[] =
@@ -138,8 +138,8 @@ inline constexpr char kEventPathPrefix[] = "GoogleJapaneseInput.event.";
 inline constexpr char kEventPathPrefix[] = "MoGRU.event.";
 #endif  // GOOGLE_JAPANESE_INPUT_BUILD
 #else   // __linux__ including __ANDROID__
-inline constexpr char kMozcServerName[] = "mozc_server";
-inline constexpr char kMozcRenderer[] = "mozc_renderer";
+inline constexpr char kMozcServerName[] = "mogru_server";
+inline constexpr char kMozcRenderer[] = "mogru_renderer";
 inline constexpr char kEventPathPrefix[] = "mogru.event.";
 inline constexpr char kMozcTool[] = "mogru_tool";
 #endif  // _WIN32, __APPLE__, or else

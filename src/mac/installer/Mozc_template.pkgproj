@@ -236,7 +236,7 @@
 											<key>GID</key>
 											<integer>0</integer>
 											<key>PATH</key>
-											<string>${LAUNCH_AGENT_DIR}/org.mozc.inputmethod.Japanese.Converter.plist</string>
+											<string>${LAUNCH_AGENT_DIR}/org.mogru.inputmethod.Japanese.Converter.plist</string>
 											<key>PATH_TYPE</key>
 											<integer>0</integer>
 											<key>PERMISSIONS</key>
@@ -252,7 +252,7 @@
 											<key>GID</key>
 											<integer>0</integer>
 											<key>PATH</key>
-											<string>${LAUNCH_AGENT_DIR}/org.mozc.inputmethod.Japanese.Renderer.plist</string>
+											<string>${LAUNCH_AGENT_DIR}/org.mogru.inputmethod.Japanese.Renderer.plist</string>
 											<key>PATH_TYPE</key>
 											<integer>0</integer>
 											<key>PERMISSIONS</key>
@@ -578,9 +578,9 @@
 				<key>CONCLUSION_ACTION</key>
 				<integer>0</integer>
 				<key>IDENTIFIER</key>
-				<string>org.mozc.pkg.JapaneseInput</string>
+				<string>org.mogru.pkg.JapaneseInput</string>
 				<key>NAME</key>
-				<string>Mozc</string>
+				<string>MoGRU</string>
 				<key>OVERWRITE_PERMISSIONS</key>
 				<false/>
 				<key>VERSION</key>

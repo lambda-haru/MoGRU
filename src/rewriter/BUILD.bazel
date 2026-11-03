@@ -1529,6 +1529,7 @@ mozc_cc_library(
         ":dice_rewriter",
         ":emoji_rewriter",
         ":emoticon_rewriter",
+        ":english_fallback_rewriter",
         ":english_variants_rewriter",
         ":environmental_filter_rewriter",
         ":focus_candidate_rewriter",
@@ -1798,6 +1799,56 @@ mozc_cc_test(
         "//testing:gunit_main",
         "//testing:mozctest",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+mozc_cc_library(
+    name = "english_fallback_rewriter",
+    srcs = ["english_fallback_rewriter.cc"],
+    hdrs = ["english_fallback_rewriter.h"],
+    data = [
+        "//data/english:google_10000_english",
+    ],
+    deps = [
+        ":rewriter_interface",
+        "//base:file_util",
+        "//base:japanese_util",
+        "//base:util",
+        "//composer",
+        "//config:gru_config",
+        "//converter:attribute",
+        "//converter:segments",
+        "//dictionary:english_dictionary",
+        "//dictionary:pos_matcher",
+        "//request:conversion_request",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/strings",
+    ],
+    alwayslink = 1,
+)
+
+mozc_cc_test(
+    name = "english_fallback_rewriter_test",
+    size = "small",
+    srcs = ["english_fallback_rewriter_test.cc"],
+    data = [
+        "//data/english:google_10000_english",
+    ],
+    deps = [
+        ":english_fallback_rewriter",
+        "//composer",
+        "//composer:table",
+        "//config:gru_config",
+        "//converter:segments",
+        "//data_manager/testing:mock_data_manager",
+        "//dictionary:english_dictionary",
+        "//dictionary:pos_matcher",
+        "//protocol:commands_cc_proto",
+        "//protocol:config_cc_proto",
+        "//request:conversion_request",
+        "//testing:gunit_main",
+        "//testing:mozctest",
         "@com_google_absl//absl/strings",
     ],
 )

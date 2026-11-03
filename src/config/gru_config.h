@@ -61,6 +61,10 @@ struct GruPenaltyConfig {
   double online_learning_rate = 0.05;
   double online_learning_weight_decay = 0.001;
   int32_t online_learning_save_interval = 5;
+  bool enable_english_fallback = true;
+  double english_fallback_cost_threshold = 15000.0;
+  int32_t english_fallback_min_word_length = 3;
+  bool enable_live_conversion_english_fallback = true;
 };
 
 using GruConfig = GruPenaltyConfig;

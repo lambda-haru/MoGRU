@@ -532,7 +532,21 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       "\n"
       "# 【学習済みユーザーモデルの自動保存間隔（確定回数）】 (初期値: 5)\n"
       "# - 指定した確定回数ごと、およびフォーカス移動時（Sync）に grumodel_user.bin へ保存します。\n"
-      "online_learning_save_interval = %d\n",
+      "online_learning_save_interval = %d\n"
+      "\n"
+      "# 【高コスト英単語自動フォールバックの有効化】 (初期値: true)\n"
+      "# - 通常変換でコストがしきい値を超えたセグメントに対し、英単語の自動検出を行います。\n"
+      "enable_english_fallback = %s\n"
+      "\n"
+      "# 【英単語フォールバックを発動するコストしきい値】 (初期値: 15000.0)\n"
+      "english_fallback_cost_threshold = %.1f\n"
+      "\n"
+      "# 【英単語フォールバック対象の最小単語長】 (初期値: 3)\n"
+      "# - 2文字以下の短単語（in, to 等）による誤爆を防ぎます。\n"
+      "english_fallback_min_word_length = %d\n"
+      "\n"
+      "# 【ライブ変換時の英単語自動フォールバックの有効化】 (初期値: true)\n"
+      "enable_live_conversion_english_fallback = %s\n",
       config.enable_gru_rewriter ? "true" : "false",
       config.enable_live_conversion ? "true" : "false",
       config.show_segment_separator_in_conversion ? "true" : "false",
@@ -556,7 +570,11 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       config.online_learning_mode,
       config.online_learning_rate,
       config.online_learning_weight_decay,
-      config.online_learning_save_interval);
+      config.online_learning_save_interval,
+      config.enable_english_fallback ? "true" : "false",
+      config.english_fallback_cost_threshold,
+      config.english_fallback_min_word_length,
+      config.enable_live_conversion_english_fallback ? "true" : "false");
 }
 
 void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
@@ -709,6 +727,26 @@ void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
         "\n# 【学習済みユーザーモデルの自動保存間隔（確定回数）】 (初期値: 5)\n"
         "online_learning_save_interval = 5\n";
   }
+  if (content.find("enable_english_fallback") == std::string::npos) {
+    append_content +=
+        "\n# 【高コスト英単語自動フォールバックの有効化】 (初期値: true)\n"
+        "enable_english_fallback = true\n";
+  }
+  if (content.find("english_fallback_cost_threshold") == std::string::npos) {
+    append_content +=
+        "\n# 【英単語フォールバックを発動するコストしきい値】 (初期値: 15000.0)\n"
+        "english_fallback_cost_threshold = 15000.0\n";
+  }
+  if (content.find("english_fallback_min_word_length") == std::string::npos) {
+    append_content +=
+        "\n# 【英単語フォールバック対象の最小単語長】 (初期値: 3)\n"
+        "english_fallback_min_word_length = 3\n";
+  }
+  if (content.find("enable_live_conversion_english_fallback") == std::string::npos) {
+    append_content +=
+        "\n# 【ライブ変換時の英単語自動フォールバックの有効化】 (初期値: true)\n"
+        "enable_live_conversion_english_fallback = true\n";
+  }
 
   if (!append_content.empty()) {
     std::ofstream ofs(path, std::ios::app);
@@ -860,10 +898,33 @@ GruPenaltyConfig GruConfigManager::ParseConfigFile(
       }
       continue;
     }
+    if (key == "enable_english_fallback") {
+      bool b = true;
+      if (absl::SimpleAtob(val, &b)) {
+        config.enable_english_fallback = b;
+      }
+      continue;
+    }
+    if (key == "enable_live_conversion_english_fallback") {
+      bool b = true;
+      if (absl::SimpleAtob(val, &b)) {
+        config.enable_live_conversion_english_fallback = b;
+      }
+      continue;
+    }
+    if (key == "english_fallback_min_word_length") {
+      int32_t min_len = 3;
+      if (absl::SimpleAtoi(val, &min_len) && min_len >= 1) {
+        config.english_fallback_min_word_length = min_len;
+      }
+      continue;
+    }
 
     double d = 0.0;
     if (absl::SimpleAtod(val, &d)) {
-      if (key == "gru_score_weight" || key == "score_weight") {
+      if (key == "english_fallback_cost_threshold") {
+        config.english_fallback_cost_threshold = d;
+      } else if (key == "gru_score_weight" || key == "score_weight") {
         config.gru_score_weight = d;
       } else if (key == "katakana_multiplier") {
         config.katakana_multiplier = d;
@@ -989,6 +1050,22 @@ void GruConfigManager::ApplyEnvOverrides(GruPenaltyConfig* config) {
   if (const char* e = std::getenv("MOZC_GRU_ONLINE_LEARNING_RATE")) {
     double d = 0.0;
     if (absl::SimpleAtod(e, &d)) config->online_learning_rate = d;
+  }
+  if (const char* e = std::getenv("MOZC_GRU_ENABLE_ENGLISH_FALLBACK")) {
+    bool b = true;
+    if (absl::SimpleAtob(e, &b)) config->enable_english_fallback = b;
+  }
+  if (const char* e = std::getenv("MOZC_GRU_ENGLISH_FALLBACK_COST_THRESHOLD")) {
+    double d = 0.0;
+    if (absl::SimpleAtod(e, &d)) config->english_fallback_cost_threshold = d;
+  }
+  if (const char* e = std::getenv("MOZC_GRU_ENGLISH_FALLBACK_MIN_WORD_LENGTH")) {
+    int32_t val_int = 3;
+    if (absl::SimpleAtoi(e, &val_int)) config->english_fallback_min_word_length = val_int;
+  }
+  if (const char* e = std::getenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_ENGLISH_FALLBACK")) {
+    bool b = true;
+    if (absl::SimpleAtob(e, &b)) config->enable_live_conversion_english_fallback = b;
   }
 }
 

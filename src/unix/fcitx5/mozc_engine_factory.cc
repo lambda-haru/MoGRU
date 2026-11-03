@@ -77,7 +77,6 @@ class MozcEngineFactory : public AddonFactory {
 
 static MozcEngineFactory mogruFactory("mogru");
 static MozcEngineFactory mozcGruFactory("mozc-gru");
-static MozcEngineFactory mozcFactory("mozc");
 
 }  // namespace fcitx
 
@@ -87,9 +86,6 @@ FCITX_ADDON_EXPORT ::fcitx::AddonFactory* fcitx_addon_factory_instance_mogru() {
 }
 FCITX_ADDON_EXPORT ::fcitx::AddonFactory* fcitx_addon_factory_instance_mozc_gru() {
   return &fcitx::mozcGruFactory;
-}
-FCITX_ADDON_EXPORT ::fcitx::AddonFactory* fcitx_addon_factory_instance_mozc() {
-  return &fcitx::mozcFactory;
 }
 FCITX_ADDON_EXPORT ::fcitx::AddonFactory* fcitx_addon_factory_instance() {
   return &fcitx::mogruFactory;
