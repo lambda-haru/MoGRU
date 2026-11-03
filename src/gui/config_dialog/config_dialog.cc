@@ -887,6 +887,18 @@ void ConfigDialog::SetupMogruUi() {
       configDialogTabWidget->setTabText(mogru_index,
                                         QString::fromUtf8("MoGRU設定"));
     }
+    const int mogru_tuning_index =
+        configDialogTabWidget->indexOf(mogruTuningTab);
+    if (mogru_tuning_index >= 0) {
+      configDialogTabWidget->setTabText(mogru_tuning_index,
+                                        QString::fromUtf8("ビームサーチ・ペナルティ"));
+    }
+    const int mogru_model_index =
+        configDialogTabWidget->indexOf(mogruModelTab);
+    if (mogru_model_index >= 0) {
+      configDialogTabWidget->setTabText(mogru_model_index,
+                                        QString::fromUtf8("モデル・学習"));
+    }
     gruGeneralGroupBox->setTitle(
         QString::fromUtf8("MoGRU ニューラル変換・ライブ変換設定"));
     enableGruRewriterCheckBox->setText(QString::fromUtf8(
