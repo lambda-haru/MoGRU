@@ -727,7 +727,6 @@ run_binary(
     ],
 )
 
-
 mozc_cc_library(
     name = "english_dictionary",
     srcs = ["english_dictionary.cc"],

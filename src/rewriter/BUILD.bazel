@@ -1815,7 +1815,7 @@ mozc_cc_library(
         "//base:file_util",
         "//base:japanese_util",
         "//base:util",
-        "//composer:composer",
+        "//composer",
         "//config:gru_config",
         "//converter:attribute",
         "//converter:segments",
@@ -1837,7 +1837,7 @@ mozc_cc_test(
     ],
     deps = [
         ":english_fallback_rewriter",
-        "//composer:composer",
+        "//composer",
         "//composer:table",
         "//config:gru_config",
         "//converter:segments",
