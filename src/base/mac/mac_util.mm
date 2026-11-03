@@ -63,7 +63,7 @@ const unsigned char kPrelauncherPath[] =
 #ifdef GOOGLE_JAPANESE_INPUT_BUILD
 const char kProjectPrefix[] = "com.google.inputmethod.Japanese.";
 #elif defined(MOZC_BUILD)
-const char kProjectPrefix[] = "org.mozc.inputmethod.Japanese.";
+const char kProjectPrefix[] = "org.mogru.inputmethod.Japanese.";
 #else  // GOOGLE_JAPANESE_INPUT_BUILD, MOZC_BUILD
 #error Unknown branding
 #endif  // GOOGLE_JAPANESE_INPUT_BUILD, MOZC_BUILD

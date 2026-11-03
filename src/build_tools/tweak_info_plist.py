@@ -91,7 +91,7 @@ def main():
     domain_prefix = 'com.google'
     product_name = 'Google Japanese Input'
   else:
-    domain_prefix = 'org.mozc'
+    domain_prefix = 'org.mogru'
     product_name = 'MoGRU'
 
   variables = {

@@ -83,6 +83,8 @@ bool DeleteFiles(const AuthorizationRef &auth) {
   const char *kRemovePaths[] = {
       "/Library/Input Methods/MoGRU.app",
       "/Library/Input Methods/Mozc.app",
+      "/Library/LaunchAgents/org.mogru.inputmethod.Japanese.Converter.plist",
+      "/Library/LaunchAgents/org.mogru.inputmethod.Japanese.Renderer.plist",
       "/Library/LaunchAgents/org.mozc.inputmethod.Japanese.Converter.plist",
       "/Library/LaunchAgents/org.mozc.inputmethod.Japanese.Renderer.plist",
       "/Applications/MoGRU",
