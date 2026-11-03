@@ -1,4 +1,4 @@
 #!/bin/sh
 
-rm -Rf "/Applications/Mozc"
+rm -Rf "/Applications/MoGRU"
 /usr/bin/true

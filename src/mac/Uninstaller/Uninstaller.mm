@@ -82,13 +82,9 @@ bool DeleteFiles(const AuthorizationRef &auth) {
 #else   // GOOGLE_JAPANESE_INPUT_BUILD
   const char *kRemovePaths[] = {
       "/Library/Input Methods/MoGRU.app",
-      "/Library/Input Methods/Mozc.app",
       "/Library/LaunchAgents/org.mogru.inputmethod.Japanese.Converter.plist",
       "/Library/LaunchAgents/org.mogru.inputmethod.Japanese.Renderer.plist",
-      "/Library/LaunchAgents/org.mozc.inputmethod.Japanese.Converter.plist",
-      "/Library/LaunchAgents/org.mozc.inputmethod.Japanese.Renderer.plist",
       "/Applications/MoGRU",
-      "/Applications/Mozc",
       nullptr};
 #endif  // GOOGLE_JAPANESE_INPUT_BUILD
   for (int i = 0; kRemovePaths[i] != nullptr; ++i) {
