@@ -224,6 +224,7 @@ private struct CandidateListView: View {
                                 .fixedSize(horizontal: true, vertical: false)
                         }
                     }
+                    .foregroundStyle(candidate.index == state.focusedIndex ? .white : .primary)
                     .frame(height: Self.rowHeight)
                     .contentShape(Rectangle())
                     .onTapGesture { selectCandidate(candidate.candidateID) }
