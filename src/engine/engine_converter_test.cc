@@ -5311,5 +5311,169 @@ TEST_F(EngineConverterTest, LiveConversionPhasedAutoCommit) {
   unsetenv("MOZC_GRU_LIVE_CONVERSION_LENGTH_THRESHOLD");
 }
 
+TEST_F(EngineConverterTest, LiveConversionHiraganaExclusion) {
+  absl::SetFlag(&FLAGS_enable_live_conversion, true);
+  setenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS", "1", 1);
+
+  auto mock_converter = std::make_shared<MockConverter>();
+  EngineConverter converter(mock_converter, request_, config_);
+
+  // 1. Type "kanji" -> pred_key is "かんじ".
+  // With N=1, trailing hiragana "じ" is excluded into tail.
+  // active_key becomes "かん".
+  composer_->InsertCharacter("kanji");
+
+  Segments kan_segments;
+  {
+    Segment* seg = kan_segments.add_segment();
+    seg->set_key("かん");
+    converter::Candidate* cand = seg->add_candidate();
+    cand->value = "感";
+    cand->key = "かん";
+    cand->content_key = "かん";
+    cand->content_value = "感";
+  }
+
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(kan_segments), Return(true)));
+
+  EXPECT_TRUE(converter.Suggest(*composer_));
+  EXPECT_TRUE(converter.IsActive());
+  EXPECT_FALSE(IsCandidateListVisible(converter));
+
+  {
+    commands::Output output;
+    converter.FillOutput(*composer_, &output);
+    EXPECT_TRUE(output.has_preedit());
+    ASSERT_EQ(output.preedit().segment_size(), 2);
+    EXPECT_EQ(output.preedit().segment(0).value(), "感");
+    EXPECT_EQ(output.preedit().segment(1).value(), "じ");
+  }
+
+  // 2. Type "wo" -> "かんじを".
+  // With N=1, trailing hiragana "を" is excluded into tail.
+  // active_key becomes "かんじ".
+  composer_->InsertCharacter("wo");
+
+  Segments kanji_segments;
+  {
+    Segment* seg = kanji_segments.add_segment();
+    seg->set_key("かんじ");
+    converter::Candidate* cand = seg->add_candidate();
+    cand->value = "漢字";
+    cand->key = "かんじ";
+    cand->content_key = "かんじ";
+    cand->content_value = "漢字";
+  }
+
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(kanji_segments), Return(true)));
+
+  EXPECT_TRUE(converter.Suggest(*composer_));
+  {
+    commands::Output output;
+    converter.FillOutput(*composer_, &output);
+    EXPECT_TRUE(output.has_preedit());
+    ASSERT_EQ(output.preedit().segment_size(), 2);
+    EXPECT_EQ(output.preedit().segment(0).value(), "漢字");
+    EXPECT_EQ(output.preedit().segment(1).value(), "を");
+  }
+
+  // 3. CommitPreedit (Enter key): commits as-is displayed ("漢字" + "を" = "漢字を")
+  EXPECT_CALL(*mock_converter, CommitSegmentValue(_, 0, 0))
+      .WillOnce(Return(true));
+  EXPECT_CALL(*mock_converter, FinishConversion(_, _));
+
+  converter.CommitPreedit(*composer_, Context::default_instance());
+  {
+    commands::Output output;
+    converter.FillOutput(*composer_, &output);
+    EXPECT_TRUE(output.has_result());
+    EXPECT_EQ(output.result().value(), "漢字を");
+    EXPECT_EQ(output.result().key(), "かんじを");
+  }
+
+  absl::SetFlag(&FLAGS_enable_live_conversion, false);
+  unsetenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS");
+}
+
+TEST_F(EngineConverterTest, LiveConversionHiraganaExclusionShortInput) {
+  absl::SetFlag(&FLAGS_enable_live_conversion, true);
+  setenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS", "2", 1);
+
+  auto mock_converter = std::make_shared<MockConverter>();
+  EngineConverter converter(mock_converter, request_, config_);
+
+  // Type "ka" -> pred_key is "か" (1 hiragana).
+  // With N=2, all hiragana (1 char) are excluded.
+  // active_key becomes empty, tail is "か".
+  composer_->InsertCharacter("ka");
+
+  EXPECT_TRUE(converter.Suggest(*composer_));
+  EXPECT_TRUE(converter.IsActive());
+  EXPECT_FALSE(IsCandidateListVisible(converter));
+
+  {
+    commands::Output output;
+    converter.FillOutput(*composer_, &output);
+    EXPECT_TRUE(output.has_preedit());
+    ASSERT_EQ(output.preedit().segment_size(), 1);
+    EXPECT_EQ(output.preedit().segment(0).value(), "か");
+  }
+
+  // CommitPreedit commits unconverted text "か"
+  converter.CommitPreedit(*composer_, Context::default_instance());
+  {
+    commands::Output output;
+    converter.FillOutput(*composer_, &output);
+    EXPECT_TRUE(output.has_result());
+    EXPECT_EQ(output.result().value(), "か");
+  }
+
+  absl::SetFlag(&FLAGS_enable_live_conversion, false);
+  unsetenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS");
+}
+
+TEST_F(EngineConverterTest, LiveConversionHiraganaExclusionWithAlphabetTail) {
+  absl::SetFlag(&FLAGS_enable_live_conversion, true);
+  setenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS", "1", 1);
+
+  auto mock_converter = std::make_shared<MockConverter>();
+  EngineConverter converter(mock_converter, request_, config_);
+
+  // Type "kanjik" -> preedit is "かんじｋ", pred_key is "かんじ".
+  // Trailing alphabet is "ｋ".
+  // With N=1, trailing hiragana "じ" is also excluded.
+  // active_key is "かん", tail is "じｋ".
+  composer_->InsertCharacter("kanjik");
+
+  Segments kan_segments;
+  {
+    Segment* seg = kan_segments.add_segment();
+    seg->set_key("かん");
+    converter::Candidate* cand = seg->add_candidate();
+    cand->value = "感";
+    cand->key = "かん";
+    cand->content_key = "かん";
+    cand->content_value = "感";
+  }
+
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(kan_segments), Return(true)));
+
+  EXPECT_TRUE(converter.Suggest(*composer_));
+  {
+    commands::Output output;
+    converter.FillOutput(*composer_, &output);
+    EXPECT_TRUE(output.has_preedit());
+    ASSERT_EQ(output.preedit().segment_size(), 2);
+    EXPECT_EQ(output.preedit().segment(0).value(), "感");
+    EXPECT_EQ(output.preedit().segment(1).value(), "じｋ");
+  }
+
+  absl::SetFlag(&FLAGS_enable_live_conversion, false);
+  unsetenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS");
+}
+
 }  // namespace engine
 }  // namespace mozc

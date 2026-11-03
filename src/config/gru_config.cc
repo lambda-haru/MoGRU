@@ -453,6 +453,11 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       "# - 確定平仮名キーの文字数がこの値以上になった際に前文節を固定します。\n"
       "live_conversion_length_threshold = %d\n"
       "\n"
+      "# 【ライブ変換で除外する直近の平仮名文字数】 (初期値: 0)\n"
+      "# - 入力途中の末尾アルファベットに加え、直近指定文字数の平仮名をライブ変換の対象から除外（遅延変換）します。\n"
+      "# - 0: アルファベットのみ除外（従来通り）, 1以上: 直近N文字の平仮名も除外\n"
+      "live_conversion_excluded_hiragana_characters = %d\n"
+      "\n"
       "# 【ベース言語モデルファイル (grumodel.bin) のパス】 (初期値: 空欄 = 標準パスを自動検出)\n"
       "gru_model_path = %s\n"
       "\n"
@@ -554,6 +559,7 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       config.enable_live_conversion_prefix_freezing ? "true" : "false",
       config.enable_live_conversion_auto_commit ? "true" : "false",
       config.live_conversion_length_threshold,
+      config.live_conversion_excluded_hiragana_characters,
       config.gru_model_path,
       config.gru_chardata_path,
       config.gru_user_model_path,
@@ -656,6 +662,11 @@ void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
     append_content +=
         "\n# 【ライブ変換の文節固定・自動確定トリガー文字数閾値】 (初期値: 24)\n"
         "live_conversion_length_threshold = 24\n";
+  }
+  if (content.find("live_conversion_excluded_hiragana_characters") == std::string::npos) {
+    append_content +=
+        "\n# 【ライブ変換で除外する直近の平仮名文字数】 (初期値: 0)\n"
+        "live_conversion_excluded_hiragana_characters = 0\n";
   }
   if (content.find("gru_model_path") == std::string::npos) {
     append_content +=
@@ -870,6 +881,13 @@ GruPenaltyConfig GruConfigManager::ParseConfigFile(
       }
       continue;
     }
+    if (key == "live_conversion_excluded_hiragana_characters") {
+      int32_t val_int = 0;
+      if (absl::SimpleAtoi(val, &val_int)) {
+        config.live_conversion_excluded_hiragana_characters = std::max<int32_t>(0, val_int);
+      }
+      continue;
+    }
     if (key == "show_gru_score") {
       bool b = true;
       if (absl::SimpleAtob(val, &b)) {
@@ -993,6 +1011,10 @@ void GruConfigManager::ApplyEnvOverrides(GruPenaltyConfig* config) {
   if (const char* e = std::getenv("MOZC_GRU_LIVE_CONVERSION_LENGTH_THRESHOLD")) {
     int32_t val_int = 24;
     if (absl::SimpleAtoi(e, &val_int)) config->live_conversion_length_threshold = std::max<int32_t>(1, val_int);
+  }
+  if (const char* e = std::getenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS")) {
+    int32_t val_int = 0;
+    if (absl::SimpleAtoi(e, &val_int)) config->live_conversion_excluded_hiragana_characters = std::max<int32_t>(0, val_int);
   }
   if (const char* e = std::getenv("MOZC_GRU_MODEL_PATH")) {
     if (e[0] != '\0') config->gru_model_path = e;
@@ -1392,6 +1414,48 @@ int32_t GruConfigManager::GetLiveConversionLengthThreshold(
     GruPenaltyConfig parsed = ParseConfigFile(path, base);
     ApplyEnvOverrides(&parsed);
     cached_value = parsed.live_conversion_length_threshold;
+    has_cached = true;
+  }
+  return cached_value;
+}
+
+int32_t GruConfigManager::GetLiveConversionExcludedHiraganaCharacters(
+    int32_t flag_default,
+    const std::string& explicit_config_path) {
+  static absl::NoDestructor<absl::Mutex> mutex;
+  static absl::Time last_check_time = absl::InfinitePast();
+  static int64_t last_mtime = -1;
+  static std::string last_path;
+  static int32_t cached_value = 0;
+  static bool has_cached = false;
+
+  absl::MutexLock lock(*mutex);
+  const std::string path =
+      ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
+  if (path.empty()) {
+    GruPenaltyConfig cfg;
+    cfg.live_conversion_excluded_hiragana_characters = flag_default;
+    ApplyEnvOverrides(&cfg);
+    return cfg.live_conversion_excluded_hiragana_characters;
+  }
+
+  const absl::Time now = absl::Now();
+  if (has_cached && path == last_path &&
+      (now - last_check_time) < absl::Seconds(1)) {
+    return cached_value;
+  }
+  last_check_time = now;
+
+  EnsureConfigFileExists(path);
+  const int64_t mtime = GetFileMtime(path);
+  if (!has_cached || path != last_path || mtime != last_mtime) {
+    last_path = path;
+    last_mtime = mtime;
+    GruPenaltyConfig base;
+    base.live_conversion_excluded_hiragana_characters = flag_default;
+    GruPenaltyConfig parsed = ParseConfigFile(path, base);
+    ApplyEnvOverrides(&parsed);
+    cached_value = parsed.live_conversion_excluded_hiragana_characters;
     has_cached = true;
   }
   return cached_value;

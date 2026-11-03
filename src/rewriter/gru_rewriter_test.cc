@@ -1093,6 +1093,7 @@ TEST_F(GruRewriterTest, GruConfigManagerSaveAndLoadAllSettingsRoundTrip) {
   saved.enable_live_conversion_prefix_freezing = false;
   saved.enable_live_conversion_auto_commit = true;
   saved.live_conversion_length_threshold = 36;
+  saved.live_conversion_excluded_hiragana_characters = 3;
   saved.gru_model_path = "/custom/path/grumodel.bin";
   saved.gru_chardata_path = "/custom/path/chardata.bin";
   saved.gru_user_model_path = "/custom/path/grumodel_user.bin";
@@ -1122,6 +1123,7 @@ TEST_F(GruRewriterTest, GruConfigManagerSaveAndLoadAllSettingsRoundTrip) {
   EXPECT_EQ(loaded.enable_live_conversion_prefix_freezing, false);
   EXPECT_EQ(loaded.enable_live_conversion_auto_commit, true);
   EXPECT_EQ(loaded.live_conversion_length_threshold, 36);
+  EXPECT_EQ(loaded.live_conversion_excluded_hiragana_characters, 3);
   EXPECT_EQ(loaded.gru_model_path, "/custom/path/grumodel.bin");
   EXPECT_EQ(loaded.gru_chardata_path, "/custom/path/chardata.bin");
   EXPECT_EQ(loaded.gru_user_model_path, "/custom/path/grumodel_user.bin");
@@ -1157,6 +1159,10 @@ TEST_F(GruRewriterTest, GruConfigManagerSaveAndLoadAllSettingsRoundTrip) {
       config::GruConfigManager::GetLiveConversionLengthThreshold(
           24, test_config),
       36);
+  EXPECT_EQ(
+      config::GruConfigManager::GetLiveConversionExcludedHiraganaCharacters(
+          0, test_config),
+      3);
 
   std::filesystem::remove(test_config, ec);
 }

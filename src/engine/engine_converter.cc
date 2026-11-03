@@ -563,6 +563,30 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
       }
     }
 
+    const int32_t excluded_hiragana_chars =
+        config::GruConfigManager::GetLiveConversionExcludedHiraganaCharacters(0);
+    if (excluded_hiragana_chars > 0 && !active_key.empty()) {
+      const std::u32string u32 = Util::Utf8ToUtf32(active_key);
+      size_t trailing_hiragana_count = 0;
+      while (trailing_hiragana_count <
+                 static_cast<size_t>(excluded_hiragana_chars) &&
+             trailing_hiragana_count < u32.size()) {
+        const char32_t c = u32[u32.size() - 1 - trailing_hiragana_count];
+        if (Util::GetScriptType(c) != Util::HIRAGANA) {
+          break;
+        }
+        ++trailing_hiragana_count;
+      }
+      if (trailing_hiragana_count > 0) {
+        const size_t remaining_chars = u32.size() - trailing_hiragana_count;
+        const std::string excluded_hiragana = std::string(
+            Util::Utf8SubString(active_key, remaining_chars, trailing_hiragana_count));
+        active_key =
+            std::string(Util::Utf8SubString(active_key, 0, remaining_chars));
+        tail = absl::StrCat(excluded_hiragana, tail);
+      }
+    }
+
     if (active_key.empty()) {
       segments_.clear_conversion_segments();
       segment_index_ = 0;
@@ -570,7 +594,7 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
       live_conversion_active_ = true;
       live_conversion_key_ = pred_key;
       live_conversion_tail_ = std::move(tail);
-      UpdateCandidateList();
+      candidate_list_.Clear();
       candidate_list_visible_ = false;
       InitializeSelectedCandidateIndices();
       return true;
@@ -1562,7 +1586,8 @@ void EngineConverter::FillOutput(const composer::Composer& composer,
   }
 
   // All candidate words
-  if (CheckState(SUGGESTION | PREDICTION | CONVERSION)) {
+  if (CheckState(SUGGESTION | PREDICTION | CONVERSION) &&
+      segment_index_ < segments_.conversion_segments_size()) {
     FillAllCandidateWords(output->mutable_all_candidate_words());
     // The bounds check must happen before mutable_incognito_candidate_words()
     // so that the field is not materialized (and hence
@@ -1575,7 +1600,8 @@ void EngineConverter::FillOutput(const composer::Composer& composer,
   }
 
   // For debug. Removed candidate words through the conversion process.
-  if (CheckState(SUGGESTION | PREDICTION | CONVERSION)) {
+  if (CheckState(SUGGESTION | PREDICTION | CONVERSION) &&
+      segment_index_ < segments_.conversion_segments_size()) {
     output::FillRemovedCandidates(
         segments_.conversion_segment(segment_index_),
         output->mutable_removed_candidate_words_for_debug());

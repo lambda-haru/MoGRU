@@ -44,6 +44,7 @@ struct GruPenaltyConfig {
   bool enable_live_conversion_prefix_freezing = true;
   bool enable_live_conversion_auto_commit = false;
   int32_t live_conversion_length_threshold = 24;
+  int32_t live_conversion_excluded_hiragana_characters = 0;
   std::string gru_model_path = "";
   std::string gru_chardata_path = "";
   std::string gru_user_model_path = "";
@@ -152,6 +153,12 @@ class GruConfigManager {
   // in gru_config.ini.
   static int32_t GetLiveConversionLengthThreshold(
       int32_t flag_default = 24,
+      const std::string& explicit_config_path = "");
+
+  // Fast (1-second throttled mtime check) query for excluded trailing hiragana
+  // character count in live conversion in gru_config.ini.
+  static int32_t GetLiveConversionExcludedHiraganaCharacters(
+      int32_t flag_default = 0,
       const std::string& explicit_config_path = "");
 };
 

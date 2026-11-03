@@ -917,6 +917,8 @@ void ConfigDialog::SetupMogruUi() {
         QString::fromUtf8("前文節固定の次の更新タイミングで自動確定する"));
     liveConversionLengthThresholdLabel->setText(
         QString::fromUtf8("固定・自動確定トリガー文字数:"));
+    liveConversionExcludedHiraganaCharactersLabel->setText(
+        QString::fromUtf8("除外する直近の平仮名文字数:"));
     gruScoreWeightLabel->setText(
         QString::fromUtf8("GRUスコア重み (α / gru_score_weight):"));
 
@@ -1020,6 +1022,8 @@ void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
       gru_config.enable_live_conversion_auto_commit);
   liveConversionLengthThresholdSpinBox->setValue(
       gru_config.live_conversion_length_threshold);
+  liveConversionExcludedHiraganaCharactersSpinBox->setValue(
+      gru_config.live_conversion_excluded_hiragana_characters);
   gruScoreWeightSpinBox->setValue(gru_config.gru_score_weight);
 
   gruModelPathLineEdit->setText(
@@ -1081,6 +1085,8 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
       enableLiveConversionAutoCommitCheckBox->isChecked();
   cfg.live_conversion_length_threshold =
       liveConversionLengthThresholdSpinBox->value();
+  cfg.live_conversion_excluded_hiragana_characters =
+      liveConversionExcludedHiraganaCharactersSpinBox->value();
   cfg.gru_score_weight = gruScoreWeightSpinBox->value();
 
   cfg.gru_model_path =
