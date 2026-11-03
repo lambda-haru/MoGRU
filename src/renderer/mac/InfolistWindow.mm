@@ -28,9 +28,12 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <Carbon/Carbon.h>
+#include <Cocoa/Cocoa.h>
 #include <objc/message.h>
 
-#import "InfolistView.h"
+#include <cmath>
+
+#import "renderer/MoGRUCandidateUI-Swift.h"
 
 #include "absl/log/log.h"
 #include "base/coordinates.h"
@@ -87,11 +90,29 @@ void InfolistWindow::SetCandidateWindow(const CandidateWindow& candidate_window)
   if (!window_) {
     InitWindow();
   }
-  InfolistView* infolist_view = (InfolistView*)view_;
-  [infolist_view setCandidateWindow:&candidate_window];
-  [infolist_view setNeedsDisplay:YES];
-  NSSize size = [infolist_view updateLayout];
-  ResizeWindow(size.width, size.height);
+  NSMutableArray<MoGRUUsageItem *> *items = [NSMutableArray array];
+  for (const auto &information : candidate_window.usages().information()) {
+    MoGRUUsageItem *item = [[MoGRUUsageItem alloc]
+        initWithInformationID:information.id()
+        title:[NSString stringWithUTF8String:information.title().c_str()]
+        descriptionText:[NSString stringWithUTF8String:information.description().c_str()]];
+    [items addObject:item];
+  }
+
+  MoGRUInfolistView *infolist_view = (MoGRUInfolistView *)view_;
+  [infolist_view updateWith:items
+                focusedIndex:candidate_window.usages().has_focused_index()
+                    ? candidate_window.usages().focused_index() : -1];
+  const NSSize size = infolist_view.preferredSize;
+  ResizeWindow(std::ceil(size.width), std::ceil(size.height));
+}
+
+void InfolistWindow::InitWindow() {
+  RendererBaseWindow::InitWindow();
+  [window_ setStyleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel];
+  [window_ setBackgroundColor:NSColor.clearColor];
+  [window_ setOpaque:NO];
+  [window_ setHasShadow:YES];
 }
 
 void InfolistWindow::DelayHide(int delay) {
@@ -144,7 +165,7 @@ void InfolistWindow::onTimer(NSTimer* timer) {
 
 void InfolistWindow::ResetView() {
   DLOG(INFO) << "InfolistWindow::ResetView()";
-  view_ = [[InfolistView alloc] initWithFrame:NSMakeRect(0, 0, 1, 1)];
+  view_ = [[MoGRUInfolistView alloc] initWithFrame:NSMakeRect(0, 0, 1, 1)];
 }
 
 }  // namespace mac

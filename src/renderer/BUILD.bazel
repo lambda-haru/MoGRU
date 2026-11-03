@@ -284,7 +284,10 @@ mozc_cc_test(
 # macOS
 swift_library(
     name = "mozc_candidate_ui_macos",
-    srcs = ["mac/MoGRUCandidateView.swift"],
+    srcs = [
+        "mac/MoGRUCandidateView.swift",
+        "mac/MoGRUInfolistView.swift",
+    ],
     generated_header_name = "MoGRUCandidateUI-Swift.h",
     generates_header = True,
     target_compatible_with = ["@platforms//os:macos"],
@@ -322,7 +325,6 @@ mozc_objc_library(
     srcs = [
         "mac/CandidateController.mm",
         "mac/CandidateWindow.mm",
-        "mac/InfolistView.mm",
         "mac/InfolistWindow.mm",
         "mac/RendererBaseWindow.mm",
         "mac/mac_server.mm",
@@ -332,7 +334,6 @@ mozc_objc_library(
     hdrs = [
         "mac/CandidateController.h",
         "mac/CandidateWindow.h",
-        "mac/InfolistView.h",
         "mac/InfolistWindow.h",
         "mac/RendererBaseWindow.h",
         "mac/mac_server.h",

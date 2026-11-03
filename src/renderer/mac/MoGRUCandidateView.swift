@@ -1,8 +1,5 @@
-// Candidate layout adapted from nagi (https://github.com/nvalleo/nagi),
-// licensed under Apache License 2.0; see Nagi-LICENSE.txt.
-
 import AppKit
-import Combine
+import Observation
 import SwiftUI
 
 /// A candidate supplied by MoGRU's existing renderer protocol.
@@ -14,9 +11,9 @@ public final class MoGRUCandidateItem: NSObject, Identifiable {
     @objc public let shortcut: String
     @objc public let descriptionText: String
     @objc public let hasSubCandidates: Bool
-
+    
     public var id: Int { index }
-
+    
     /// Creates the display data for one candidate on the current page.
     @objc public init(
         index: Int,
@@ -33,11 +30,7 @@ public final class MoGRUCandidateItem: NSObject, Identifiable {
         self.descriptionText = descriptionText
         self.hasSubCandidates = hasSubCandidates
     }
-
-    /// Whether this candidate should use nagi's compact pictograph grid.
-    public var isPictograph: Bool {
-        descriptionText.hasPrefix("絵文字") || descriptionText.hasPrefix("顔文字")
-    }
+    
 }
 
 /// Receives mouse selections and forwards them to the existing Mozc session.
@@ -48,41 +41,56 @@ public protocol MoGRUCandidateSelectionDelegate: AnyObject {
 }
 
 /// Observable state shared by the AppKit host and the SwiftUI candidate list.
-private final class CandidateListState: ObservableObject {
-    @Published var candidates: [MoGRUCandidateItem] = []
-    @Published var focusedIndex: Int = -1
-    @Published var footer = ""
-    var selectCandidate: ((Int32) -> Void)?
+@MainActor
+@Observable
+private final class CandidateListState {
+    var candidates: [MoGRUCandidateItem] = []
+    var focusedIndex: Int = -1
+    var footer = ""
+    
+    init(
+        candidates: [MoGRUCandidateItem] = [],
+        focusedIndex: Int = -1,
+        footer: String = ""
+    ) {
+        self.candidates = candidates
+        self.focusedIndex = focusedIndex
+        self.footer = footer
+    }
 }
 
 /// A nonactivating candidate view embedded in MoGRU's renderer window.
 @objc(MoGRUCandidateView)
 public final class MoGRUCandidateView: NSView {
     private let state: CandidateListState
-    private let hostingView: NSHostingView<CandidateListView>
-
     @objc public var selectionDelegate: MoGRUCandidateSelectionDelegate?
-
+    
+    private lazy var hostingView = NSHostingView(
+        rootView: CandidateListView(
+            state: state,
+            selectCandidate: { [weak self] candidateID in
+                guard let self else { return }
+                self.selectionDelegate?.candidateView(self, didSelectCandidateWithID: candidateID)
+            }
+        )
+    )
+    
+    
     /// Creates a SwiftUI backed view for the existing AppKit renderer window.
     public override init(frame frameRect: NSRect) {
         let state = CandidateListState()
         self.state = state
-        hostingView = NSHostingView(rootView: CandidateListView(state: state))
         super.init(frame: frameRect)
         hostingView.autoresizingMask = [.width, .height]
         hostingView.frame = bounds
         addSubview(hostingView)
-        state.selectCandidate = { [weak self] candidateID in
-            guard let self else { return }
-            self.selectionDelegate?.candidateView(self, didSelectCandidateWithID: candidateID)
-        }
     }
-
+    
     /// Interface Builder is not used by the renderer.
     public required init?(coder: NSCoder) {
         return nil
     }
-
+    
     /// Refreshes the displayed page, focus, and footer from one renderer update.
     @objc public func update(
         with candidates: [MoGRUCandidateItem],
@@ -95,107 +103,145 @@ public final class MoGRUCandidateView: NSView {
         hostingView.invalidateIntrinsicContentSize()
         hostingView.needsLayout = true
     }
-
+    
     /// Returns the SwiftUI content size for the surrounding NSPanel.
     @objc public var preferredSize: NSSize {
         // Resolve pending SwiftUI layout before positioning the panel.
         hostingView.layoutSubtreeIfNeeded()
         let fitting = hostingView.fittingSize
-        return NSSize(width: max(180, fitting.width), height: min(300, fitting.height))
+        return NSSize(
+            width: max(300, fitting.width),
+            height: min(300, fitting.height)
+        )
     }
-
+    
     /// Returns a candidate's current row in AppKit coordinates for a submenu.
     @objc public func frameForCandidate(at index: Int) -> NSRect {
-        CandidateListView(state: state).frame(forCandidateAt: index, in: preferredSize) ?? .zero
+        CandidateListView(state: state)
+            .frame(forCandidateAt: index, in: preferredSize) ?? .zero
     }
 }
 
 /// Nagi's candidate layout adapted to MoGRU's renderer data.
 private struct CandidateListView: View {
-    @ObservedObject var state: CandidateListState
-
+    let state: CandidateListState
+    let selectCandidate: (Int32) -> Void
+    
+    private static let animationEnabled = true
+    private static let animationDuration = 0.1
+    private static let footerEnabled = false
     private static let fontSize: CGFloat = 15
     private static let rowHeight: CGFloat = 27
-    private static let gridColumns = 9
-    private static let gridCellSize: CGFloat = 26
     private static let maxRows = 10
-
-    private enum Row: Identifiable {
-        case text(MoGRUCandidateItem)
-        case grid([MoGRUCandidateItem])
-
-        var id: Int {
-            switch self {
-            case .text(let candidate): return candidate.index
-            case .grid(let candidates): return candidates.first?.index ?? -1
-            }
-        }
-
-        var height: CGFloat {
-            switch self {
-            case .text: return CandidateListView.rowHeight
-            case .grid: return CandidateListView.gridCellSize + 4
-            }
-        }
-
-        func contains(_ index: Int) -> Bool {
-            switch self {
-            case .text(let candidate): return candidate.index == index
-            case .grid(let candidates): return candidates.contains { $0.index == index }
-            }
-        }
+    private static let dividerHeight: CGFloat = 1
+    private static let focusCornerRadius: CGFloat = 8
+    
+    init(
+        state: CandidateListState,
+        selectCandidate: @escaping (Int32) -> Void = { _ in }
+    ) {
+        self.state = state
+        self.selectCandidate = selectCandidate
+    }
+    
+    private var visibleCandidates: [MoGRUCandidateItem] {
+        let candidates = state.candidates
+        guard candidates.count > Self.maxRows else { return candidates }
+        let focusedPosition = candidates.firstIndex { $0.index == state.focusedIndex } ?? 0
+        let start = min(
+            max(0, focusedPosition - Self.maxRows / 2),
+            candidates.count - Self.maxRows
+        )
+        return Array(candidates[start..<(start + Self.maxRows)])
     }
 
-    private var rows: [Row] {
-        let groups = state.candidates.reduce(into: [[MoGRUCandidateItem]]()) { result, candidate in
-            if result.last?.first?.isPictograph == candidate.isPictograph {
-                result[result.count - 1].append(candidate)
-            } else {
-                result.append([candidate])
-            }
-        }
-        return groups.flatMap { group -> [Row] in
-            guard group.first?.isPictograph == true else { return group.map(Row.text) }
-            return stride(from: 0, to: group.count, by: Self.gridColumns).map { start in
-                .grid(Array(group[start..<min(start + Self.gridColumns, group.count)]))
-            }
-        }
+    private var focusedVisiblePosition: Int? {
+        visibleCandidates.firstIndex { $0.index == state.focusedIndex }
     }
-
-    private var visibleRows: [Row] {
-        let allRows = rows
-        guard allRows.count > Self.maxRows else { return allRows }
-        let focusedRow = allRows.firstIndex { $0.contains(state.focusedIndex) } ?? 0
-        let start = min(max(0, focusedRow - Self.maxRows / 2), allRows.count - Self.maxRows)
-        return Array(allRows[start..<(start + Self.maxRows)])
-    }
-
+    
     /// Finds the visible row for a candidate in AppKit's bottom-up coordinates.
     func frame(forCandidateAt index: Int, in size: NSSize) -> NSRect? {
         var topOffset: CGFloat = 4
-        for row in visibleRows {
-            if row.contains(index) {
+        for (position, candidate) in visibleCandidates.enumerated() {
+            if position > 0 {
+                topOffset += Self.dividerHeight
+            }
+            if candidate.index == index {
                 return NSRect(
                     x: 0,
-                    y: size.height - topOffset - row.height,
+                    y: size.height - topOffset - Self.rowHeight,
                     width: size.width,
-                    height: row.height
+                    height: Self.rowHeight
                 )
             }
-            topOffset += row.height
+            topOffset += Self.rowHeight
         }
         return nil
     }
-
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(visibleRows) { row in
-                switch row {
-                case .text(let candidate): textRow(candidate)
-                case .grid(let candidates): gridRow(candidates)
+            Grid(alignment: .leading, verticalSpacing: 0) {
+                ForEach(Array(visibleCandidates.enumerated()), id: \.element.id) { position, candidate in
+                    if position > 0 {
+                        GridRow {
+                            Color.clear
+                                .frame(height: Self.dividerHeight)
+                                .gridCellUnsizedAxes([.horizontal, .vertical])
+                            Divider()
+                                .frame(height: Self.dividerHeight)
+                                .gridCellColumns(2)
+                                .gridCellUnsizedAxes(.horizontal)
+                                .opacity(
+                                    candidate.index == state.focusedIndex ||
+                                    visibleCandidates[position - 1].index == state.focusedIndex ? 0 : 0.5
+                                )
+                        }
+                    }
+
+                    GridRow(alignment: .center) {
+                        Text(candidate.shortcut.isEmpty ? String(candidate.index + 1) : candidate.shortcut)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Text(candidate.text)
+                            .font(.system(size: Self.fontSize))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                        
+                        if candidate.hasSubCandidates {
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.secondary)
+                                    .rotationEffect(.degrees(candidate.index == state.focusedIndex ? 90 : 0))
+                                    .padding(.trailing, 5)
+                                    .gridCellAnchor(.trailing)
+                            
+                        } else {
+                            Text(candidate.descriptionText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                    }
+                    .frame(height: Self.rowHeight)
+                    .contentShape(Rectangle())
+                    .onTapGesture { selectCandidate(candidate.candidateID) }
                 }
             }
-            if !state.footer.isEmpty {
+            .padding(.horizontal, 8)
+            .background(alignment: .topLeading) {
+                if let focusedVisiblePosition {
+                    RoundedRectangle(cornerRadius: Self.focusCornerRadius)
+                        .fill(Color.accentColor)
+                        .frame(height: Self.rowHeight)
+                        .offset(
+                            y: CGFloat(focusedVisiblePosition) *
+                                (Self.rowHeight + Self.dividerHeight)
+                        )
+                }
+            }
+            if Self.footerEnabled && !state.footer.isEmpty {
                 Text(state.footer)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -205,55 +251,11 @@ private struct CandidateListView: View {
         }
         .padding(4)
         .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    @ViewBuilder
-    private func textRow(_ candidate: MoGRUCandidateItem) -> some View {
-        HStack(spacing: 6) {
-            Text(candidate.shortcut.isEmpty ? String(candidate.index + 1) : candidate.shortcut)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(width: 20, alignment: .trailing)
-            Text(candidate.text)
-                .font(.system(size: Self.fontSize))
-            if candidate.hasSubCandidates {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            if !candidate.descriptionText.isEmpty {
-                Text(candidate.descriptionText)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 8)
-        .frame(minHeight: Self.rowHeight)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(candidate.index == state.focusedIndex ? Color.accentColor.opacity(0.25) : .clear)
-        .contentShape(Rectangle())
-        .onTapGesture { state.selectCandidate?(candidate.candidateID) }
-        .accessibilityLabel("\(candidate.index + 1). \(candidate.text)")
-    }
-
-    @ViewBuilder
-    private func gridRow(_ candidates: [MoGRUCandidateItem]) -> some View {
-        HStack(spacing: 4) {
-            ForEach(candidates) { candidate in
-                Text(candidate.text)
-                    .font(.system(size: 20))
-                    .frame(width: Self.gridCellSize, height: Self.gridCellSize)
-                    .background(candidate.index == state.focusedIndex ? Color.accentColor.opacity(0.25) : .clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .contentShape(Rectangle())
-                    .onTapGesture { state.selectCandidate?(candidate.candidateID) }
-                    .accessibilityLabel(candidate.text)
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 2)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .fixedSize(horizontal: false, vertical: true)
+        .animation(
+            Self.animationEnabled ? .easeInOut(duration: Self.animationDuration) : nil,
+            value: state.focusedIndex
+        )
     }
 }
