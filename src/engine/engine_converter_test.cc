@@ -5523,6 +5523,7 @@ TEST_F(EngineConverterTest, ConversionStatsLiveAndSpaceRecording) {
       config::ConversionStatsManager::LoadStats(tmp_stats_path);
   EXPECT_EQ(stats1.live.commit_count, 1);
   EXPECT_EQ(stats1.live.fallback_to_space_count, 0);
+  EXPECT_EQ(stats1.live.total_segments, 1);
 
   // 2. Live conversion fallback to space
   composer_->Reset();
@@ -5565,9 +5566,54 @@ TEST_F(EngineConverterTest, ConversionStatsLiveAndSpaceRecording) {
   EXPECT_EQ(stats3.space.total_segments, 1);
   EXPECT_EQ(stats3.space.top1_segments, 1);
 
+  // 4. Live conversion auto-commit
+  setenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_AUTO_COMMIT", "true", 1);
+  setenv("MOZC_GRU_LIVE_CONVERSION_LENGTH_THRESHOLD", "4", 1);
+
+  composer_->Reset();
+  composer_->InsertCharacter("kyouhatenkigaii");  // length > threshold
+
+  Segments auto_commit_segs;
+  {
+    Segment* s1 = auto_commit_segs.add_segment();
+    s1->set_key("きょうは");
+    converter::Candidate* c1 = s1->add_candidate();
+    c1->value = "今日は";
+    c1->key = "きょうは";
+    c1->content_key = "きょうは";
+    c1->content_value = "今日は";
+
+    Segment* s2 = auto_commit_segs.add_segment();
+    s2->set_key("てんきが");
+    converter::Candidate* c2 = s2->add_candidate();
+    c2->value = "天気が";
+    c2->key = "てんきが";
+    c2->content_key = "てんきが";
+    c2->content_value = "天気が";
+  }
+
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(auto_commit_segs), Return(true)));
+  EXPECT_TRUE(converter.Suggest(*composer_));
+
+  // Next keystroke triggers PopPendingAutoCommit
+  EXPECT_CALL(*mock_converter, CommitSegments(_, _)).WillOnce(Return(true));
+  EXPECT_CALL(*mock_converter, FinishConversion(_, _)).Times(1);
+
+  size_t consumed_chars = 0;
+  EXPECT_TRUE(converter.PopPendingAutoCommit(*composer_, Context::default_instance(),
+                                             &consumed_chars));
+
+  config::ConversionStats stats4 =
+      config::ConversionStatsManager::LoadStats(tmp_stats_path);
+  EXPECT_EQ(stats4.live.commit_count, 2);  // 1 (step 1) + 1 (auto-commit)
+  EXPECT_EQ(stats4.live.total_segments, 2);  // 1 (step 1) + 1 (frozen seg "今日は")
+
   absl::SetFlag(&FLAGS_enable_live_conversion, false);
   unsetenv("MOZC_GRU_CONVERSION_STATS_PATH");
   unsetenv("MOZC_GRU_ENABLE_CONVERSION_STATS");
+  unsetenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_AUTO_COMMIT");
+  unsetenv("MOZC_GRU_LIVE_CONVERSION_LENGTH_THRESHOLD");
   std::filesystem::remove(tmp_stats_path);
 }
 

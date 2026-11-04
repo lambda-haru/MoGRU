@@ -920,10 +920,10 @@ void EngineConverter::Commit(const composer::Composer& composer,
                                                    .SetContextView(context)
                                                    .SetConfigView(*config_)
                                                    .Build();
-  converter_->FinishConversion(conversion_request, &segments_);
+
+  size_t total_segs = 0;
+  size_t top1_segs = 0;
   if (config::GruConfigManager::IsConversionStatsEnabled(true)) {
-    size_t total_segs = 0;
-    size_t top1_segs = 0;
     for (size_t i = 0; i < segments_.conversion_segments_size();
          i += GetSegmentSpan(i)) {
       total_segs += 1;
@@ -932,6 +932,10 @@ void EngineConverter::Commit(const composer::Composer& composer,
         top1_segs += 1;
       }
     }
+  }
+
+  converter_->FinishConversion(conversion_request, &segments_);
+  if (config::GruConfigManager::IsConversionStatsEnabled(true)) {
     const bool is_top1_commit =
         (total_segs > 0 && top1_segs == total_segs &&
          !conversion_segment_resized_);
@@ -1231,10 +1235,10 @@ void EngineConverter::CommitPreedit(const composer::Composer& composer,
               .SetConfigView(*config_)
               .SetOptions(std::move(finish_options))
               .Build();
+      const size_t total_segs = segments_.conversion_segments_size() +
+                                live_conversion_frozen_segments_.size();
       converter_->FinishConversion(conversion_request, &segments_);
       if (config::GruConfigManager::IsConversionStatsEnabled(true)) {
-        const size_t total_segs = segments_.conversion_segments_size() +
-                                  live_conversion_frozen_segments_.size();
         const size_t total_chars = Util::CharsLen(result_.value());
         const std::string stats_path =
             config::GruConfigManager::GetConversionStatsPath();
@@ -2504,7 +2508,16 @@ bool EngineConverter::PopPendingAutoCommit(
           .SetConfigView(*config_)
           .SetOptions(std::move(finish_options))
           .Build();
+  const size_t total_segs = live_conversion_frozen_segments_.size();
   converter_->FinishConversion(finish_request, &commit_segments);
+
+  if (config::GruConfigManager::IsConversionStatsEnabled(true)) {
+    const size_t total_chars = Util::CharsLen(committed_value);
+    const std::string stats_path =
+        config::GruConfigManager::GetConversionStatsPath();
+    config::ConversionStatsManager::RecordLiveConversionCommit(
+        total_segs, total_chars, committed_key, committed_value, stats_path);
+  }
 
   live_conversion_frozen_segments_.clear();
   live_conversion_frozen_key_.clear();
