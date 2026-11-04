@@ -149,14 +149,11 @@ float ScoreCandidateWithContext(const gruscorer::GruModel& model,
                                 const Segment::Candidate& cand,
                                 const gruscorer::GruContext& context,
                                 const GruPenaltyConfig& config) {
-  if (IsAlphabetCandidate(cand)) {
-    // English words are kept in lower case and do not need to be passed
-    // through the GRU model.
-    return 0.0f;
-  }
   float score =
       model.ScoreStringWithContext(indexer, cand.value, context, true);
-  if (IsKatakanaCandidate(cand)) {
+  if (IsAlphabetCandidate(cand)) {
+    score *= static_cast<float>(config.alphabet_multiplier);
+  } else if (IsKatakanaCandidate(cand)) {
     score *= static_cast<float>(config.katakana_multiplier);
   } else if (IsHiraganaCandidate(cand)) {
     const size_t char_len = Util::CharsLen(cand.value);
