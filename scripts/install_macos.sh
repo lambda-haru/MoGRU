@@ -157,6 +157,10 @@ elif [ -n "$SOURCE_APP" ] && [ -d "$SOURCE_APP" ]; then
     mkdir -p "$TARGET_APP_DIR/MoGRU.app/Contents/Resources/models"
     cp -f "$REPO_ROOT/models/"*.bin "$TARGET_APP_DIR/MoGRU.app/Contents/Resources/models/" 2>/dev/null || true
   fi
+  if [ -f "$REPO_ROOT/src/data/english/google-10000-english.txt" ]; then
+    mkdir -p "$TARGET_APP_DIR/MoGRU.app/Contents/Resources/models"
+    cp -f "$REPO_ROOT/src/data/english/google-10000-english.txt" "$TARGET_APP_DIR/MoGRU.app/Contents/Resources/models/" 2>/dev/null || true
+  fi
   echo "[+] MoGRU.app copied to $TARGET_APP_DIR/"
 fi
 

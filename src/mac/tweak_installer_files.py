@@ -194,6 +194,7 @@ def TweakForProductbuild(
       'chardata.bin',
       'grumodel_new.bin',
       'chardata_new.bin',
+      'google-10000-english.txt',
   ]
   models_dst_dir = (
       f'root/Library/Input Methods/{name}.app/Contents/Resources/models'

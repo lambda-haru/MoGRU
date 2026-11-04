@@ -388,5 +388,41 @@ TEST_F(EnglishFallbackRewriterTest, TrailingParticleSplit) {
   EXPECT_EQ(tsukuru_seg.candidate(0).value, "つくる");
 }
 
+TEST_F(EnglishFallbackRewriterTest, EmbeddedDictionaryFallbackWithoutExternalFile) {
+  // Point to a non-existent file to ensure external file loading fails,
+  // verifying that the embedded dictionary takes effect.
+  ::setenv("MOZC_ENGLISH_DICTIONARY_PATH", "/non/existent/google-10000-english.txt", 1);
+  EnglishFallbackRewriter rewriter(*pos_matcher_);
+  ::unsetenv("MOZC_ENGLISH_DICTIONARY_PATH");
+
+  composer::Composer composer = CreateComposer("mergesuru");
+  Segments segments;
+
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("めｒげ");
+  auto* c0 = seg0->add_candidate();
+  c0->key = "めｒげ";
+  c0->value = "めrげ";
+  c0->cost = 20569;
+  c0->wcost = 17793;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("する");
+  auto* c1 = seg1->add_candidate();
+  c1->key = "する";
+  c1->value = "する";
+  c1->cost = 4229;
+
+  const ConversionRequest request = ConversionRequestBuilder()
+                                        .SetComposer(composer)
+                                        .SetRequestType(ConversionRequest::CONVERSION)
+                                        .Build();
+
+  EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+  ASSERT_EQ(segments.conversion_segments_size(), 2);
+  EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "merge");
+  EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "する");
+}
+
 }  // namespace
 }  // namespace mozc

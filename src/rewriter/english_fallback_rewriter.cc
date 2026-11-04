@@ -50,6 +50,7 @@
 #include "dictionary/english_dictionary.h"
 #include "dictionary/pos_matcher.h"
 #include "request/conversion_request.h"
+#include "rewriter/embedded_english_dictionary_data.inc"
 #include "rewriter/rewriter_interface.h"
 
 namespace mozc {
@@ -77,12 +78,20 @@ std::string ResolveDictionaryPath() {
     }
   }
 
+  // Check system/user data directories (including macOS Application Support,
+  // application bundles, Linux /usr/share/mogru, etc.).
+  const std::string default_path =
+      GruConfigManager::GetDefaultDataFilePath("google-10000-english.txt");
+  if (!default_path.empty() && std::filesystem::exists(default_path)) {
+    return default_path;
+  }
+
   const std::vector<std::string> candidates = {
       "data/english/google-10000-english.txt",
       "src/data/english/google-10000-english.txt",
-      "/home/haruhiro/repos/C++/MoGRU/src/data/english/google-10000-english.txt",
-      "/usr/share/mogru/google-10000-english.txt",
       "models/google-10000-english.txt",
+      "/usr/share/mogru/google-10000-english.txt",
+      "/usr/share/mogru/models/google-10000-english.txt",
   };
   for (const auto& c : candidates) {
     if (std::filesystem::exists(c)) {
@@ -98,15 +107,25 @@ EnglishFallbackRewriter::EnglishFallbackRewriter(
     const dictionary::PosMatcher& pos_matcher)
     : unknown_id_(pos_matcher.GetUnknownId()) {
   const std::string path = ResolveDictionaryPath();
+  bool loaded = false;
   if (!path.empty()) {
     if (!dictionary_.LoadFromFile(path)) {
       LOG(WARNING) << "Failed to load English dictionary from: " << path;
     } else {
       VLOG(1) << "Loaded " << dictionary_.size()
               << " English words from: " << path;
+      loaded = true;
     }
-  } else {
-    LOG(WARNING) << "English dictionary file google-10000-english.txt not found.";
+  }
+
+  // Fallback to embedded dictionary data if external file is absent or failed to load.
+  if (!loaded) {
+    if (dictionary_.LoadFromString(kEmbeddedEnglishDictionaryData)) {
+      VLOG(1) << "Loaded " << dictionary_.size()
+              << " English words from embedded dictionary.";
+    } else {
+      LOG(ERROR) << "Failed to load embedded English dictionary data.";
+    }
   }
 }
 

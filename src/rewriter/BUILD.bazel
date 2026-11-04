@@ -38,6 +38,10 @@ load(
     "mozc_py_binary",
     "mozc_select_enable_usage_rewriter",
 )
+load(
+    "//build_tools:embed_file.bzl",
+    "mozc_embed_file",
+)
 
 package(default_visibility = ["//visibility:private"])
 
@@ -1803,9 +1807,20 @@ mozc_cc_test(
     ],
 )
 
+mozc_embed_file(
+    name = "embedded_english_dictionary_data",
+    srcs = ["//data/english:google_10000_english"],
+    out = "embedded_english_dictionary_data.inc",
+    as_string_view = True,
+    var_name = "kEmbeddedEnglishDictionaryData",
+)
+
 mozc_cc_library(
     name = "english_fallback_rewriter",
-    srcs = ["english_fallback_rewriter.cc"],
+    srcs = [
+        "english_fallback_rewriter.cc",
+        ":embedded_english_dictionary_data",
+    ],
     hdrs = ["english_fallback_rewriter.h"],
     data = [
         "//data/english:google_10000_english",

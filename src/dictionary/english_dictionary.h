@@ -55,6 +55,9 @@ class EnglishDictionary {
   // Loads words from an input stream (one word per line).
   bool LoadFromStream(std::istream &is);
 
+  // Loads words from an in-memory string/string_view (one word per line).
+  bool LoadFromString(absl::string_view data);
+
   // Loads words from a file path.
   bool LoadFromFile(absl::string_view filepath);
 

@@ -86,6 +86,24 @@ TEST(EnglishDictionaryTest, StreamLoad) {
   EXPECT_TRUE(dict.HasWord("fetch"));
 }
 
+TEST(EnglishDictionaryTest, LoadFromString) {
+  EnglishDictionary dict;
+  constexpr absl::string_view data =
+      "# Comment line\n"
+      "apple\n"
+      "banana\n"
+      "\n"
+      "cherry\n"
+      "  date  \n";
+
+  EXPECT_TRUE(dict.LoadFromString(data));
+  EXPECT_EQ(dict.size(), 4);
+  EXPECT_TRUE(dict.HasWord("apple"));
+  EXPECT_TRUE(dict.HasWord("banana"));
+  EXPECT_TRUE(dict.HasWord("cherry"));
+  EXPECT_TRUE(dict.HasWord("date"));
+}
+
 TEST(EnglishDictionaryTest, Google10000EnglishFileLoad) {
   EnglishDictionary dict;
   const std::string dict_path =

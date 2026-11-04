@@ -412,6 +412,7 @@ genrule(
     srcs = [
         ":tweak_preflight",
         ":tweak_postflight",
+        "//data/english:google_10000_english",
         "@mogru_models//:model_files",
     ] + mozc_select(
         # Common files for all build types.

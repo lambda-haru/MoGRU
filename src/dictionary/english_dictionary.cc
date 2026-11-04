@@ -38,6 +38,7 @@
 
 #include "absl/log/log.h"
 #include "absl/strings/ascii.h"
+#include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "base/util.h"
 
@@ -64,6 +65,18 @@ bool EnglishDictionary::LoadFromStream(std::istream &is) {
   std::string line;
   size_t count = 0;
   while (std::getline(is, line)) {
+    absl::string_view trimmed = absl::StripAsciiWhitespace(line);
+    if (!trimmed.empty() && !trimmed.starts_with('#')) {
+      AddWord(trimmed);
+      ++count;
+    }
+  }
+  return count > 0;
+}
+
+bool EnglishDictionary::LoadFromString(absl::string_view data) {
+  size_t count = 0;
+  for (absl::string_view line : absl::StrSplit(data, '\n')) {
     absl::string_view trimmed = absl::StripAsciiWhitespace(line);
     if (!trimmed.empty() && !trimmed.starts_with('#')) {
       AddWord(trimmed);
