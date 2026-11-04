@@ -48,6 +48,9 @@
 
 #include "absl/flags/declare.h"
 #include "absl/flags/flag.h"
+#include "base/file_util.h"
+#include "base/system_util.h"
+#include "config/conversion_stats.h"
 #include "absl/log/check.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -5473,6 +5476,99 @@ TEST_F(EngineConverterTest, LiveConversionHiraganaExclusionWithAlphabetTail) {
 
   absl::SetFlag(&FLAGS_enable_live_conversion, false);
   unsetenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS");
+}
+
+TEST_F(EngineConverterTest, ConversionStatsLiveAndSpaceRecording) {
+  const std::string tmp_stats_path = FileUtil::JoinPath(
+      SystemUtil::GetUserProfileDirectory(), "engine_test_stats.json");
+  std::filesystem::remove(tmp_stats_path);
+  setenv("MOZC_GRU_CONVERSION_STATS_PATH", tmp_stats_path.c_str(), 1);
+  setenv("MOZC_GRU_ENABLE_CONVERSION_STATS", "true", 1);
+  absl::SetFlag(&FLAGS_enable_live_conversion, true);
+
+  config::ConversionStatsManager::ResetStats(tmp_stats_path);
+
+  auto mock_converter = std::make_shared<MockConverter>();
+  EngineConverter converter(mock_converter, request_, config_);
+
+  composer_->InsertCharacter("watasi");  // "わたし"
+
+  Segments segments;
+  {
+    Segment* seg = segments.add_segment();
+    seg->set_key("わたし");
+    converter::Candidate* cand1 = seg->add_candidate();
+    cand1->value = "私";
+    cand1->key = "わたし";
+    cand1->content_key = "わたし";
+    cand1->content_value = "私";
+    converter::Candidate* cand2 = seg->add_candidate();
+    cand2->value = "わたし";
+    cand2->key = "わたし";
+    cand2->content_key = "わたし";
+    cand2->content_value = "わたし";
+  }
+
+  // 1. Live conversion commit
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(segments), Return(true)));
+  EXPECT_CALL(*mock_converter, CommitSegmentValue(_, _, _))
+      .WillOnce(Return(true));
+  EXPECT_CALL(*mock_converter, FinishConversion(_, _)).Times(1);
+
+  EXPECT_TRUE(converter.Suggest(*composer_));
+  converter.CommitPreedit(*composer_, Context::default_instance());
+
+  config::ConversionStats stats1 =
+      config::ConversionStatsManager::LoadStats(tmp_stats_path);
+  EXPECT_EQ(stats1.live.commit_count, 1);
+  EXPECT_EQ(stats1.live.fallback_to_space_count, 0);
+
+  // 2. Live conversion fallback to space
+  composer_->Reset();
+  composer_->InsertCharacter("anata");  // "あなた"
+  Segments seg_anata;
+  {
+    Segment* seg = seg_anata.add_segment();
+    seg->set_key("あなた");
+    converter::Candidate* cand = seg->add_candidate();
+    cand->value = "貴方";
+    cand->key = "あなた";
+    cand->content_key = "あなた";
+    cand->content_value = "貴方";
+  }
+
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(seg_anata), Return(true)));
+  EXPECT_TRUE(converter.Suggest(*composer_));
+
+  // User presses Space key -> Convert() called
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(seg_anata), Return(true)));
+  EXPECT_TRUE(converter.Convert(*composer_));
+
+  config::ConversionStats stats2 =
+      config::ConversionStatsManager::LoadStats(tmp_stats_path);
+  EXPECT_EQ(stats2.live.commit_count, 1);
+  EXPECT_EQ(stats2.live.fallback_to_space_count, 1);
+
+  // 3. User commits space conversion with top1 candidate
+  EXPECT_CALL(*mock_converter, CommitSegmentValue(_, _, 0))
+      .WillOnce(Return(true));
+  EXPECT_CALL(*mock_converter, FinishConversion(_, _)).Times(1);
+  converter.Commit(*composer_, Context::default_instance());
+
+  config::ConversionStats stats3 =
+      config::ConversionStatsManager::LoadStats(tmp_stats_path);
+  EXPECT_EQ(stats3.space.commit_count, 1);
+  EXPECT_EQ(stats3.space.top1_commit_count, 1);
+  EXPECT_EQ(stats3.space.total_segments, 1);
+  EXPECT_EQ(stats3.space.top1_segments, 1);
+
+  absl::SetFlag(&FLAGS_enable_live_conversion, false);
+  unsetenv("MOZC_GRU_CONVERSION_STATS_PATH");
+  unsetenv("MOZC_GRU_ENABLE_CONVERSION_STATS");
+  std::filesystem::remove(tmp_stats_path);
 }
 
 }  // namespace engine

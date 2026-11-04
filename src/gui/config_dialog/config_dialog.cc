@@ -48,6 +48,7 @@
 #include "base/file_util.h"
 #include "client/client.h"
 #include "config/config_handler.h"
+#include "config/conversion_stats.h"
 #include "config/gru_config.h"
 #include "gui/base/stats_config_util.h"
 #include "gui/base/util.h"
@@ -984,6 +985,21 @@ void ConfigDialog::SetupMogruUi() {
         QString::fromUtf8("設定ファイル同期 (gru_config.ini)"));
     reloadGruConfigButton->setText(
         QString::fromUtf8("gru_config.ini から再読み込み"));
+
+    gruStatsGroupBox->setTitle(
+        QString::fromUtf8("変換正確率の統計"));
+    liveConversionAccuracyTitleLabel->setText(
+        QString::fromUtf8("ライブ変換 正確率:"));
+    spaceConversionAccuracyTitleLabel->setText(
+        QString::fromUtf8("スペースキー変換 正確率 (Top-1):"));
+    overallStatsTitleLabel->setText(
+        QString::fromUtf8("総確定数 / 総文字数:"));
+    enableConversionHistoryLogCheckBox->setText(
+        QString::fromUtf8("確定ごとの詳細履歴ログ (TSV) を保存する"));
+    refreshConversionStatsButton->setText(
+        QString::fromUtf8("最新に更新"));
+    resetConversionStatsButton->setText(
+        QString::fromUtf8("統計をリセット"));
   } else {
     gruOnlineLearningModeComboBox->addItem(
         QString::fromUtf8("Output layer only (output_only - fast, recommended)"),
@@ -1006,6 +1022,13 @@ void ConfigDialog::SetupMogruUi() {
                      englishFallbackCostThresholdSpinBox->setEnabled(checked);
                      englishFallbackMinWordLengthSpinBox->setEnabled(checked);
                    });
+
+  QObject::connect(refreshConversionStatsButton, &QPushButton::clicked,
+                   this, &ConfigDialog::RefreshConversionStatsUi);
+  QObject::connect(resetConversionStatsButton, &QPushButton::clicked,
+                   this, &ConfigDialog::ResetConversionStats);
+
+  RefreshConversionStatsUi();
 }
 
 void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
@@ -1068,6 +1091,9 @@ void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
       gru_config.online_learning_weight_decay);
   gruOnlineLearningSaveIntervalSpinBox->setValue(
       std::max<int>(1, gru_config.online_learning_save_interval));
+  enableConversionHistoryLogCheckBox->setChecked(
+      gru_config.enable_conversion_history_log);
+  RefreshConversionStatsUi();
 }
 
 GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
@@ -1122,6 +1148,8 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
       gruOnlineLearningWeightDecaySpinBox->value();
   cfg.online_learning_save_interval =
       gruOnlineLearningSaveIntervalSpinBox->value();
+  cfg.enable_conversion_history_log =
+      enableConversionHistoryLogCheckBox->isChecked();
   return cfg;
 }
 
@@ -1241,6 +1269,117 @@ void ConfigDialog::LaunchAdministrationDialog() {
 #ifdef _WIN32
   client_->LaunchTool("administration_dialog", "");
 #endif  // _WIN32
+}
+
+void ConfigDialog::RefreshConversionStatsUi() {
+  const config::ConversionStats stats =
+      config::ConversionStatsManager::LoadStats();
+
+  const bool is_ja = QLocale().language() == QLocale::Japanese;
+
+  // Live conversion stats
+  const uint64_t live_total =
+      stats.live.commit_count + stats.live.fallback_to_space_count;
+  QString live_str;
+  if (live_total == 0) {
+    live_str = is_ja
+                   ? QString::fromUtf8("-- % (確定: 0回 / スペース移行: 0回)")
+                   : QString::fromUtf8("-- % (Commits: 0, Fallback to Space: 0)");
+  } else {
+    const double live_acc = stats.live.AccuracyRate() * 100.0;
+    if (is_ja) {
+      live_str = QString::fromUtf8("%1 % (確定: %2回 / スペース移行: %3回)")
+                     .arg(live_acc, 0, 'f', 1)
+                     .arg(stats.live.commit_count)
+                     .arg(stats.live.fallback_to_space_count);
+    } else {
+      live_str = QString::fromUtf8("%1 % (Commits: %2, Fallback to Space: %3)")
+                     .arg(live_acc, 0, 'f', 1)
+                     .arg(stats.live.commit_count)
+                     .arg(stats.live.fallback_to_space_count);
+    }
+  }
+  liveConversionAccuracyValueLabel->setText(live_str);
+
+  // Space conversion stats
+  QString space_str;
+  if (stats.space.commit_count == 0) {
+    space_str = is_ja ? QString::fromUtf8(
+                            "-- % (確定単位: 0/0回, 文節単位: 0/0文節)")
+                      : QString::fromUtf8(
+                            "-- % (Commits: 0/0, Segments: 0/0)");
+  } else {
+    const double space_commit_acc = stats.space.CommitAccuracyRate() * 100.0;
+    const double space_seg_acc = stats.space.SegmentAccuracyRate() * 100.0;
+    if (is_ja) {
+      space_str =
+          QString::fromUtf8(
+              "%1 % (確定単位: %2/%3回, 文節単位: %4/%5文節 [ %6 % ])")
+              .arg(space_commit_acc, 0, 'f', 1)
+              .arg(stats.space.top1_commit_count)
+              .arg(stats.space.commit_count)
+              .arg(stats.space.top1_segments)
+              .arg(stats.space.total_segments)
+              .arg(space_seg_acc, 0, 'f', 1);
+    } else {
+      space_str =
+          QString::fromUtf8(
+              "%1 % (Commits: %2/%3, Segments: %4/%5 [ %6 % ])")
+              .arg(space_commit_acc, 0, 'f', 1)
+              .arg(stats.space.top1_commit_count)
+              .arg(stats.space.commit_count)
+              .arg(stats.space.top1_segments)
+              .arg(stats.space.total_segments)
+              .arg(space_seg_acc, 0, 'f', 1);
+    }
+  }
+  spaceConversionAccuracyValueLabel->setText(space_str);
+
+  // Overall stats
+  QString overall_str;
+  if (stats.TotalCommits() == 0) {
+    overall_str = is_ja
+                      ? QString::fromUtf8("総確定: 0回 / 総文字数: 0文字")
+                      : QString::fromUtf8("Total: 0 commits, 0 characters");
+  } else {
+    const double overall_acc = stats.OverallAccuracyRate() * 100.0;
+    if (is_ja) {
+      overall_str = QString::fromUtf8(
+                        "総確定: %1回 / 総文字数: %2文字 (無修正確定率: %3 %)")
+                        .arg(stats.TotalCommits())
+                        .arg(stats.TotalCharacters())
+                        .arg(overall_acc, 0, 'f', 1);
+    } else {
+      overall_str = QString::fromUtf8(
+                        "Total: %1 commits, %2 chars (Top-1 Rate: %3 %)")
+                        .arg(stats.TotalCommits())
+                        .arg(stats.TotalCharacters())
+                        .arg(overall_acc, 0, 'f', 1);
+    }
+  }
+  overallStatsValueLabel->setText(overall_str);
+}
+
+void ConfigDialog::ResetConversionStats() {
+  const bool is_ja = QLocale().language() == QLocale::Japanese;
+  const QString prompt =
+      is_ja ? QString::fromUtf8(
+                  "変換正確率の統計を初期化（リセット）しますか？")
+            : tr("Are you sure you want to reset conversion accuracy statistics?");
+  if (QMessageBox::Ok !=
+      QMessageBox::question(this, windowTitle(), prompt,
+                            QMessageBox::Ok | QMessageBox::Cancel,
+                            QMessageBox::Cancel)) {
+    return;
+  }
+
+  config::ConversionStatsManager::ResetStats();
+  RefreshConversionStatsUi();
+
+  const QString done_msg =
+      is_ja ? QString::fromUtf8("変換正確率の統計をリセットしました。")
+            : tr("Conversion accuracy statistics have been reset.");
+  QMessageBox::information(this, windowTitle(), done_msg);
 }
 
 void ConfigDialog::EnableApplyButton() {

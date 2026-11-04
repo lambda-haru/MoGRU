@@ -81,6 +81,8 @@ class ConfigDialog : public QDialog, private Ui::ConfigDialog {
   virtual void ResetGruUserModel();
   virtual void ReloadGruConfigFromDisk();
   virtual void CheckGruConfigFileModified();
+  virtual void RefreshConversionStatsUi();
+  virtual void ResetConversionStats();
 
  protected:
   bool eventFilter(QObject* obj, QEvent* event) override;

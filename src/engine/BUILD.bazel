@@ -421,6 +421,7 @@ mozc_cc_library(
         "//base:vlog",
         "//composer",
         "//config:config_handler",
+        "//config:conversion_stats",
         "//config:gru_config",
         "//converter:attribute",
         "//converter:converter_interface",

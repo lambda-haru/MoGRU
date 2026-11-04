@@ -66,6 +66,9 @@ struct GruPenaltyConfig {
   double english_fallback_cost_threshold = 15000.0;
   int32_t english_fallback_min_word_length = 3;
   bool enable_live_conversion_english_fallback = true;
+  bool enable_conversion_stats = true;
+  std::string conversion_stats_path = "";
+  bool enable_conversion_history_log = false;
 };
 
 using GruConfig = GruPenaltyConfig;
@@ -159,6 +162,23 @@ class GruConfigManager {
   // character count in live conversion in gru_config.ini.
   static int32_t GetLiveConversionExcludedHiraganaCharacters(
       int32_t flag_default = 0,
+      const std::string& explicit_config_path = "");
+
+  // Fast (1-second throttled mtime check) query for whether conversion stats
+  // recording is enabled in gru_config.ini.
+  static bool IsConversionStatsEnabled(
+      bool flag_default = true,
+      const std::string& explicit_config_path = "");
+
+  // Fast (1-second throttled mtime check) query for custom conversion stats path
+  // in gru_config.ini.
+  static std::string GetConversionStatsPath(
+      const std::string& explicit_config_path = "");
+
+  // Fast (1-second throttled mtime check) query for whether conversion history
+  // TSV logging is enabled in gru_config.ini.
+  static bool IsConversionHistoryLogEnabled(
+      bool flag_default = false,
       const std::string& explicit_config_path = "");
 };
 

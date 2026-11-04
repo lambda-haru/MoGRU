@@ -152,3 +152,32 @@ mozc_cc_library(
         "@com_google_absl//absl/time",
     ],
 )
+
+mozc_cc_library(
+    name = "conversion_stats",
+    srcs = ["conversion_stats.cc"],
+    hdrs = ["conversion_stats.h"],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":gru_config",
+        "//base:file_util",
+        "//base:system_util",
+        "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/synchronization",
+    ],
+)
+
+mozc_cc_test(
+    name = "conversion_stats_test",
+    size = "small",
+    srcs = ["conversion_stats_test.cc"],
+    deps = [
+        ":conversion_stats",
+        "//base:file_util",
+        "//testing:gunit_main",
+        "//testing:mozctest",
+    ],
+)

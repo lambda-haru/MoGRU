@@ -1878,6 +1878,118 @@
               </widget>
              </item>
              <item>
+              <widget class="QGroupBox" name="gruStatsGroupBox">
+               <property name="title">
+                <string>Conversion Accuracy Statistics</string>
+               </property>
+               <layout class="QVBoxLayout" name="gruStatsLayout">
+                <item>
+                 <layout class="QGridLayout" name="gruStatsGridLayout">
+                  <item row="0" column="0">
+                   <widget class="QLabel" name="liveConversionAccuracyTitleLabel">
+                    <property name="text">
+                     <string>Live Conversion Accuracy:</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="1">
+                   <widget class="QLabel" name="liveConversionAccuracyValueLabel">
+                    <property name="font">
+                     <font>
+                      <bold>true</bold>
+                     </font>
+                    </property>
+                    <property name="text">
+                     <string>-- % (Commits: 0, Fallback to Space: 0)</string>
+                    </property>
+                    <property name="textInteractionFlags">
+                     <set>Qt::TextInteractionFlag::LinksAccessibleByMouse|Qt::TextInteractionFlag::TextSelectableByMouse</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="0">
+                   <widget class="QLabel" name="spaceConversionAccuracyTitleLabel">
+                    <property name="text">
+                     <string>Space Key Top-1 Accuracy:</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="1">
+                   <widget class="QLabel" name="spaceConversionAccuracyValueLabel">
+                    <property name="font">
+                     <font>
+                      <bold>true</bold>
+                     </font>
+                    </property>
+                    <property name="text">
+                     <string>-- % (Commits: 0/0, Segments: 0/0)</string>
+                    </property>
+                    <property name="textInteractionFlags">
+                     <set>Qt::TextInteractionFlag::LinksAccessibleByMouse|Qt::TextInteractionFlag::TextSelectableByMouse</set>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="0">
+                   <widget class="QLabel" name="overallStatsTitleLabel">
+                    <property name="text">
+                     <string>Overall Commits / Characters:</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="1">
+                   <widget class="QLabel" name="overallStatsValueLabel">
+                    <property name="text">
+                     <string>Total: 0 commits, 0 characters</string>
+                    </property>
+                    <property name="textInteractionFlags">
+                     <set>Qt::TextInteractionFlag::LinksAccessibleByMouse|Qt::TextInteractionFlag::TextSelectableByMouse</set>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+                <item>
+                 <widget class="QCheckBox" name="enableConversionHistoryLogCheckBox">
+                  <property name="text">
+                   <string>Enable detailed conversion history log (TSV)</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <layout class="QHBoxLayout" name="gruStatsButtonLayout">
+                  <item>
+                   <spacer name="gruStatsButtonSpacer">
+                    <property name="orientation">
+                     <enum>Qt::Orientation::Horizontal</enum>
+                    </property>
+                    <property name="sizeHint" stdset="0">
+                     <size>
+                      <width>40</width>
+                      <height>20</height>
+                     </size>
+                    </property>
+                   </spacer>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="refreshConversionStatsButton">
+                    <property name="text">
+                     <string>Refresh Statistics</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="resetConversionStatsButton">
+                    <property name="text">
+                     <string>Reset Statistics</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
               <widget class="QGroupBox" name="gruConfigFileGroupBox">
                <property name="title">
                 <string>Configuration File (gru_config.ini Synchronization)</string>

@@ -551,7 +551,18 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       "english_fallback_min_word_length = %d\n"
       "\n"
       "# 【ライブ変換時の英単語自動フォールバックの有効化】 (初期値: true)\n"
-      "enable_live_conversion_english_fallback = %s\n",
+      "enable_live_conversion_english_fallback = %s\n"
+      "\n"
+      "# 【変換正確率統計の記録の有効化】 (初期値: true)\n"
+      "# - ライブ変換およびスペースキー変換の正確率を記録して統計ファイルに保存します。\n"
+      "enable_conversion_stats = %s\n"
+      "\n"
+      "# 【変換正確率統計ファイル (JSON) の保存先パス】 (空欄で ~/.config/mogru/conversion_stats.json)\n"
+      "conversion_stats_path = %s\n"
+      "\n"
+      "# 【確定ごとの詳細履歴ログ (TSV) の記録の有効化】 (初期値: false)\n"
+      "# - 有効にすると、確定ごとの詳細を conversion_history.tsv に追記します。\n"
+      "enable_conversion_history_log = %s\n",
       config.enable_gru_rewriter ? "true" : "false",
       config.enable_live_conversion ? "true" : "false",
       config.show_segment_separator_in_conversion ? "true" : "false",
@@ -580,7 +591,10 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       config.enable_english_fallback ? "true" : "false",
       config.english_fallback_cost_threshold,
       config.english_fallback_min_word_length,
-      config.enable_live_conversion_english_fallback ? "true" : "false");
+      config.enable_live_conversion_english_fallback ? "true" : "false",
+      config.enable_conversion_stats ? "true" : "false",
+      config.conversion_stats_path,
+      config.enable_conversion_history_log ? "true" : "false");
 }
 
 void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
@@ -758,6 +772,21 @@ void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
         "\n# 【ライブ変換時の英単語自動フォールバックの有効化】 (初期値: true)\n"
         "enable_live_conversion_english_fallback = true\n";
   }
+  if (content.find("enable_conversion_stats") == std::string::npos) {
+    append_content +=
+        "\n# 【変換正確率統計の記録の有効化】 (初期値: true)\n"
+        "enable_conversion_stats = true\n";
+  }
+  if (content.find("conversion_stats_path") == std::string::npos) {
+    append_content +=
+        "\n# 【変換正確率統計ファイル (JSON) の保存先パス】 (空欄で ~/.config/mogru/conversion_stats.json)\n"
+        "conversion_stats_path = \n";
+  }
+  if (content.find("enable_conversion_history_log") == std::string::npos) {
+    append_content +=
+        "\n# 【確定ごとの詳細履歴ログ (TSV) の記録の有効化】 (初期値: false)\n"
+        "enable_conversion_history_log = false\n";
+  }
 
   if (!append_content.empty()) {
     std::ofstream ofs(path, std::ios::app);
@@ -930,6 +959,24 @@ GruPenaltyConfig GruConfigManager::ParseConfigFile(
       }
       continue;
     }
+    if (key == "enable_conversion_stats") {
+      bool b = true;
+      if (absl::SimpleAtob(val, &b)) {
+        config.enable_conversion_stats = b;
+      }
+      continue;
+    }
+    if (key == "conversion_stats_path") {
+      config.conversion_stats_path = std::string(val);
+      continue;
+    }
+    if (key == "enable_conversion_history_log") {
+      bool b = false;
+      if (absl::SimpleAtob(val, &b)) {
+        config.enable_conversion_history_log = b;
+      }
+      continue;
+    }
     if (key == "english_fallback_min_word_length") {
       int32_t min_len = 3;
       if (absl::SimpleAtoi(val, &min_len) && min_len >= 1) {
@@ -1088,6 +1135,17 @@ void GruConfigManager::ApplyEnvOverrides(GruPenaltyConfig* config) {
   if (const char* e = std::getenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_ENGLISH_FALLBACK")) {
     bool b = true;
     if (absl::SimpleAtob(e, &b)) config->enable_live_conversion_english_fallback = b;
+  }
+  if (const char* e = std::getenv("MOZC_GRU_ENABLE_CONVERSION_STATS")) {
+    bool b = true;
+    if (absl::SimpleAtob(e, &b)) config->enable_conversion_stats = b;
+  }
+  if (const char* e = std::getenv("MOZC_GRU_CONVERSION_STATS_PATH")) {
+    config->conversion_stats_path = e;
+  }
+  if (const char* e = std::getenv("MOZC_GRU_ENABLE_CONVERSION_HISTORY_LOG")) {
+    bool b = false;
+    if (absl::SimpleAtob(e, &b)) config->enable_conversion_history_log = b;
   }
 }
 
@@ -1456,6 +1514,129 @@ int32_t GruConfigManager::GetLiveConversionExcludedHiraganaCharacters(
     GruPenaltyConfig parsed = ParseConfigFile(path, base);
     ApplyEnvOverrides(&parsed);
     cached_value = parsed.live_conversion_excluded_hiragana_characters;
+    has_cached = true;
+  }
+  return cached_value;
+}
+
+bool GruConfigManager::IsConversionStatsEnabled(
+    bool flag_default,
+    const std::string& explicit_config_path) {
+  static absl::NoDestructor<absl::Mutex> mutex;
+  static absl::Time last_check_time = absl::InfinitePast();
+  static int64_t last_mtime = -1;
+  static std::string last_path;
+  static bool cached_value = true;
+  static bool has_cached = false;
+
+  absl::MutexLock lock(*mutex);
+  const std::string path =
+      ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
+  if (path.empty()) {
+    GruPenaltyConfig cfg;
+    cfg.enable_conversion_stats = flag_default;
+    ApplyEnvOverrides(&cfg);
+    return cfg.enable_conversion_stats;
+  }
+
+  const absl::Time now = absl::Now();
+  if (has_cached && path == last_path &&
+      (now - last_check_time) < absl::Seconds(1)) {
+    return cached_value;
+  }
+  last_check_time = now;
+
+  EnsureConfigFileExists(path);
+  const int64_t mtime = GetFileMtime(path);
+  if (!has_cached || path != last_path || mtime != last_mtime) {
+    last_path = path;
+    last_mtime = mtime;
+    GruPenaltyConfig base;
+    base.enable_conversion_stats = flag_default;
+    GruPenaltyConfig parsed = ParseConfigFile(path, base);
+    ApplyEnvOverrides(&parsed);
+    cached_value = parsed.enable_conversion_stats;
+    has_cached = true;
+  }
+  return cached_value;
+}
+
+std::string GruConfigManager::GetConversionStatsPath(
+    const std::string& explicit_config_path) {
+  static absl::NoDestructor<absl::Mutex> mutex;
+  static absl::Time last_check_time = absl::InfinitePast();
+  static int64_t last_mtime = -1;
+  static std::string last_path;
+  static std::string cached_value = "";
+  static bool has_cached = false;
+
+  absl::MutexLock lock(*mutex);
+  const std::string path =
+      ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
+  if (path.empty()) {
+    GruPenaltyConfig cfg;
+    ApplyEnvOverrides(&cfg);
+    return cfg.conversion_stats_path;
+  }
+
+  const absl::Time now = absl::Now();
+  if (has_cached && path == last_path &&
+      (now - last_check_time) < absl::Seconds(1)) {
+    return cached_value;
+  }
+  last_check_time = now;
+
+  EnsureConfigFileExists(path);
+  const int64_t mtime = GetFileMtime(path);
+  if (!has_cached || path != last_path || mtime != last_mtime) {
+    last_path = path;
+    last_mtime = mtime;
+    GruPenaltyConfig base;
+    GruPenaltyConfig parsed = ParseConfigFile(path, base);
+    ApplyEnvOverrides(&parsed);
+    cached_value = parsed.conversion_stats_path;
+    has_cached = true;
+  }
+  return cached_value;
+}
+
+bool GruConfigManager::IsConversionHistoryLogEnabled(
+    bool flag_default,
+    const std::string& explicit_config_path) {
+  static absl::NoDestructor<absl::Mutex> mutex;
+  static absl::Time last_check_time = absl::InfinitePast();
+  static int64_t last_mtime = -1;
+  static std::string last_path;
+  static bool cached_value = false;
+  static bool has_cached = false;
+
+  absl::MutexLock lock(*mutex);
+  const std::string path =
+      ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
+  if (path.empty()) {
+    GruPenaltyConfig cfg;
+    cfg.enable_conversion_history_log = flag_default;
+    ApplyEnvOverrides(&cfg);
+    return cfg.enable_conversion_history_log;
+  }
+
+  const absl::Time now = absl::Now();
+  if (has_cached && path == last_path &&
+      (now - last_check_time) < absl::Seconds(1)) {
+    return cached_value;
+  }
+  last_check_time = now;
+
+  EnsureConfigFileExists(path);
+  const int64_t mtime = GetFileMtime(path);
+  if (!has_cached || path != last_path || mtime != last_mtime) {
+    last_path = path;
+    last_mtime = mtime;
+    GruPenaltyConfig base;
+    base.enable_conversion_history_log = flag_default;
+    GruPenaltyConfig parsed = ParseConfigFile(path, base);
+    ApplyEnvOverrides(&parsed);
+    cached_value = parsed.enable_conversion_history_log;
     has_cached = true;
   }
   return cached_value;

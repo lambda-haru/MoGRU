@@ -445,6 +445,10 @@ class EngineConverter : public EngineConverterInterface {
   std::vector<Segment> live_conversion_frozen_segments_;
   std::string live_conversion_frozen_key_;
   bool auto_commit_pending_ = false;
+
+  // Conversion accuracy tracking state.
+  bool live_conversion_presented_ = false;
+  bool conversion_segment_resized_ = false;
 };
 
 }  // namespace engine

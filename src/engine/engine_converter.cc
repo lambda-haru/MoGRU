@@ -52,6 +52,7 @@
 #include "base/vlog.h"
 #include "composer/composer.h"
 #include "config/config_handler.h"
+#include "config/conversion_stats.h"
 #include "config/gru_config.h"
 #include "converter/attribute.h"
 #include "converter/candidate.h"
@@ -154,7 +155,18 @@ bool EngineConverter::Convert(const composer::Composer& composer,
                               const commands::Context& context,
                               const ConversionPreferences& preferences) {
   DCHECK(CheckState(COMPOSITION | SUGGESTION | CONVERSION));
-  const bool was_live_conversion = live_conversion_active_;
+  const bool was_live_conversion = (live_conversion_active_ || live_conversion_presented_);
+  if (was_live_conversion) {
+    if (config::GruConfigManager::IsConversionStatsEnabled(true)) {
+      const std::string stats_path =
+          config::GruConfigManager::GetConversionStatsPath();
+      config::ConversionStatsManager::RecordLiveConversionFallbackToSpace(
+          Util::CharsLen(live_conversion_key_), live_conversion_key_, stats_path);
+    }
+  }
+  live_conversion_presented_ = false;
+  conversion_segment_resized_ = false;
+
   live_conversion_active_ = false;
   live_conversion_key_.clear();
   live_conversion_tail_.clear();
@@ -653,6 +665,7 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
     segment_index_ = 0;
     state_ = SUGGESTION;
     live_conversion_active_ = true;
+    live_conversion_presented_ = true;
     live_conversion_key_ = pred_key;
     live_conversion_tail_ = std::move(tail);
     UpdateCandidateList();
@@ -908,6 +921,29 @@ void EngineConverter::Commit(const composer::Composer& composer,
                                                    .SetConfigView(*config_)
                                                    .Build();
   converter_->FinishConversion(conversion_request, &segments_);
+  if (config::GruConfigManager::IsConversionStatsEnabled(true)) {
+    size_t total_segs = 0;
+    size_t top1_segs = 0;
+    for (size_t i = 0; i < segments_.conversion_segments_size();
+         i += GetSegmentSpan(i)) {
+      total_segs += 1;
+      const int cand_idx = GetCandidateIndexForConverter(i);
+      if (cand_idx == 0) {
+        top1_segs += 1;
+      }
+    }
+    const bool is_top1_commit =
+        (total_segs > 0 && top1_segs == total_segs &&
+         !conversion_segment_resized_);
+    const size_t total_chars = Util::CharsLen(result_.value());
+    const std::string stats_path =
+        config::GruConfigManager::GetConversionStatsPath();
+    config::ConversionStatsManager::RecordSpaceConversionCommit(
+        total_segs, top1_segs, is_top1_commit, conversion_segment_resized_,
+        total_chars, result_.key(), result_.value(), stats_path);
+  }
+  conversion_segment_resized_ = false;
+  live_conversion_presented_ = false;
   ResetState();
 }
 
@@ -1196,6 +1232,17 @@ void EngineConverter::CommitPreedit(const composer::Composer& composer,
               .SetOptions(std::move(finish_options))
               .Build();
       converter_->FinishConversion(conversion_request, &segments_);
+      if (config::GruConfigManager::IsConversionStatsEnabled(true)) {
+        const size_t total_segs = segments_.conversion_segments_size() +
+                                  live_conversion_frozen_segments_.size();
+        const size_t total_chars = Util::CharsLen(result_.value());
+        const std::string stats_path =
+            config::GruConfigManager::GetConversionStatsPath();
+        config::ConversionStatsManager::RecordLiveConversionCommit(
+            total_segs, total_chars, result_.key(), result_.value(),
+            stats_path);
+      }
+      live_conversion_presented_ = false;
       ResetState();
       return;
     }
@@ -1232,6 +1279,7 @@ void EngineConverter::CommitPreedit(const composer::Composer& composer,
           .SetOptions(std::move(options))
           .Build();
   converter_->FinishConversion(conversion_request, &segments_);
+  live_conversion_presented_ = false;
   ResetState();
 }
 
@@ -1335,6 +1383,7 @@ void EngineConverter::ResizeSegmentWidth(const composer::Composer& composer,
   if (CheckState(PREDICTION)) {
     return;  // Do nothing.
   }
+  conversion_segment_resized_ = true;
   ResetResult();
 
   DCHECK(request_);
@@ -1639,6 +1688,8 @@ void EngineConverter::ResetState() {
   live_conversion_frozen_segments_.clear();
   live_conversion_frozen_key_.clear();
   auto_commit_pending_ = false;
+  live_conversion_presented_ = false;
+  conversion_segment_resized_ = false;
 }
 
 void EngineConverter::SegmentFocus() {
