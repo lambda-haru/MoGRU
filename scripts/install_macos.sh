@@ -131,6 +131,13 @@ done
 # /Library/Input Methods/MoGRU.app/Contents/Resources/models/, and
 # GruConfigManager initializes ~/Library/Application Support/MoGRU/gru_config.ini
 # automatically on first launch.
+killall MoGRUConverter 2>/dev/null || true
+killall MoGRURenderer 2>/dev/null || true
+killall MoGRU 2>/dev/null || true
+killall MozcConverter 2>/dev/null || true
+killall MozcRenderer 2>/dev/null || true
+killall Mozc 2>/dev/null || true
+
 if [ -n "$SOURCE_PKG" ] && [ -e "$SOURCE_PKG" ]; then
   echo "[+] Installing package: $SOURCE_PKG"
   if command -v sudo &>/dev/null; then
