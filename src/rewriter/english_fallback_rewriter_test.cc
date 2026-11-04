@@ -51,6 +51,22 @@ namespace {
 
 using config::GruConfigManager;
 
+#if defined(_WIN32)
+inline int SetEnv(const char* name, const char* value) {
+  return _putenv_s(name, value);
+}
+inline int UnsetEnv(const char* name) {
+  return _putenv_s(name, "");
+}
+#else
+inline int SetEnv(const char* name, const char* value) {
+  return ::setenv(name, value, 1);
+}
+inline int UnsetEnv(const char* name) {
+  return ::unsetenv(name);
+}
+#endif
+
 void InsertASCIISequence(absl::string_view text,
                          composer::Composer* composer) {
   for (char c : text) {
@@ -391,9 +407,9 @@ TEST_F(EnglishFallbackRewriterTest, TrailingParticleSplit) {
 TEST_F(EnglishFallbackRewriterTest, EmbeddedDictionaryFallbackWithoutExternalFile) {
   // Point to a non-existent file to ensure external file loading fails,
   // verifying that the embedded dictionary takes effect.
-  ::setenv("MOZC_ENGLISH_DICTIONARY_PATH", "/non/existent/google-10000-english.txt", 1);
+  SetEnv("MOZC_ENGLISH_DICTIONARY_PATH", "/non/existent/google-10000-english.txt");
   EnglishFallbackRewriter rewriter(*pos_matcher_);
-  ::unsetenv("MOZC_ENGLISH_DICTIONARY_PATH");
+  UnsetEnv("MOZC_ENGLISH_DICTIONARY_PATH");
 
   composer::Composer composer = CreateComposer("mergesuru");
   Segments segments;
