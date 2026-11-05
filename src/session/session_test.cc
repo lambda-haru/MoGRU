@@ -3485,17 +3485,17 @@ TEST_F(SessionTest, TemporaryCompositionModeAfterUndo) {
   SendKey("A", &session, &command);
   SendKey("a", &session, &command);
   EXPECT_FALSE(command.output().has_result());
-  EXPECT_PREEDIT("AAあAa", command);
-  EXPECT_EQ(command.output().mode(), commands::HALF_ASCII);
+  EXPECT_PREEDIT("AAあAあ", command);
+  EXPECT_EQ(command.output().mode(), commands::HIRAGANA);
 
   // Submit and Undo
   SendKey("Enter", &session, &command);
   EXPECT_EQ(command.output().mode(), commands::HIRAGANA);
   command.Clear();
   session.Undo(&command);
-  EXPECT_EQ(command.output().mode(), commands::HALF_ASCII);
+  EXPECT_EQ(command.output().mode(), commands::HIRAGANA);
   EXPECT_FALSE(command.output().has_result());
-  EXPECT_PREEDIT("AAあAa", command);
+  EXPECT_PREEDIT("AAあAあ", command);
 }
 
 TEST_F(SessionTest, DCHECKFailureAfterUndo) {
@@ -3687,7 +3687,7 @@ TEST_F(SessionTest, SpaceOnAlphanumeric) {
 
     SendKey("a", &session, &command);
     EXPECT_FALSE(command.output().has_result());
-    EXPECT_EQ(GetComposition(command), "A a");
+    EXPECT_EQ(GetComposition(command), "A あ");
     Mock::VerifyAndClearExpectations(converter.get());
   }
 }
@@ -4175,14 +4175,14 @@ TEST_F(SessionTest, InsertCharacterWithShiftKey) {
     commands::Command command;
     EXPECT_TRUE(SendKey("a", &session, &command));
     EXPECT_TRUE(SendKey("A", &session, &command));  // "あA"
-    EXPECT_TRUE(SendKey("a", &session, &command));  // "あAa"
-    // Shift reverts the input mode to Hiragana.
+    EXPECT_TRUE(SendKey("a", &session, &command));  // "あAあ"
+    // Shift reverts the input mode to Hiragana (already reverted).
     EXPECT_TRUE(SendKey("Shift", &session, &command));
-    EXPECT_TRUE(SendKey("a", &session, &command));  // "あAaあ"
+    EXPECT_TRUE(SendKey("a", &session, &command));  // "あAああ"
     // Shift does nothing because the input mode has already been reverted.
     EXPECT_TRUE(SendKey("Shift", &session, &command));
-    EXPECT_TRUE(SendKey("a", &session, &command));  // "あAaああ"
-    EXPECT_EQ(GetComposition(command), "あAaああ");
+    EXPECT_TRUE(SendKey("a", &session, &command));  // "あAあああ"
+    EXPECT_EQ(GetComposition(command), "あAあああ");
   }
 
   {  // Revert back to the previous input mode.
@@ -4193,14 +4193,14 @@ TEST_F(SessionTest, InsertCharacterWithShiftKey) {
     EXPECT_EQ(command.output().mode(), commands::FULL_KATAKANA);
     EXPECT_TRUE(SendKey("a", &session, &command));
     EXPECT_TRUE(SendKey("A", &session, &command));  // "アA"
-    EXPECT_TRUE(SendKey("a", &session, &command));  // "アAa"
-    // Shift reverts the input mode to Hiragana.
+    EXPECT_TRUE(SendKey("a", &session, &command));  // "アAア"
+    // Shift reverts the input mode to Katakana (already reverted).
     EXPECT_TRUE(SendKey("Shift", &session, &command));
-    EXPECT_TRUE(SendKey("a", &session, &command));  // "アAaア"
+    EXPECT_TRUE(SendKey("a", &session, &command));  // "アAアア"
     // Shift does nothing because the input mode has already been reverted.
     EXPECT_TRUE(SendKey("Shift", &session, &command));
-    EXPECT_TRUE(SendKey("a", &session, &command));  // "アAaアア"
-    EXPECT_EQ(GetComposition(command), "アAaアア");
+    EXPECT_TRUE(SendKey("a", &session, &command));  // "アAアアア"
+    EXPECT_EQ(GetComposition(command), "アAアアア");
   }
 }
 
@@ -4349,17 +4349,17 @@ TEST_F(SessionTest, StatusOutput) {
     // Global mode should be kept as HIRAGANA
     EXPECT_EQ(command.output().status().comeback_mode(), commands::HIRAGANA);
 
-    EXPECT_TRUE(SendKey("a", &session, &command));  // "あAa"
+    EXPECT_TRUE(SendKey("a", &session, &command));  // "あAあ"
     ASSERT_TRUE(command.output().has_status());
     EXPECT_TRUE(command.output().status().activated());
-    EXPECT_EQ(command.output().mode(), commands::HALF_ASCII);  // obsolete
-    EXPECT_EQ(command.output().status().mode(), commands::HALF_ASCII);
+    EXPECT_EQ(command.output().mode(), commands::HIRAGANA);  // obsolete
+    EXPECT_EQ(command.output().status().mode(), commands::HIRAGANA);
     // Global mode should be kept as HIRAGANA
     EXPECT_EQ(command.output().status().comeback_mode(), commands::HIRAGANA);
 
     // Shift reverts the input mode to Hiragana.
     EXPECT_TRUE(SendKey("Shift", &session, &command));
-    EXPECT_TRUE(SendKey("a", &session, &command));  // "あAaあ"
+    EXPECT_TRUE(SendKey("a", &session, &command));  // "あAああ"
     ASSERT_TRUE(command.output().has_status());
     EXPECT_TRUE(command.output().status().activated());
     EXPECT_EQ(command.output().mode(), commands::HIRAGANA);  // obsolete
@@ -6461,7 +6461,7 @@ TEST_F(SessionTest, Issue2569789) {
     commands::Command command;
 
     InsertCharacterChars("Google", &session, &command);
-    EXPECT_EQ(command.output().mode(), commands::HALF_ASCII);
+    EXPECT_EQ(command.output().mode(), commands::HIRAGANA);
 
     EXPECT_TRUE(SendKey("enter", &session, &command));
     ASSERT_TRUE(command.output().has_result());
@@ -6475,7 +6475,7 @@ TEST_F(SessionTest, Issue2569789) {
     commands::Command command;
 
     InsertCharacterChars("Google", &session, &command);
-    EXPECT_EQ(command.output().mode(), commands::HALF_ASCII);
+    EXPECT_EQ(command.output().mode(), commands::HIRAGANA);
 
     EXPECT_TRUE(SendKey("shift", &session, &command));
     EXPECT_EQ(GetComposition(command), "Google");
