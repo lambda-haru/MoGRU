@@ -440,5 +440,53 @@ TEST_F(EnglishFallbackRewriterTest, EmbeddedDictionaryFallbackWithoutExternalFil
   EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "する");
 }
 
+TEST_F(EnglishFallbackRewriterTest, CapitalizedWordPreservesCaseAndAddsLower) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("merge");
+
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  // "Mergesuru": Shift+M -> "M", then non-shift "ergesuru" reverts to Romaji -> "Mえｒげする"
+  composer::Composer composer = CreateComposer("Mergesuru");
+  ASSERT_EQ(composer.GetStringForPreedit(), "Mえｒげする");
+
+  Segments segments;
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("Mえｒげ");
+  auto* c0 = seg0->add_candidate();
+  c0->key = "Mえｒげ";
+  c0->value = "Mえrげ";
+  c0->cost = 25000;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("する");
+  auto* c1 = seg1->add_candidate();
+  c1->key = "する";
+  c1->value = "する";
+  c1->cost = 4000;
+
+  const ConversionRequest request = ConversionRequestBuilder()
+                                        .SetComposer(composer)
+                                        .SetRequestType(ConversionRequest::CONVERSION)
+                                        .Build();
+
+  EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+  ASSERT_EQ(segments.conversion_segments_size(), 2);
+
+  const Segment& merged_seg = segments.conversion_segment(0);
+  EXPECT_EQ(merged_seg.key(), "Mえｒげ");
+  ASSERT_GE(merged_seg.candidates_size(), 2);
+  // Candidate 0: user raw case ("Merge")
+  EXPECT_EQ(merged_seg.candidate(0).value, "Merge");
+  EXPECT_EQ(merged_seg.candidate(0).cost, 6000);
+  // Candidate 1: lower case ("merge")
+  EXPECT_EQ(merged_seg.candidate(1).value, "merge");
+  EXPECT_EQ(merged_seg.candidate(1).cost, 6100);
+
+  const Segment& tail_seg = segments.conversion_segment(1);
+  EXPECT_EQ(tail_seg.key(), "する");
+  EXPECT_EQ(tail_seg.candidate(0).value, "する");
+}
+
 }  // namespace
 }  // namespace mozc

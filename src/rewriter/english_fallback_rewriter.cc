@@ -144,20 +144,28 @@ int EnglishFallbackRewriter::capability(const ConversionRequest& request) const 
 
 void EnglishFallbackRewriter::AddEnglishCandidates(
     absl::string_view word, absl::string_view key, Segment* segment) const {
+  const std::string raw = std::string(word);
   const std::string lower = absl::AsciiStrToLower(word);
 
-  converter::Candidate* cand = segment->add_candidate();
-  cand->key = std::string(key);
-  cand->content_key = std::string(key);
-  cand->value = lower;
-  cand->content_value = lower;
-  cand->cost = 6000;
-  cand->wcost = 5000;
-  cand->structure_cost = 1000;
-  cand->lid = unknown_id_;
-  cand->rid = unknown_id_;
-  cand->converted_segment_count = 1;
-  cand->attributes = converter::Attribute::NO_VARIANTS_EXPANSION;
+  auto add_cand = [&](const std::string& val, int32_t cost) {
+    converter::Candidate* cand = segment->add_candidate();
+    cand->key = std::string(key);
+    cand->content_key = std::string(key);
+    cand->value = val;
+    cand->content_value = val;
+    cand->cost = cost;
+    cand->wcost = cost - 1000;
+    cand->structure_cost = 1000;
+    cand->lid = unknown_id_;
+    cand->rid = unknown_id_;
+    cand->converted_segment_count = 1;
+    cand->attributes = converter::Attribute::NO_VARIANTS_EXPANSION;
+  };
+
+  add_cand(raw, 6000);
+  if (raw != lower) {
+    add_cand(lower, 6100);
+  }
 }
 
 bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,

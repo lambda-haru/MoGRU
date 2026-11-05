@@ -725,13 +725,10 @@ void Composer::ApplyTemporaryInputMode(const absl::string_view input,
     }
     ++shifted_sequence_count_;
   } else if (alpha_without_shift) {
-    // When shifted input continues, the next lower input is the end
-    // of temporary half-width Ascii input.
-    if (shifted_sequence_count_ > 1 &&
-        switch_mode == config::Config::ASCII_INPUT_MODE) {
-      SetInputMode(comeback_input_mode_);
-    }
-    if (switch_mode == config::Config::KATAKANA_INPUT_MODE) {
+    // When shift is released and a non-shifted alphabet key is pressed,
+    // immediately return to the original input mode (preferring Romaji/Hiragana input).
+    if (switch_mode == config::Config::ASCII_INPUT_MODE ||
+        switch_mode == config::Config::KATAKANA_INPUT_MODE) {
       SetInputMode(comeback_input_mode_);
     }
     shifted_sequence_count_ = 0;
