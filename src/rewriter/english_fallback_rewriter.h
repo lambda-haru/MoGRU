@@ -30,10 +30,13 @@
 #ifndef MOZC_REWRITER_ENGLISH_FALLBACK_REWRITER_H_
 #define MOZC_REWRITER_ENGLISH_FALLBACK_REWRITER_H_
 
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include "absl/strings/string_view.h"
+#include "composer/composer.h"
 #include "config/gru_config.h"
 #include "converter/segments.h"
 #include "dictionary/english_dictionary.h"
@@ -58,10 +61,23 @@ class EnglishFallbackRewriter : public RewriterInterface {
 
   int capability(const ConversionRequest& request) const override;
 
+  std::optional<ResizeSegmentsRequest> CheckResizeSegmentsRequest(
+      const ConversionRequest& request,
+      const Segments& segments) const override;
+
   bool Rewrite(const ConversionRequest& request,
                Segments* segments) const override;
 
  private:
+  bool ShouldTriggerFallback(const ConversionRequest& request,
+                             const Segments& segments,
+                             const GruPenaltyConfig& config) const;
+
+  bool MatchWordAtOffset(const composer::ComposerData& composer, size_t offset,
+                         size_t total_composed_len, size_t min_word_length,
+                         std::string* matched_word,
+                         size_t* matched_preedit_chars) const;
+
   void AddEnglishCandidates(absl::string_view word, absl::string_view key,
                             Segment* segment) const;
 

@@ -488,5 +488,231 @@ TEST_F(EnglishFallbackRewriterTest, CapitalizedWordPreservesCaseAndAddsLower) {
   EXPECT_EQ(tail_seg.candidate(0).value, "する");
 }
 
+TEST_F(EnglishFallbackRewriterTest, CheckResizeSegmentsRequestMergesAndSplits) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("repository");
+
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  composer::Composer composer = CreateComposer("repositorywotsukuru");
+  Segments segments;
+
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("れぽ");
+  seg0->add_candidate()->cost = 8485;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("しと");
+  seg1->add_candidate()->cost = 6585;
+
+  Segment* seg2 = segments.add_segment();
+  seg2->set_key("ｒｙを");
+  seg2->add_candidate()->cost = 19994;
+
+  Segment* seg3 = segments.add_segment();
+  seg3->set_key("つくる");
+  seg3->add_candidate()->cost = 3261;
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+
+  const auto resize_req =
+      rewriter.CheckResizeSegmentsRequest(request, segments);
+  ASSERT_TRUE(resize_req.has_value());
+  EXPECT_EQ(resize_req->segment_index, 0);
+  EXPECT_EQ(resize_req->segment_sizes[0], 6);  // "れぽしとｒｙ" = 6 chars
+
+  // Once resized is true, CheckResizeSegmentsRequest must return nullopt.
+  segments.set_resized(true);
+  EXPECT_FALSE(
+      rewriter.CheckResizeSegmentsRequest(request, segments).has_value());
+}
+
+TEST_F(EnglishFallbackRewriterTest, UserResizedShrinkDoesNotRemerge) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("merge");
+
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  composer::Composer composer = CreateComposer("mergesuru");
+  Segments segments;
+  segments.set_resized(true);
+
+  // User shrunk segment 0 from "めｒげ" (3 chars) to "めｒ" (2 chars, FIXED_BOUNDARY)
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("めｒ");
+  seg0->set_segment_type(Segment::FIXED_BOUNDARY);
+  auto* c0 = seg0->add_candidate();
+  c0->key = "めｒ";
+  c0->value = "めr";
+  c0->cost = 20000;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("げ");
+  seg1->set_segment_type(Segment::FREE);
+  auto* c1 = seg1->add_candidate();
+  c1->key = "げ";
+  c1->value = "下";
+  c1->cost = 5000;
+
+  Segment* seg2 = segments.add_segment();
+  seg2->set_key("する");
+  seg2->set_segment_type(Segment::FREE);
+  auto* c2 = seg2->add_candidate();
+  c2->key = "する";
+  c2->value = "する";
+  c2->cost = 4000;
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+
+  // Must NOT re-merge "めｒ" and "げ" back into "merge".
+  EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+  ASSERT_EQ(segments.conversion_segments_size(), 3);
+  EXPECT_EQ(segments.conversion_segment(0).key(), "めｒ");
+  EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "めr");
+  EXPECT_EQ(segments.conversion_segment(1).key(), "げ");
+  EXPECT_EQ(segments.conversion_segment(2).key(), "する");
+}
+
+TEST_F(EnglishFallbackRewriterTest, UserResizedExpandDoesNotSplit) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("merge");
+
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  composer::Composer composer = CreateComposer("mergesuru");
+  Segments segments;
+  segments.set_resized(true);
+
+  // User expanded segment 0 from "めｒげ" (3 chars) to "めｒげす" (4 chars, FIXED_BOUNDARY)
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("めｒげす");
+  seg0->set_segment_type(Segment::FIXED_BOUNDARY);
+  auto* c0 = seg0->add_candidate();
+  c0->key = "めｒげす";
+  c0->value = "目rゲス";
+  c0->cost = 22000;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("る");
+  seg1->set_segment_type(Segment::FREE);
+  auto* c1 = seg1->add_candidate();
+  c1->key = "る";
+  c1->value = "る";
+  c1->cost = 4000;
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+
+  // Must NOT split "めｒげす" back into "merge" + "す".
+  EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+  ASSERT_EQ(segments.conversion_segments_size(), 2);
+  EXPECT_EQ(segments.conversion_segment(0).key(), "めｒげす");
+  EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "目rゲス");
+  EXPECT_EQ(segments.conversion_segment(1).key(), "る");
+}
+
+TEST_F(EnglishFallbackRewriterTest,
+       ExactFixedBoundaryStillReceivesEnglishCandidate) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("merge");
+
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  composer::Composer composer = CreateComposer("mergesuru");
+  Segments segments;
+  segments.set_resized(true);
+
+  // Segment 0 is FIXED_BOUNDARY with exact length of "merge" ("めｒげ", 3 chars).
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("めｒげ");
+  seg0->set_segment_type(Segment::FIXED_BOUNDARY);
+  auto* c0 = seg0->add_candidate();
+  c0->key = "めｒげ";
+  c0->value = "めrげ";
+  c0->cost = 20569;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("する");
+  seg1->set_segment_type(Segment::FREE);
+  auto* c1 = seg1->add_candidate();
+  c1->key = "する";
+  c1->value = "する";
+  c1->cost = 4000;
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+
+  EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+  ASSERT_EQ(segments.conversion_segments_size(), 2);
+  EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "merge");
+  EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "する");
+}
+
+TEST_F(EnglishFallbackRewriterTest,
+       PrecedingFixedBoundarySplittingWordSuppressesSuffixMatch) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("branch");
+  dict.AddWord("ranch");
+
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  // "watashihabranchwokiru" -> "わたしはｂらんｃｈをきる"
+  composer::Composer composer = CreateComposer("watashihabranchwokiru");
+  ASSERT_EQ(composer.GetStringForPreedit(), "わたしはｂらんｃｈをきる");
+
+  Segments segments;
+  segments.set_resized(true);
+
+  // User expanded segment 0 to "わたしはｂ" (5 chars, FIXED_BOUNDARY), consuming 'b' of "branch".
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("わたしはｂ");
+  seg0->set_segment_type(Segment::FIXED_BOUNDARY);
+  auto* c0 = seg0->add_candidate();
+  c0->key = "わたしはｂ";
+  c0->value = "私はb";
+  c0->cost = 20000;
+
+  // Remaining "らんｃｈ" (FREE) should not match "ranch" because it is a suffix fragment of "branch".
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("らんｃｈ");
+  seg1->set_segment_type(Segment::FREE);
+  auto* c1 = seg1->add_candidate();
+  c1->key = "らんｃｈ";
+  c1->value = "らんch";
+  c1->cost = 25000;
+
+  Segment* seg2 = segments.add_segment();
+  seg2->set_key("をきる");
+  seg2->set_segment_type(Segment::FREE);
+  auto* c2 = seg2->add_candidate();
+  c2->key = "をきる";
+  c2->value = "を切る";
+  c2->cost = 4000;
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+
+  EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+  ASSERT_EQ(segments.conversion_segments_size(), 3);
+  EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "らんch");
+}
+
 }  // namespace
 }  // namespace mozc
