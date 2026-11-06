@@ -117,6 +117,7 @@ class ConfigDialog : public QDialog, private Ui::ConfigDialog {
   std::string gru_config_path_;
   int64_t gru_config_mtime_ = 0;
   QTimer* gru_config_watch_timer_ = nullptr;
+  GruPenaltyConfig cached_gru_config_;
 };
 
 }  // namespace gui

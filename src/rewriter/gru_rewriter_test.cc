@@ -1248,6 +1248,127 @@ TEST_F(GruRewriterTest, ResolveDataFilePathSearchesSystemModelDirForRelativeName
   std::filesystem::remove_all(base_tmp, ec);
 }
 
+TEST_F(GruRewriterTest, ProfileAndInstantModeConfigRoundTrip) {
+  const std::string test_config = FileUtil::JoinPath(
+      std::filesystem::temp_directory_path().string(),
+      "gru_profile_instant_config.ini");
+  std::error_code ec;
+  std::filesystem::remove(test_config, ec);
+
+  GruPenaltyConfig saved;
+  saved.current_profile = "coding";
+  saved.enable_app_profile_switching = true;
+  saved.app_profile_map = "code:coding,slack:business,discord:casual";
+  saved.enable_instant_mode = true;
+  saved.instant_learning_rate = 1.25;
+  saved.instant_max_weight_delta = 3.5;
+
+  // Custom profile override
+  GruPenaltyConfig custom_coding = saved;
+  custom_coding.alphabet_multiplier = 0.85;
+  custom_coding.katakana_multiplier = 1.05;
+  saved.profiles["coding"] = custom_coding;
+
+  ASSERT_TRUE(config::GruConfigManager::SaveConfig(saved, test_config));
+  const GruPenaltyConfig loaded =
+      config::GruConfigManager::LoadConfig(test_config);
+
+  EXPECT_EQ(loaded.current_profile, "coding");
+  EXPECT_TRUE(loaded.enable_app_profile_switching);
+  EXPECT_EQ(loaded.app_profile_map, "code:coding,slack:business,discord:casual");
+  EXPECT_TRUE(loaded.enable_instant_mode);
+  EXPECT_NEAR(loaded.instant_learning_rate, 1.25, 1e-4);
+  EXPECT_NEAR(loaded.instant_max_weight_delta, 3.5, 1e-4);
+
+  // Verify application detection
+  EXPECT_EQ(config::GruConfigManager::DetectProfileFromApplication("Code", loaded), "coding");
+  EXPECT_EQ(config::GruConfigManager::DetectProfileFromApplication("/usr/bin/slack", loaded), "business");
+  EXPECT_EQ(config::GruConfigManager::DetectProfileFromApplication("discord-canary", loaded), "casual");
+  EXPECT_EQ(config::GruConfigManager::DetectProfileFromApplication("unknown_app", loaded), "");
+
+  // Verify effective profile resolution with overrides
+  const GruPenaltyConfig eff_coding =
+      config::GruConfigManager::GetEffectiveProfileConfig(loaded, "coding");
+  EXPECT_EQ(eff_coding.current_profile, "coding");
+  EXPECT_NEAR(eff_coding.alphabet_multiplier, 0.85, 1e-4);
+  EXPECT_NEAR(eff_coding.katakana_multiplier, 1.05, 1e-4);
+  EXPECT_TRUE(absl::EndsWith(eff_coding.gru_user_model_path, "grumodel_user_coding.bin"));
+
+  const GruPenaltyConfig eff_business =
+      config::GruConfigManager::GetEffectiveProfileConfig(loaded, "business");
+  EXPECT_EQ(eff_business.current_profile, "business");
+  EXPECT_NEAR(eff_business.emoji_penalty, 30000.0, 1e-4);
+  EXPECT_TRUE(absl::EndsWith(eff_business.gru_user_model_path, "grumodel_user_business.bin"));
+
+  std::filesystem::remove(test_config, ec);
+}
+
+TEST_F(GruRewriterTest, InlineCommandCandidatesAndProfileSwitching) {
+  ConversionRequest request;
+
+  // 1. "ぷろふぁいる" triggers profile switch command candidates
+  {
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("ぷろふぁいる");
+    AddCandidate("ぷろふぁいる", "プロファイル", 1000, seg);
+
+    EXPECT_TRUE(rewriter_->Rewrite(request, &segments));
+    bool found_coding_cmd = false;
+    for (size_t i = 0; i < seg->candidates_size(); ++i) {
+      if (seg->candidate(i).value == "MoGRU: プロファイル切替 [coding]") {
+        found_coding_cmd = true;
+        EXPECT_TRUE(seg->candidate(i).attributes & converter::Attribute::COMMAND_CANDIDATE);
+        break;
+      }
+    }
+    EXPECT_TRUE(found_coding_cmd);
+
+    // Commit coding profile switch command
+    Segments commit_segments;
+    Segment* fixed = commit_segments.add_segment();
+    fixed->set_key("ぷろふぁいる");
+    fixed->set_segment_type(Segment::FIXED_VALUE);
+    AddCandidate("ぷろふぁいる", "MoGRU: プロファイル切替 [coding]", 0, fixed);
+    rewriter_->Finish(request, commit_segments);
+
+    // Verify penalty_config has switched to coding
+    EXPECT_EQ(rewriter_->active_profile(), "coding");
+    GruPenaltyConfig cfg = rewriter_->penalty_config();
+    EXPECT_EQ(cfg.current_profile, "coding");
+    EXPECT_NEAR(cfg.alphabet_multiplier, 1.00, 1e-4);
+  }
+
+  // 2. "いんすたんと" triggers instant mode toggle command candidate
+  {
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("いんすたんと");
+    AddCandidate("いんすたんと", "インスタント", 1000, seg);
+
+    EXPECT_TRUE(rewriter_->Rewrite(request, &segments));
+    bool found_instant_cmd = false;
+    for (size_t i = 0; i < seg->candidates_size(); ++i) {
+      if (seg->candidate(i).value == "MoGRU: インスタント速習モード ON") {
+        found_instant_cmd = true;
+        break;
+      }
+    }
+    EXPECT_TRUE(found_instant_cmd);
+
+    // Commit instant mode ON
+    Segments commit_segments;
+    Segment* fixed = commit_segments.add_segment();
+    fixed->set_key("いんすたんと");
+    fixed->set_segment_type(Segment::FIXED_VALUE);
+    AddCandidate("いんすたんと", "MoGRU: インスタント速習モード ON", 0, fixed);
+    rewriter_->Finish(request, commit_segments);
+
+    GruPenaltyConfig cfg = rewriter_->penalty_config();
+    EXPECT_TRUE(cfg.enable_instant_mode);
+  }
+}
+
 }  // namespace
 }  // namespace mozc
 

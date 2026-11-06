@@ -1754,6 +1754,42 @@
               <number>8</number>
              </property>
              <item>
+              <widget class="QGroupBox" name="gruProfileGroupBox">
+               <property name="title">
+                <string>Context Profile (Context-specific Tuning &amp; Model)</string>
+               </property>
+               <layout class="QFormLayout" name="gruProfileFormLayout">
+                <item row="0" column="0">
+                 <widget class="QLabel" name="gruProfileLabel">
+                  <property name="text">
+                   <string>Active Profile:</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="1">
+                 <widget class="QComboBox" name="gruProfileComboBox"/>
+                </item>
+                <item row="1" column="0" colspan="2">
+                 <widget class="QCheckBox" name="enableAppProfileSwitchingCheckBox">
+                  <property name="text">
+                   <string>Enable automatic profile switching based on active application</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="0">
+                 <widget class="QLabel" name="appProfileMapLabel">
+                  <property name="text">
+                   <string>Application Profile Map (app:profile,...):</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="1">
+                 <widget class="QLineEdit" name="appProfileMapLineEdit"/>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
               <widget class="QGroupBox" name="gruGeneralGroupBox">
                <property name="title">
                 <string>MoGRU Neural Conversion Settings</string>
@@ -2525,6 +2561,65 @@
                  </widget>
                 </item>
                 <item row="5" column="0" colspan="2">
+                 <widget class="QCheckBox" name="enableInstantModeCheckBox">
+                  <property name="text">
+                   <string>Enable Instant Mode (Rapid 1-shot adaptation)</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="6" column="0">
+                 <widget class="QLabel" name="instantLearningRateLabel">
+                  <property name="text">
+                   <string>Instant Learning Rate:</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="6" column="1">
+                 <widget class="QDoubleSpinBox" name="instantLearningRateSpinBox">
+                  <property name="decimals">
+                   <number>2</number>
+                  </property>
+                  <property name="minimum">
+                   <double>0.010000000000000</double>
+                  </property>
+                  <property name="maximum">
+                   <double>5.000000000000000</double>
+                  </property>
+                  <property name="singleStep">
+                   <double>0.050000000000000</double>
+                  </property>
+                  <property name="value">
+                   <double>0.500000000000000</double>
+                  </property>
+                 </widget>
+                </item>
+                <item row="7" column="0">
+                 <widget class="QLabel" name="instantMaxWeightDeltaLabel">
+                  <property name="text">
+                   <string>Instant Max Weight Delta:</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="7" column="1">
+                 <widget class="QDoubleSpinBox" name="instantMaxWeightDeltaSpinBox">
+                  <property name="decimals">
+                   <number>2</number>
+                  </property>
+                  <property name="minimum">
+                   <double>0.050000000000000</double>
+                  </property>
+                  <property name="maximum">
+                   <double>10.000000000000000</double>
+                  </property>
+                  <property name="singleStep">
+                   <double>0.100000000000000</double>
+                  </property>
+                  <property name="value">
+                   <double>1.500000000000000</double>
+                  </property>
+                 </widget>
+                </item>
+                <item row="8" column="0" colspan="2">
                  <widget class="QPushButton" name="resetGruUserModelButton">
                   <property name="text">
                    <string>Reset Learned GRU Model (Delete grumodel_user.bin)</string>

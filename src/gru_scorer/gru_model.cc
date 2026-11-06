@@ -264,6 +264,20 @@ bool GruModel::LoadUserWeights(const std::string &path)
     return true;
 }
 
+bool GruModel::SwapUserWeights(const std::string &path)
+{
+    if (!is_loaded_ || !base_weights_buffer_ || !weights_buffer_)
+    {
+        return false;
+    }
+    ResetToBaseWeights();
+    if (path.empty() || !std::filesystem::exists(path))
+    {
+        return true;
+    }
+    return LoadUserWeights(path);
+}
+
 bool GruModel::SaveModel(const std::string &path) const
 {
     if (!is_loaded_ || !weights_buffer_ || total_elements_ == 0 || path.empty())
@@ -852,7 +866,8 @@ float GruModel::TrainOnStringWithContext(const charindex::CharIndex &indexer,
         has_revert_snapshot_ = true;
     }
 
-    const bool full_bptt = (config.mode == TrainMode::kFullBptt);
+    // Instant mode strictly enforces output-only updates to protect recurrence dynamics
+    const bool full_bptt = (!config.instant_mode && config.mode == TrainMode::kFullBptt);
     const float inv_valid = 1.0f / static_cast<float>(valid_targets);
 
     const size_t size_emb = V * H;
@@ -1089,13 +1104,18 @@ float GruModel::TrainOnStringWithContext(const charindex::CharIndex &indexer,
         }
 
         const float eff_lr = config.learning_rate * grad_scale;
-        const float anchor_decay = config.learning_rate * config.weight_decay;
+        const float anchor_decay = std::min(0.1f, config.learning_rate * config.weight_decay);
         float *w_ptr = weights_buffer_.get();
         const float *base_ptr = base_weights_buffer_.get();
 
         for (size_t i = 0; i < total_elements_; ++i)
         {
-            w_ptr[i] -= eff_lr * grad_all[i] + anchor_decay * (w_ptr[i] - base_ptr[i]);
+            float delta = eff_lr * grad_all[i] + anchor_decay * (w_ptr[i] - base_ptr[i]);
+            if (config.max_weight_delta > 0.0f)
+            {
+                delta = std::clamp(delta, -config.max_weight_delta, config.max_weight_delta);
+            }
+            w_ptr[i] -= delta;
         }
     }
     else
@@ -1111,14 +1131,19 @@ float GruModel::TrainOnStringWithContext(const charindex::CharIndex &indexer,
         }
 
         const float eff_lr = config.learning_rate * grad_scale;
-        const float anchor_decay = config.learning_rate * config.weight_decay;
+        const float anchor_decay = std::min(0.1f, config.learning_rate * config.weight_decay);
         const size_t out_offset = size_emb + size_ih + size_hh + size_bih + size_bhh;
         float *w_out_ptr = weights_buffer_.get() + out_offset;
         const float *base_out_ptr = base_weights_buffer_.get() + out_offset;
 
         for (size_t i = 0; i < out_elements; ++i)
         {
-            w_out_ptr[i] -= eff_lr * grad_out_only[i] + anchor_decay * (w_out_ptr[i] - base_out_ptr[i]);
+            float delta = eff_lr * grad_out_only[i] + anchor_decay * (w_out_ptr[i] - base_out_ptr[i]);
+            if (config.max_weight_delta > 0.0f)
+            {
+                delta = std::clamp(delta, -config.max_weight_delta, config.max_weight_delta);
+            }
+            w_out_ptr[i] -= delta;
         }
     }
 

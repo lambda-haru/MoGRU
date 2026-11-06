@@ -38,6 +38,7 @@
 #include <istream>
 #include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -966,6 +967,22 @@ void ConfigDialog::SetupMogruUi() {
     gruEmojiPenaltyLabel->setText(
         QString::fromUtf8("絵文字・記号 固定ペナルティ (emoji_penalty):"));
 
+    gruProfileGroupBox->setTitle(
+        QString::fromUtf8("コンテキストプロファイル (文脈切り替え)"));
+    gruProfileLabel->setText(
+        QString::fromUtf8("アクティブプロファイル (current_profile):"));
+    enableAppProfileSwitchingCheckBox->setText(
+        QString::fromUtf8("アクティブなアプリケーションに応じたプロファイル自動切り替え"));
+    appProfileMapLabel->setText(
+        QString::fromUtf8("連動ルール (app:profile,...):"));
+
+    enableInstantModeCheckBox->setText(
+        QString::fromUtf8("インスタント速習モードを有効にする (極小ステップ即時適応)"));
+    instantLearningRateLabel->setText(
+        QString::fromUtf8("インスタント学習率 (instant_learning_rate):"));
+    instantMaxWeightDeltaLabel->setText(
+        QString::fromUtf8("最大重み変化量制限 (instant_max_weight_delta):"));
+
     gruOnlineLearningGroupBox->setTitle(
         QString::fromUtf8("オンライン個人学習 (Online Learning)"));
     enableGruOnlineLearningCheckBox->setText(
@@ -1016,6 +1033,28 @@ void ConfigDialog::SetupMogruUi() {
   gruUserModelPathLineEdit->setPlaceholderText(QString::fromUtf8(
       config::GruConfigManager::ResolveUserModelFilePath("").c_str()));
 
+  QObject::connect(gruProfileComboBox,
+                   QOverload<int>::of(&QComboBox::currentIndexChanged),
+                   [this](int /*index*/) {
+                     const std::string prof =
+                         gruProfileComboBox->currentData().toString().toStdString();
+                     const std::string effective_prof = prof.empty() ? "default" : prof;
+                     gruUserModelPathLineEdit->setPlaceholderText(
+                         QString::fromUtf8(config::GruConfigManager::ResolveProfileUserModelFilePath(
+                             "", effective_prof).c_str()));
+                   });
+
+  QObject::connect(enableAppProfileSwitchingCheckBox, &QCheckBox::toggled,
+                   [this](bool checked) {
+                     appProfileMapLineEdit->setEnabled(checked);
+                   });
+
+  QObject::connect(enableInstantModeCheckBox, &QCheckBox::toggled,
+                   [this](bool checked) {
+                     instantLearningRateSpinBox->setEnabled(checked);
+                     instantMaxWeightDeltaSpinBox->setEnabled(checked);
+                   });
+
   QObject::connect(enableEnglishFallbackCheckBox, &QCheckBox::toggled,
                    [this](bool checked) {
                      enableLiveConversionEnglishFallbackCheckBox->setEnabled(checked);
@@ -1032,6 +1071,78 @@ void ConfigDialog::SetupMogruUi() {
 }
 
 void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
+  cached_gru_config_ = gru_config;
+
+  gruProfileComboBox->blockSignals(true);
+  gruProfileComboBox->clear();
+  const auto builtin = config::GruConfigManager::GetBuiltinDefaultProfiles();
+  std::set<std::string> known_profiles;
+  for (const auto& kv : builtin) {
+    known_profiles.insert(kv.first);
+  }
+  for (const auto& kv : gru_config.profiles) {
+    known_profiles.insert(kv.first);
+  }
+  if (!gru_config.current_profile.empty()) {
+    known_profiles.insert(gru_config.current_profile);
+  }
+
+  const bool is_ja = (QLocale::system().language() == QLocale::Japanese);
+  int selected_idx = 0;
+  int current_idx = 0;
+  for (const auto& prof_name : known_profiles) {
+    QString label;
+    if (prof_name == "default") {
+      label = is_ja ? QString::fromUtf8("標準 (default)")
+                    : QString::fromUtf8("Default (default)");
+    } else if (prof_name == "business") {
+      label = is_ja ? QString::fromUtf8("ビジネス (business)")
+                    : QString::fromUtf8("Business (business)");
+    } else if (prof_name == "coding") {
+      label = is_ja ? QString::fromUtf8("コーディング (coding)")
+                    : QString::fromUtf8("Coding (coding)");
+    } else if (prof_name == "casual") {
+      label = is_ja ? QString::fromUtf8("日常・SNS (casual)")
+                    : QString::fromUtf8("Casual / SNS (casual)");
+    } else if (prof_name == "creative") {
+      label = is_ja ? QString::fromUtf8("創作・文芸 (creative)")
+                    : QString::fromUtf8("Creative (creative)");
+    } else if (prof_name == "instant") {
+      label = is_ja ? QString::fromUtf8("インスタント (instant)")
+                    : QString::fromUtf8("Instant (instant)");
+    } else {
+      label = QString::fromUtf8(prof_name.c_str());
+    }
+    gruProfileComboBox->addItem(label, QString::fromUtf8(prof_name.c_str()));
+    if (prof_name == gru_config.current_profile ||
+        (gru_config.current_profile.empty() && prof_name == "default")) {
+      selected_idx = current_idx;
+    }
+    current_idx++;
+  }
+  gruProfileComboBox->setCurrentIndex(selected_idx);
+  gruProfileComboBox->blockSignals(false);
+
+  enableAppProfileSwitchingCheckBox->setChecked(
+      gru_config.enable_app_profile_switching);
+  appProfileMapLineEdit->setText(
+      QString::fromUtf8(gru_config.app_profile_map.c_str()));
+  appProfileMapLineEdit->setEnabled(gru_config.enable_app_profile_switching);
+
+  enableInstantModeCheckBox->setChecked(gru_config.enable_instant_mode);
+  instantLearningRateSpinBox->setValue(gru_config.instant_learning_rate);
+  instantMaxWeightDeltaSpinBox->setValue(gru_config.instant_max_weight_delta);
+  instantLearningRateSpinBox->setEnabled(gru_config.enable_instant_mode);
+  instantMaxWeightDeltaSpinBox->setEnabled(gru_config.enable_instant_mode);
+
+  const std::string effective_prof = gru_config.current_profile.empty()
+                                         ? "default"
+                                         : gru_config.current_profile;
+  gruUserModelPathLineEdit->setPlaceholderText(
+      QString::fromUtf8(config::GruConfigManager::ResolveProfileUserModelFilePath(
+                            "", effective_prof)
+                            .c_str()));
+
   enableGruRewriterCheckBox->setChecked(gru_config.enable_gru_rewriter);
   enableLiveConversionCheckBox->setChecked(gru_config.enable_live_conversion);
   showGruScoreCheckBox->setChecked(gru_config.show_gru_score);
@@ -1097,7 +1208,7 @@ void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
 }
 
 GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
-  GruPenaltyConfig cfg;
+  GruPenaltyConfig cfg = cached_gru_config_;
   cfg.enable_gru_rewriter = enableGruRewriterCheckBox->isChecked();
   cfg.enable_live_conversion = enableLiveConversionCheckBox->isChecked();
   cfg.show_gru_score = showGruScoreCheckBox->isChecked();
@@ -1150,6 +1261,22 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
       gruOnlineLearningSaveIntervalSpinBox->value();
   cfg.enable_conversion_history_log =
       enableConversionHistoryLogCheckBox->isChecked();
+
+  // Profile settings
+  const int prof_idx = gruProfileComboBox->currentIndex();
+  if (prof_idx >= 0) {
+    cfg.current_profile =
+        gruProfileComboBox->itemData(prof_idx).toString().toStdString();
+  }
+  cfg.enable_app_profile_switching =
+      enableAppProfileSwitchingCheckBox->isChecked();
+  cfg.app_profile_map = appProfileMapLineEdit->text().trimmed().toStdString();
+
+  // Instant mode settings
+  cfg.enable_instant_mode = enableInstantModeCheckBox->isChecked();
+  cfg.instant_learning_rate = instantLearningRateSpinBox->value();
+  cfg.instant_max_weight_delta = instantMaxWeightDeltaSpinBox->value();
+
   return cfg;
 }
 
@@ -1239,13 +1366,20 @@ void ConfigDialog::BrowseGruUserModelPath() {
 }
 
 void ConfigDialog::ResetGruUserModel() {
+  const int prof_idx = gruProfileComboBox->currentIndex();
+  const std::string active_prof =
+      (prof_idx >= 0)
+          ? gruProfileComboBox->itemData(prof_idx).toString().toStdString()
+          : "default";
   const bool is_ja = (QLocale::system().language() == QLocale::Japanese);
   const QString prompt =
       is_ja ? QString::fromUtf8(
-                  "オンライン学習で保存された個人用GRUモデル "
-                  "(grumodel_user.bin) を削除し、初期モデルへ戻しますか？")
-            : tr("Do you want to delete the personalized GRU user model "
-                 "(grumodel_user.bin) and revert to the base model?");
+                  "選択中プロファイル「%1」の個人用GRUモデルを削除し、"
+                  "初期モデルへ戻しますか？")
+                  .arg(QString::fromUtf8(active_prof.c_str()))
+            : tr("Do you want to delete the personalized GRU user model for "
+                 "profile '%1' and revert to the base model?")
+                  .arg(QString::fromUtf8(active_prof.c_str()));
   if (QMessageBox::Ok !=
       QMessageBox::question(this, windowTitle(), prompt,
                             QMessageBox::Ok | QMessageBox::Cancel,
@@ -1253,15 +1387,19 @@ void ConfigDialog::ResetGruUserModel() {
     return;
   }
 
+  const std::string custom_path =
+      gruUserModelPathLineEdit->text().trimmed().toStdString();
   const std::string path =
-      config::GruConfigManager::ResolveUserModelFilePath(
-          gruUserModelPathLineEdit->text().trimmed().toStdString());
+      config::GruConfigManager::ResolveProfileUserModelFilePath(custom_path,
+                                                                active_prof);
   if (!path.empty()) {
     FileUtil::UnlinkIfExists(path).IgnoreError();
   }
   const QString done_msg =
-      is_ja ? QString::fromUtf8("個人学習モデルをリセットしました。")
-            : tr("Personalized GRU user model has been reset.");
+      is_ja ? QString::fromUtf8("個人学習モデルをリセットしました:\n%1")
+                  .arg(QString::fromUtf8(path.c_str()))
+            : tr("Personalized GRU user model has been reset:\n%1")
+                  .arg(QString::fromUtf8(path.c_str()));
   QMessageBox::information(this, windowTitle(), done_msg);
 }
 

@@ -92,6 +92,8 @@ struct TrainConfig
     float learning_rate = 0.05f;
     float weight_decay = 0.001f; // L2 anchor regularization toward base model weights
     float max_grad_norm = 1.0f;  // Global gradient norm clipping threshold
+    float max_weight_delta = 0.0f; // Clamps element-wise update: |delta_w| <= max_weight_delta (0 = disabled)
+    bool instant_mode = false;   // If true, applies instant adaptation safeguards (Output-Only, delta clamping)
 };
 
 class GruModel
@@ -118,6 +120,14 @@ public:
      * @return true on success, false otherwise.
      */
     bool LoadUserWeights(const std::string &path);
+
+    /**
+     * @brief Swap active weights to a new profile user weights binary.
+     * Resets active weights to base model anchor first. If path is empty or does not exist,
+     * leaves active weights at base model (success). If path exists, loads the user model.
+     * @return true on success, false on load error.
+     */
+    bool SwapUserWeights(const std::string &path);
 
     /**
      * @brief Save current active weights binary to file atomically (via temporary file).

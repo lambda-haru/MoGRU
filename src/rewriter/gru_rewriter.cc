@@ -339,42 +339,70 @@ GruPenaltyConfig GruRewriter::GetPenaltyConfig() const {
         static_cast<double>(absl::GetFlag(FLAGS_gru_resegment_cost_threshold));
     base.enable_online_learning = absl::GetFlag(FLAGS_enable_gru_online_learning);
 
+    GruPenaltyConfig root_config;
     if (!config_file_path_.empty() && std::filesystem::exists(config_file_path_)) {
-      penalty_config_ = config::GruConfigManager::ParseConfigFile(
+      root_config = config::GruConfigManager::ParseConfigFile(
           config_file_path_, base);
-      LOG(INFO) << "GruRewriter: Hot-reloaded configuration from "
-                << config_file_path_ << ": enable_gru_rewriter="
-                << penalty_config_.enable_gru_rewriter
-                << ", enable_live_conversion="
-                << penalty_config_.enable_live_conversion
-                << ", gru_score_weight=" << penalty_config_.gru_score_weight
-                << ", show_gru_score=" << penalty_config_.show_gru_score
-                << ", katakana_multiplier="
-                << penalty_config_.katakana_multiplier
-                << ", hiragana_multiplier="
-                << penalty_config_.hiragana_multiplier
-                << ", hiragana_length_power="
-                << penalty_config_.hiragana_length_power
-                << ", alphabet_multiplier="
-                << penalty_config_.alphabet_multiplier
-                << ", emoji_penalty=" << penalty_config_.emoji_penalty
-                << ", enable_resegmentation="
-                << penalty_config_.enable_resegmentation
-                << ", resegment_threshold="
-                << penalty_config_.resegment_threshold
-                << ", enable_online_learning="
-                << penalty_config_.enable_online_learning
-                << ", online_learning_mode="
-                << penalty_config_.online_learning_mode
-                << ", online_learning_rate="
-                << penalty_config_.online_learning_rate;
     } else {
-      penalty_config_ = base;
+      root_config = base;
     }
-    config::GruConfigManager::ApplyEnvOverrides(&penalty_config_);
+    config::GruConfigManager::ApplyEnvOverrides(&root_config);
+
+    const std::string target_profile =
+        root_config.current_profile.empty() ? "default" : root_config.current_profile;
+    SwitchProfileLocked(target_profile, root_config);
+
+    LOG(INFO) << "GruRewriter: Hot-reloaded configuration from "
+              << config_file_path_ << ": profile=" << active_profile_
+              << ", enable_gru_rewriter=" << penalty_config_.enable_gru_rewriter
+              << ", enable_live_conversion=" << penalty_config_.enable_live_conversion
+              << ", gru_score_weight=" << penalty_config_.gru_score_weight
+              << ", show_gru_score=" << penalty_config_.show_gru_score
+              << ", katakana_multiplier=" << penalty_config_.katakana_multiplier
+              << ", hiragana_multiplier=" << penalty_config_.hiragana_multiplier
+              << ", alphabet_multiplier=" << penalty_config_.alphabet_multiplier
+              << ", emoji_penalty=" << penalty_config_.emoji_penalty
+              << ", enable_instant_mode=" << penalty_config_.enable_instant_mode
+              << ", instant_learning_rate=" << penalty_config_.instant_learning_rate;
   }
 
   return penalty_config_;
+}
+
+bool GruRewriter::SwitchProfileLocked(
+    const std::string& new_profile,
+    const GruPenaltyConfig& root_config) const {
+  const std::string effective_profile =
+      new_profile.empty() ? "default" : new_profile;
+
+  penalty_config_ = config::GruConfigManager::GetEffectiveProfileConfig(
+      root_config, effective_profile);
+
+  const std::string configured_user_model =
+      !penalty_config_.gru_user_model_path.empty()
+          ? penalty_config_.gru_user_model_path
+          : absl::GetFlag(FLAGS_gru_user_model_path);
+  const std::string target_user_model_path =
+      config::GruConfigManager::ResolveProfileUserModelFilePath(
+          effective_profile, configured_user_model);
+
+  if (active_profile_ != effective_profile || user_model_path_ != target_user_model_path) {
+    if (model_ && unsaved_updates_count_ > 0 && !user_model_path_.empty()) {
+      model_->SaveModel(user_model_path_);
+      unsaved_updates_count_ = 0;
+    }
+
+    active_profile_ = effective_profile;
+    user_model_path_ = target_user_model_path;
+
+    if (model_ && model_->is_loaded()) {
+      loaded_has_user_model_ = model_->SwapUserWeights(user_model_path_);
+      last_revert_id_ = 0;
+      LOG(INFO) << "GruRewriter: Swapped active profile to '" << active_profile_
+                << "' with user model " << user_model_path_;
+    }
+  }
+  return true;
 }
 
 bool GruRewriter::EnsureInitialized() const {
@@ -400,15 +428,24 @@ bool GruRewriter::EnsureInitialized() const {
       config::GruConfigManager::ResolveDataFilePath(
           configured_model, "grumodel.bin");
   const std::string user_model_path =
-      config::GruConfigManager::ResolveUserModelFilePath(configured_user_model);
+      config::GruConfigManager::ResolveProfileUserModelFilePath(
+          active_profile_, configured_user_model);
 
   if (is_initialized_ && model_ && model_->is_loaded() && indexer_ &&
       loaded_chardata_path_ == chardata_path &&
-      loaded_model_path_ == model_path &&
-      user_model_path_ == user_model_path) {
-    if (loaded_has_user_model_ && unsaved_updates_count_ == 0 &&
-        !user_model_path_.empty() &&
-        !std::filesystem::exists(user_model_path_)) {
+      loaded_model_path_ == model_path) {
+    if (user_model_path_ != user_model_path) {
+      if (unsaved_updates_count_ > 0 && !user_model_path_.empty()) {
+        model_->SaveModel(user_model_path_);
+        unsaved_updates_count_ = 0;
+      }
+      user_model_path_ = user_model_path;
+      loaded_has_user_model_ = model_->SwapUserWeights(user_model_path_);
+      last_revert_id_ = 0;
+      LOG(INFO) << "GruRewriter: Swapped user model to " << user_model_path;
+    } else if (loaded_has_user_model_ && unsaved_updates_count_ == 0 &&
+               !user_model_path_.empty() &&
+               !std::filesystem::exists(user_model_path_)) {
       model_->ResetToBaseWeights();
       loaded_has_user_model_ = false;
       last_revert_id_ = 0;
@@ -511,6 +548,36 @@ void GruRewriter::Finish(const ConversionRequest& request,
     return;
   }
 
+  // Check for MoGRU inline command candidate selection
+  for (size_t i = 0; i < segments.segments_size(); ++i) {
+    const Segment& seg = segments.segment(i);
+    if (seg.candidates_size() > 0 && seg.segment_type() == Segment::FIXED_VALUE) {
+      const std::string& val = seg.candidate(0).value;
+      constexpr absl::string_view kProfPrefix = "MoGRU: プロファイル切替 [";
+      if (absl::StartsWith(val, kProfPrefix) && absl::EndsWith(val, "]")) {
+        const std::string new_profile =
+            val.substr(kProfPrefix.size(), val.size() - kProfPrefix.size() - 1);
+        absl::MutexLock l(mutex_);
+        penalty_config_.current_profile = new_profile;
+        config::GruConfigManager::SaveConfig(penalty_config_, config_file_path_);
+        SwitchProfileLocked(new_profile, penalty_config_);
+        return;
+      }
+      if (val == "MoGRU: インスタント速習モード ON") {
+        absl::MutexLock l(mutex_);
+        penalty_config_.enable_instant_mode = true;
+        config::GruConfigManager::SaveConfig(penalty_config_, config_file_path_);
+        return;
+      }
+      if (val == "MoGRU: インスタント速習モード OFF") {
+        absl::MutexLock l(mutex_);
+        penalty_config_.enable_instant_mode = false;
+        config::GruConfigManager::SaveConfig(penalty_config_, config_file_path_);
+        return;
+      }
+    }
+  }
+
   std::string committed_text;
   const size_t start_seg_idx = segments.history_segments_size();
   for (size_t i = start_seg_idx; i < segments.segments_size(); ++i) {
@@ -547,24 +614,37 @@ void GruRewriter::Finish(const ConversionRequest& request,
       ComputePrefixContext(*model_, *indexer_, hist_prefix, "");
 
   gruscorer::TrainConfig train_cfg;
-  if (penalty_config.online_learning_mode == "full" ||
-      penalty_config.online_learning_mode == "full_bptt") {
-    train_cfg.mode = gruscorer::TrainMode::kFullBptt;
-  } else {
+  if (penalty_config.enable_instant_mode) {
+    train_cfg.instant_mode = true;
     train_cfg.mode = gruscorer::TrainMode::kOutputOnly;
+    train_cfg.learning_rate = static_cast<float>(penalty_config.instant_learning_rate);
+    train_cfg.max_weight_delta = static_cast<float>(penalty_config.instant_max_weight_delta);
+    train_cfg.max_grad_norm = std::max(1.0f, train_cfg.learning_rate * 2.0f);
+    train_cfg.weight_decay = static_cast<float>(penalty_config.online_learning_weight_decay);
+  } else {
+    train_cfg.instant_mode = false;
+    if (penalty_config.online_learning_mode == "full" ||
+        penalty_config.online_learning_mode == "full_bptt") {
+      train_cfg.mode = gruscorer::TrainMode::kFullBptt;
+    } else {
+      train_cfg.mode = gruscorer::TrainMode::kOutputOnly;
+    }
+    train_cfg.learning_rate =
+        static_cast<float>(penalty_config.online_learning_rate);
+    train_cfg.weight_decay =
+        static_cast<float>(penalty_config.online_learning_weight_decay);
+    train_cfg.max_grad_norm = 1.0f;
+    train_cfg.max_weight_delta = 0.0f;
   }
-  train_cfg.learning_rate =
-      static_cast<float>(penalty_config.online_learning_rate);
-  train_cfg.weight_decay =
-      static_cast<float>(penalty_config.online_learning_weight_decay);
-  train_cfg.max_grad_norm = 1.0f;
 
   model_->TrainOnStringWithContext(*indexer_, committed_text, init_ctx, train_cfg);
   last_revert_id_ = segments.revert_id();
   ++unsaved_updates_count_;
 
-  if (penalty_config.online_learning_save_interval > 0 &&
-      unsaved_updates_count_ >= penalty_config.online_learning_save_interval &&
+  const bool should_save_immediately = penalty_config.enable_instant_mode;
+  if ((should_save_immediately ||
+       (penalty_config.online_learning_save_interval > 0 &&
+        unsaved_updates_count_ >= penalty_config.online_learning_save_interval)) &&
       !user_model_path_.empty()) {
     if (model_->SaveModel(user_model_path_)) {
       unsaved_updates_count_ = 0;
@@ -652,6 +732,40 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
   const std::string hist_prefix = GetHistoryPrefix(&request, *segments);
   const double alpha = penalty_config.gru_score_weight;
   const bool show_score = penalty_config.show_gru_score;
+
+  // Inline MoGRU command candidate suggestion
+  if (segments->conversion_segments_size() == 1) {
+    Segment* seg = segments->mutable_conversion_segment(0);
+    const absl::string_view key = seg->key();
+    if (key == "ぷろふぁいる" || key == "もぐら" || key == "いんすたんと") {
+      auto add_cmd = [&](const std::string& val, const std::string& desc) {
+        Segment::Candidate* cand = seg->add_candidate();
+        cand->value = val;
+        cand->content_value = val;
+        cand->description = desc;
+        cand->prefix = "【";
+        cand->suffix = "】";
+        cand->attributes |= converter::Attribute::NO_LEARNING;
+        cand->attributes |= converter::Attribute::COMMAND_CANDIDATE;
+      };
+
+      if (key == "ぷろふぁいる" || key == "もぐら") {
+        add_cmd("MoGRU: プロファイル切替 [coding]", "プログラミング・技術向けに切替");
+        add_cmd("MoGRU: プロファイル切替 [business]", "公用文・ビジネス向けに切替");
+        add_cmd("MoGRU: プロファイル切替 [casual]", "日常会話・SNS向けに切替");
+        add_cmd("MoGRU: プロファイル切替 [creative]", "小説・創作向けに切替");
+        add_cmd("MoGRU: プロファイル切替 [instant]", "インスタント速習プロファイルに切替");
+        add_cmd("MoGRU: プロファイル切替 [default]", "標準プロファイルに切替");
+      }
+      if (key == "いんすたんと" || key == "もぐら") {
+        if (!penalty_config.enable_instant_mode) {
+          add_cmd("MoGRU: インスタント速習モード ON", "1回確定で限界学習するモードを有効化");
+        } else {
+          add_cmd("MoGRU: インスタント速習モード OFF", "インスタント速習モードを解除");
+        }
+      }
+    }
+  }
 
   const size_t start_seg_idx = segments->history_segments_size();
   return RerankSegmentsWithBeamSearch(

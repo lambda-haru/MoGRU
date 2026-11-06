@@ -470,6 +470,96 @@ void TestOnlineTrainingAndPersistence()
     std::cout << "[Test] TestOnlineTrainingAndPersistence passed!" << std::endl;
 }
 
+void TestInstantModeAndSwapUserWeights()
+{
+    std::cout << "[Test] Running TestInstantModeAndSwapUserWeights..." << std::endl;
+
+    gruscorer::GruModel model;
+    std::string model_path = FindDataFile("dummy_model.bin");
+    std::string chardata_path = FindDataFile("chardata.bin");
+    ENSURE(model.LoadModel(model_path));
+
+    charindex::CharIndex indexer;
+    ENSURE(indexer.LoadFile(chardata_path));
+
+    const std::string prefix = "私は";
+    const std::string target1 = "東京";
+    const std::string target2 = "福岡";
+
+    auto ctx0 = model.ComputeContext(indexer, prefix);
+    const float base_score1 = model.ScoreStringWithContext(indexer, target1, ctx0, true);
+    const float base_score2 = model.ScoreStringWithContext(indexer, target2, ctx0, true);
+
+    // 1. Verify Instant Mode safeguards with extreme learning rate (LR = 1.0f)
+    gruscorer::TrainConfig instant_cfg;
+    instant_cfg.instant_mode = true;
+    instant_cfg.learning_rate = 1.0f; // Extreme learning rate
+    instant_cfg.max_weight_delta = 2.0f;
+    instant_cfg.max_grad_norm = 2.0f;
+    // Deliberately request kFullBptt: instant_mode must force kOutputOnly to protect recurrence!
+    instant_cfg.mode = gruscorer::TrainMode::kFullBptt;
+
+    // Train 1 step on target1
+    model.TrainOnStringWithContext(indexer, target1, ctx0, instant_cfg);
+
+    // Verify hidden state of prefix is completely untouched
+    auto ctx_after_instant = model.ComputeContext(indexer, prefix);
+    for (size_t i = 0; i < model.hidden_size(); ++i)
+    {
+        AssertNear(ctx_after_instant.h[i], ctx0.h[i], 1e-6f,
+                   "Instant mode must force OutputOnly, leaving recurrence state untouched");
+    }
+
+    // Verify score improved dramatically in 1 step
+    const float instant_score1 = model.ScoreStringWithContext(indexer, target1, ctx0, true);
+    ENSURE(instant_score1 > base_score1 + 0.1f && "Instant mode (LR=1.0) must achieve massive 1-step score boost");
+    ENSURE(!std::isnan(instant_score1) && !std::isinf(instant_score1));
+
+    // Save profile 1
+    const char *tmpdir = std::getenv("TEST_TMPDIR");
+    std::string profile1_path = (tmpdir ? std::string(tmpdir) : "/tmp") + "/test_grumodel_user_profile1.bin";
+    std::string profile2_path = (tmpdir ? std::string(tmpdir) : "/tmp") + "/test_grumodel_user_profile2.bin";
+    ENSURE(model.SaveModel(profile1_path));
+
+    // 2. Train profile 2 from base weights on target2
+    model.ResetToBaseWeights();
+    AssertNear(model.ScoreStringWithContext(indexer, target1, ctx0, true), base_score1, 1e-5f,
+               "ResetToBaseWeights must restore base score");
+
+    model.TrainOnStringWithContext(indexer, target2, ctx0, instant_cfg);
+    const float instant_score2 = model.ScoreStringWithContext(indexer, target2, ctx0, true);
+    ENSURE(instant_score2 > base_score2 + 0.1f && "Profile 2 must boost target2");
+    ENSURE(model.SaveModel(profile2_path));
+
+    // 3. Test SwapUserWeights between profiles
+    // Swap to profile 1
+    ENSURE(model.SwapUserWeights(profile1_path));
+    AssertNear(model.ScoreStringWithContext(indexer, target1, ctx0, true), instant_score1, 1e-4f,
+               "SwapUserWeights to profile1 must restore target1 score");
+    AssertNear(model.ScoreStringWithContext(indexer, target2, ctx0, true), base_score2, 1e-2f,
+               "Profile 1 must not contain target2 adaptations");
+
+    // Swap to profile 2
+    ENSURE(model.SwapUserWeights(profile2_path));
+    AssertNear(model.ScoreStringWithContext(indexer, target2, ctx0, true), instant_score2, 1e-4f,
+               "SwapUserWeights to profile2 must restore target2 score");
+    AssertNear(model.ScoreStringWithContext(indexer, target1, ctx0, true), base_score1, 1e-2f,
+               "Profile 2 must not contain target1 adaptations");
+
+    // Swap to empty (base model)
+    ENSURE(model.SwapUserWeights(""));
+    AssertNear(model.ScoreStringWithContext(indexer, target1, ctx0, true), base_score1, 1e-4f,
+               "SwapUserWeights(\"\") must restore base model");
+    AssertNear(model.ScoreStringWithContext(indexer, target2, ctx0, true), base_score2, 1e-4f,
+               "SwapUserWeights(\"\") must restore base model");
+
+    std::error_code ec;
+    std::filesystem::remove(profile1_path, ec);
+    std::filesystem::remove(profile2_path, ec);
+
+    std::cout << "[Test] TestInstantModeAndSwapUserWeights passed!" << std::endl;
+}
+
 void BenchmarkInference()
 {
     std::cout << "[Bench] Running BenchmarkInference..." << std::endl;
@@ -529,6 +619,7 @@ int main()
     TestCharIndexIntegration();
     TestGruContextCaching();
     TestOnlineTrainingAndPersistence();
+    TestInstantModeAndSwapUserWeights();
     BenchmarkInference();
 
     std::cout << "========================================" << std::endl;

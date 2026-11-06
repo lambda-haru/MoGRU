@@ -31,6 +31,7 @@
 #define MOZC_CONFIG_GRU_CONFIG_H_
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,19 @@ struct GruPenaltyConfig {
   bool enable_conversion_stats = true;
   std::string conversion_stats_path = "";
   bool enable_conversion_history_log = false;
+
+  // Profile configuration
+  std::string current_profile = "default";
+  bool enable_app_profile_switching = true;
+  std::string app_profile_map = "code:coding,cursor:coding,slack:business,discord:casual";
+
+  // Instant adaptation mode configuration
+  bool enable_instant_mode = false;
+  double instant_learning_rate = 0.80;
+  double instant_max_weight_delta = 2.0;
+
+  // Profile overrides: profile_name -> profile_specific_config
+  std::map<std::string, GruPenaltyConfig> profiles;
 };
 
 using GruConfig = GruPenaltyConfig;
@@ -94,6 +108,26 @@ class GruConfigManager {
   // Resolves the path to grumodel_user.bin.
   static std::string ResolveUserModelFilePath(
       const std::string& user_specified = "");
+
+  // Resolves the path to grumodel_user_<profile>.bin for a specific profile.
+  // If profile_name is empty or "default", returns ResolveUserModelFilePath(user_specified).
+  static std::string ResolveProfileUserModelFilePath(
+      const std::string& profile_name,
+      const std::string& user_specified = "");
+
+  // Returns built-in default profile configs for presets (business, coding, casual, creative, instant).
+  static std::map<std::string, GruPenaltyConfig> GetBuiltinDefaultProfiles(
+      const GruPenaltyConfig& base_config = GruPenaltyConfig());
+
+  // Resolves effective configuration for a given profile by applying profile overrides on top of base_config.
+  static GruPenaltyConfig GetEffectiveProfileConfig(
+      const GruPenaltyConfig& root_config,
+      const std::string& profile_name);
+
+  // Matches active application name against app_profile_map and returns target profile name (or empty if no match).
+  static std::string DetectProfileFromApplication(
+      const std::string& app_name,
+      const GruPenaltyConfig& config);
 
   // Returns the modification timestamp of `path` (or 0 if missing).
   static int64_t GetFileMtime(const std::string& path);

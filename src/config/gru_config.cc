@@ -42,9 +42,11 @@
 #include "absl/base/no_destructor.h"
 #include "absl/log/log.h"
 #include "absl/strings/ascii.h"
+#include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
@@ -401,6 +403,181 @@ std::string GruConfigManager::ResolveUserModelFilePath(
   return "";
 }
 
+std::string GruConfigManager::ResolveProfileUserModelFilePath(
+    const std::string& profile_name,
+    const std::string& user_specified) {
+  if (profile_name.empty() || profile_name == "default") {
+    return ResolveUserModelFilePath(user_specified);
+  }
+  if (!user_specified.empty()) {
+    std::string path = ExpandTilde(user_specified);
+    const std::string ext = ".bin";
+    if (absl::EndsWith(path, ext)) {
+      return path.substr(0, path.size() - ext.size()) + "_" + profile_name + ext;
+    }
+    return path + "_" + profile_name;
+  }
+  const std::string filename = "grumodel_user_" + profile_name + ".bin";
+  MigrateLegacyFilesOnce();
+  if (const char* test_tmpdir = std::getenv("TEST_TMPDIR")) {
+    if (test_tmpdir[0] != '\0') {
+      return FileUtil::JoinPath(test_tmpdir, filename);
+    }
+  }
+  const auto dirs = GetUserProfileCandidateDirs();
+  for (const auto& dir : dirs) {
+    const std::string p = FileUtil::JoinPath(dir, filename);
+    if (std::filesystem::exists(p)) {
+      return p;
+    }
+  }
+  if (!dirs.empty()) {
+    return FileUtil::JoinPath(dirs.front(), filename);
+  }
+  return "";
+}
+
+std::map<std::string, GruPenaltyConfig> GruConfigManager::GetBuiltinDefaultProfiles(
+    const GruPenaltyConfig& base_config) {
+  std::map<std::string, GruPenaltyConfig> map;
+
+  // 1. Business profile: formal language, no emojis, strict katakana/alphabet, gentle learning
+  GruPenaltyConfig business = base_config;
+  business.current_profile = "business";
+  business.emoji_penalty = 30000.0;
+  business.katakana_multiplier = 1.40;
+  business.alphabet_multiplier = 2.00;
+  business.online_learning_rate = 0.02000;
+  business.online_learning_weight_decay = 0.00500;
+  business.resegment_threshold = 800.0;
+  map["business"] = business;
+
+  // 2. Coding profile: programming, identifiers, low alphabet penalty, technical katakana, English fallback
+  GruPenaltyConfig coding = base_config;
+  coding.current_profile = "coding";
+  coding.alphabet_multiplier = 1.00;
+  coding.katakana_multiplier = 1.10;
+  coding.english_fallback_cost_threshold = 10000.0;
+  coding.online_learning_rate = 0.08000;
+  coding.resegment_threshold = 500.0;
+  map["coding"] = coding;
+
+  // 3. Casual / SNS profile: relaxed emoji penalty, slangs, colloquial speech
+  GruPenaltyConfig casual = base_config;
+  casual.current_profile = "casual";
+  casual.emoji_penalty = 0.0;
+  casual.katakana_multiplier = 1.00;
+  casual.hiragana_multiplier = 1.00;
+  casual.online_learning_rate = 0.10000;
+  map["casual"] = casual;
+  map["sns"] = casual;
+
+  // 4. Creative profile: literary nuance, higher GRU score weight, responsive resegmentation
+  GruPenaltyConfig creative = base_config;
+  creative.current_profile = "creative";
+  creative.gru_score_weight = 1200.0;
+  creative.resegment_threshold = 400.0;
+  creative.katakana_multiplier = 1.20;
+  map["creative"] = creative;
+
+  // 5. Instant profile: extreme learning rate for immediate one-shot adaptation
+  GruPenaltyConfig instant = base_config;
+  instant.current_profile = "instant";
+  instant.enable_instant_mode = true;
+  instant.instant_learning_rate = 0.80;
+  instant.instant_max_weight_delta = 2.0;
+  instant.online_learning_rate = 0.80;
+  instant.online_learning_mode = "output_only";
+  map["instant"] = instant;
+
+  return map;
+}
+
+GruPenaltyConfig GruConfigManager::GetEffectiveProfileConfig(
+    const GruPenaltyConfig& root_config,
+    const std::string& profile_name) {
+  if (profile_name.empty() || profile_name == "default") {
+    GruPenaltyConfig eff = root_config;
+    eff.current_profile = "default";
+    eff.gru_user_model_path = ResolveProfileUserModelFilePath("default", root_config.gru_user_model_path);
+    return eff;
+  }
+
+  GruPenaltyConfig eff = root_config;
+  eff.current_profile = profile_name;
+
+  const auto builtin = GetBuiltinDefaultProfiles(root_config);
+  auto it_builtin = builtin.find(profile_name);
+  if (it_builtin != builtin.end()) {
+    const auto& p = it_builtin->second;
+    eff.gru_score_weight = p.gru_score_weight;
+    eff.katakana_multiplier = p.katakana_multiplier;
+    eff.hiragana_multiplier = p.hiragana_multiplier;
+    eff.hiragana_length_power = p.hiragana_length_power;
+    eff.emoji_penalty = p.emoji_penalty;
+    eff.alphabet_multiplier = p.alphabet_multiplier;
+    eff.enable_resegmentation = p.enable_resegmentation;
+    eff.resegment_threshold = p.resegment_threshold;
+    eff.enable_online_learning = p.enable_online_learning;
+    eff.online_learning_mode = p.online_learning_mode;
+    eff.online_learning_rate = p.online_learning_rate;
+    eff.online_learning_weight_decay = p.online_learning_weight_decay;
+    eff.enable_english_fallback = p.enable_english_fallback;
+    eff.english_fallback_cost_threshold = p.english_fallback_cost_threshold;
+    eff.enable_instant_mode = p.enable_instant_mode;
+    eff.instant_learning_rate = p.instant_learning_rate;
+    eff.instant_max_weight_delta = p.instant_max_weight_delta;
+  }
+
+  auto it_custom = root_config.profiles.find(profile_name);
+  if (it_custom != root_config.profiles.end()) {
+    const auto& p = it_custom->second;
+    if (p.gru_score_weight != 0.0) eff.gru_score_weight = p.gru_score_weight;
+    eff.katakana_multiplier = p.katakana_multiplier;
+    eff.hiragana_multiplier = p.hiragana_multiplier;
+    eff.hiragana_length_power = p.hiragana_length_power;
+    eff.emoji_penalty = p.emoji_penalty;
+    eff.alphabet_multiplier = p.alphabet_multiplier;
+    eff.enable_resegmentation = p.enable_resegmentation;
+    eff.resegment_threshold = p.resegment_threshold;
+    eff.enable_online_learning = p.enable_online_learning;
+    eff.online_learning_mode = p.online_learning_mode;
+    eff.online_learning_rate = p.online_learning_rate;
+    eff.online_learning_weight_decay = p.online_learning_weight_decay;
+    eff.enable_english_fallback = p.enable_english_fallback;
+    eff.english_fallback_cost_threshold = p.english_fallback_cost_threshold;
+    eff.enable_instant_mode = p.enable_instant_mode;
+    eff.instant_learning_rate = p.instant_learning_rate;
+    eff.instant_max_weight_delta = p.instant_max_weight_delta;
+  }
+
+  eff.gru_user_model_path = ResolveProfileUserModelFilePath(profile_name, root_config.gru_user_model_path);
+  return eff;
+}
+
+std::string GruConfigManager::DetectProfileFromApplication(
+    const std::string& app_name,
+    const GruPenaltyConfig& config) {
+  if (!config.enable_app_profile_switching || app_name.empty()) {
+    return "";
+  }
+  std::string lower_app = absl::AsciiStrToLower(app_name);
+  std::vector<std::string_view> pairs =
+      absl::StrSplit(config.app_profile_map, ',', absl::SkipEmpty());
+  for (auto pair : pairs) {
+    std::pair<std::string_view, std::string_view> kv = absl::StrSplit(pair, ':');
+    std::string key = std::string(absl::StripAsciiWhitespace(kv.first));
+    std::string val = std::string(absl::StripAsciiWhitespace(kv.second));
+    if (!key.empty() && !val.empty()) {
+      std::string lower_key = absl::AsciiStrToLower(key);
+      if (lower_app.find(lower_key) != std::string::npos) {
+        return val;
+      }
+    }
+  }
+  return "";
+}
+
 int64_t GruConfigManager::GetFileMtime(const std::string& path) {
   if (path.empty() || !std::filesystem::exists(path)) {
     return 0;
@@ -414,7 +591,7 @@ int64_t GruConfigManager::GetFileMtime(const std::string& path) {
 }
 
 std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
-  return absl::StrFormat(
+  const std::string base_ini = absl::StrFormat(
       "# ==============================================================================\n"
       "# Mozc GRU 言語モデル リライター 設定ファイル\n"
       "# ==============================================================================\n"
@@ -562,7 +739,27 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       "\n"
       "# 【確定ごとの詳細履歴ログ (TSV) の記録の有効化】 (初期値: false)\n"
       "# - 有効にすると、確定ごとの詳細を conversion_history.tsv に追記します。\n"
-      "enable_conversion_history_log = %s\n",
+      "enable_conversion_history_log = %s\n"
+      "\n"
+      "# 【現在有効なプロファイル名】 (初期値: default)\n"
+      "# - default, business, coding, casual, creative, instant などから指定\n"
+      "current_profile = %s\n"
+      "\n"
+      "# 【アプリケーション別プロファイル自動切り替えの有効化】 (初期値: true)\n"
+      "enable_app_profile_switching = %s\n"
+      "\n"
+      "# 【アプリケーション名とプロファイルの紐付け定義】 (app_name:profile_name)\n"
+      "app_profile_map = %s\n"
+      "\n"
+      "# 【インスタント速習モードの有効化】 (初期値: false)\n"
+      "# - 1回の確定で対象単語を極限まで高速学習し、次回入力時の最上位候補へ昇格させます。\n"
+      "enable_instant_mode = %s\n"
+      "\n"
+      "# 【インスタントモード時の学習率】 (初期値: 0.80)\n"
+      "instant_learning_rate = %.5f\n"
+      "\n"
+      "# 【インスタントモード時の1確定あたりの最大重み変化量】 (初期値: 2.0)\n"
+      "instant_max_weight_delta = %.2f\n",
       config.enable_gru_rewriter ? "true" : "false",
       config.enable_live_conversion ? "true" : "false",
       config.show_segment_separator_in_conversion ? "true" : "false",
@@ -594,7 +791,76 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       config.enable_live_conversion_english_fallback ? "true" : "false",
       config.enable_conversion_stats ? "true" : "false",
       config.conversion_stats_path,
-      config.enable_conversion_history_log ? "true" : "false");
+      config.enable_conversion_history_log ? "true" : "false",
+      config.current_profile.empty() ? "default" : config.current_profile.c_str(),
+      config.enable_app_profile_switching ? "true" : "false",
+      config.app_profile_map.c_str(),
+      config.enable_instant_mode ? "true" : "false",
+      config.instant_learning_rate,
+      config.instant_max_weight_delta);
+
+  std::map<std::string, GruPenaltyConfig> effective_profiles =
+      GetBuiltinDefaultProfiles(config);
+  for (const auto& kv : config.profiles) {
+    effective_profiles[kv.first] = kv.second;
+  }
+
+  std::string result = base_ini;
+  result +=
+      "\n# ==============================================================================\n"
+      "# プロファイル別オーバーライド設定\n"
+      "# ==============================================================================\n"
+      "# 指定したプロファイルが選択された際、上記の全体デフォルトから変更したい項目のみ記述します。\n"
+      "# 記述されていない項目は全体デフォルト値が自動的に引き継がれます。\n";
+
+  for (const auto& kv : effective_profiles) {
+    const std::string& name = kv.first;
+    const GruPenaltyConfig& p = kv.second;
+    if (name == "default") continue;
+
+    result += absl::StrFormat("\n[profile.%s]\n", name);
+    if (p.gru_score_weight != config.gru_score_weight) {
+      result += absl::StrFormat("gru_score_weight = %.1f\n", p.gru_score_weight);
+    }
+    if (p.katakana_multiplier != config.katakana_multiplier) {
+      result += absl::StrFormat("katakana_multiplier = %.2f\n", p.katakana_multiplier);
+    }
+    if (p.hiragana_multiplier != config.hiragana_multiplier) {
+      result += absl::StrFormat("hiragana_multiplier = %.2f\n", p.hiragana_multiplier);
+    }
+    if (p.hiragana_length_power != config.hiragana_length_power) {
+      result += absl::StrFormat("hiragana_length_power = %.2f\n", p.hiragana_length_power);
+    }
+    if (p.emoji_penalty != config.emoji_penalty) {
+      result += absl::StrFormat("emoji_penalty = %.1f\n", p.emoji_penalty);
+    }
+    if (p.alphabet_multiplier != config.alphabet_multiplier) {
+      result += absl::StrFormat("alphabet_multiplier = %.2f\n", p.alphabet_multiplier);
+    }
+    if (p.resegment_threshold != config.resegment_threshold) {
+      result += absl::StrFormat("resegment_threshold = %.1f\n", p.resegment_threshold);
+    }
+    if (p.online_learning_rate != config.online_learning_rate) {
+      result += absl::StrFormat("online_learning_rate = %.5f\n", p.online_learning_rate);
+    }
+    if (p.online_learning_weight_decay != config.online_learning_weight_decay) {
+      result += absl::StrFormat("online_learning_weight_decay = %.5f\n", p.online_learning_weight_decay);
+    }
+    if (p.english_fallback_cost_threshold != config.english_fallback_cost_threshold) {
+      result += absl::StrFormat("english_fallback_cost_threshold = %.1f\n", p.english_fallback_cost_threshold);
+    }
+    if (p.enable_instant_mode != config.enable_instant_mode) {
+      result += absl::StrFormat("enable_instant_mode = %s\n", p.enable_instant_mode ? "true" : "false");
+    }
+    if (p.instant_learning_rate != config.instant_learning_rate) {
+      result += absl::StrFormat("instant_learning_rate = %.5f\n", p.instant_learning_rate);
+    }
+    if (p.instant_max_weight_delta != config.instant_max_weight_delta) {
+      result += absl::StrFormat("instant_max_weight_delta = %.2f\n", p.instant_max_weight_delta);
+    }
+  }
+
+  return result;
 }
 
 void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
@@ -787,6 +1053,38 @@ void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
         "\n# 【確定ごとの詳細履歴ログ (TSV) の記録の有効化】 (初期値: false)\n"
         "enable_conversion_history_log = false\n";
   }
+  if (content.find("current_profile") == std::string::npos) {
+    append_content +=
+        "\n# 【現在有効なプロファイル名】 (初期値: default)\n"
+        "# - default, business, coding, casual, creative, instant などから指定\n"
+        "current_profile = default\n";
+  }
+  if (content.find("enable_app_profile_switching") == std::string::npos) {
+    append_content +=
+        "\n# 【アプリケーション別プロファイル自動切り替えの有効化】 (初期値: true)\n"
+        "enable_app_profile_switching = true\n";
+  }
+  if (content.find("app_profile_map") == std::string::npos) {
+    append_content +=
+        "\n# 【アプリケーション名とプロファイルの紐付け定義】 (app_name:profile_name)\n"
+        "app_profile_map = code:coding,cursor:coding,slack:business,discord:casual\n";
+  }
+  if (content.find("enable_instant_mode") == std::string::npos) {
+    append_content +=
+        "\n# 【インスタント速習モードの有効化】 (初期値: false)\n"
+        "# - 1回の確定で対象単語を極限まで高速学習し、次回入力時の最上位候補へ昇格させます。\n"
+        "enable_instant_mode = false\n";
+  }
+  if (content.find("instant_learning_rate") == std::string::npos) {
+    append_content +=
+        "\n# 【インスタントモード時の学習率】 (初期値: 0.80)\n"
+        "instant_learning_rate = 0.80\n";
+  }
+  if (content.find("instant_max_weight_delta") == std::string::npos) {
+    append_content +=
+        "\n# 【インスタントモード時の1確定あたりの最大重み変化量】 (初期値: 2.0)\n"
+        "instant_max_weight_delta = 2.0\n";
+  }
 
   if (!append_content.empty()) {
     std::ofstream ofs(path, std::ios::app);
@@ -796,6 +1094,209 @@ void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
     }
   }
 }
+
+namespace {
+void ApplyConfigKeyValue(GruPenaltyConfig* config,
+                         absl::string_view key,
+                         absl::string_view val,
+                         bool in_test,
+                         bool* has_katakana_mult = nullptr,
+                         bool* has_hiragana_mult = nullptr,
+                         double* legacy_katakana_penalty = nullptr,
+                         bool* has_legacy_katakana_penalty = nullptr,
+                         double* legacy_hiragana_penalty = nullptr,
+                         bool* has_legacy_hiragana_penalty = nullptr) {
+  if (config == nullptr) return;
+
+  if (key == "gru_model_path") {
+    if (!val.empty()) {
+      config->gru_model_path = std::string(val);
+    } else if (!in_test) {
+      config->gru_model_path.clear();
+    }
+    return;
+  }
+  if (key == "gru_chardata_path") {
+    if (!val.empty()) {
+      config->gru_chardata_path = std::string(val);
+    } else if (!in_test) {
+      config->gru_chardata_path.clear();
+    }
+    return;
+  }
+  if (key == "gru_user_model_path") {
+    if (!val.empty()) {
+      config->gru_user_model_path = std::string(val);
+    } else if (!in_test) {
+      config->gru_user_model_path.clear();
+    }
+    return;
+  }
+  if (key == "online_learning_mode") {
+    if (val == "full" || val == "full_bptt" || val == "bptt" ||
+        val == "output_only") {
+      config->online_learning_mode =
+          (val == "full_bptt" || val == "bptt") ? "full" : std::string(val);
+    }
+    return;
+  }
+  if (key == "enable_gru_rewriter") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->enable_gru_rewriter = b;
+    return;
+  }
+  if (key == "enable_live_conversion") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->enable_live_conversion = b;
+    return;
+  }
+  if (key == "show_segment_separator_in_conversion" ||
+      key == "show_segment_separator") {
+    bool b = false;
+    if (absl::SimpleAtob(val, &b)) config->show_segment_separator_in_conversion = b;
+    return;
+  }
+  if (key == "show_segment_separator_in_live_conversion") {
+    bool b = false;
+    if (absl::SimpleAtob(val, &b)) config->show_segment_separator_in_live_conversion = b;
+    return;
+  }
+  if (key == "enable_live_conversion_prefix_freezing") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->enable_live_conversion_prefix_freezing = b;
+    return;
+  }
+  if (key == "enable_live_conversion_auto_commit") {
+    bool b = false;
+    if (absl::SimpleAtob(val, &b)) config->enable_live_conversion_auto_commit = b;
+    return;
+  }
+  if (key == "live_conversion_length_threshold") {
+    int32_t val_int = 24;
+    if (absl::SimpleAtoi(val, &val_int)) {
+      config->live_conversion_length_threshold = std::max<int32_t>(1, val_int);
+    }
+    return;
+  }
+  if (key == "live_conversion_excluded_hiragana_characters") {
+    int32_t val_int = 0;
+    if (absl::SimpleAtoi(val, &val_int)) {
+      config->live_conversion_excluded_hiragana_characters = std::max<int32_t>(0, val_int);
+    }
+    return;
+  }
+  if (key == "show_gru_score") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->show_gru_score = b;
+    return;
+  }
+  if (key == "enable_resegmentation") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->enable_resegmentation = b;
+    return;
+  }
+  if (key == "enable_online_learning") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->enable_online_learning = b;
+    return;
+  }
+  if (key == "online_learning_save_interval") {
+    int32_t interval = 5;
+    if (absl::SimpleAtoi(val, &interval) && interval >= 1) {
+      config->online_learning_save_interval = interval;
+    }
+    return;
+  }
+  if (key == "enable_english_fallback") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->enable_english_fallback = b;
+    return;
+  }
+  if (key == "enable_live_conversion_english_fallback") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->enable_live_conversion_english_fallback = b;
+    return;
+  }
+  if (key == "enable_conversion_stats") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->enable_conversion_stats = b;
+    return;
+  }
+  if (key == "conversion_stats_path") {
+    config->conversion_stats_path = std::string(val);
+    return;
+  }
+  if (key == "enable_conversion_history_log") {
+    bool b = false;
+    if (absl::SimpleAtob(val, &b)) config->enable_conversion_history_log = b;
+    return;
+  }
+  if (key == "english_fallback_min_word_length") {
+    int32_t min_len = 3;
+    if (absl::SimpleAtoi(val, &min_len) && min_len >= 1) {
+      config->english_fallback_min_word_length = min_len;
+    }
+    return;
+  }
+
+  // Profile and instant mode options
+  if (key == "current_profile") {
+    config->current_profile = std::string(val);
+    return;
+  }
+  if (key == "enable_app_profile_switching") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->enable_app_profile_switching = b;
+    return;
+  }
+  if (key == "app_profile_map") {
+    config->app_profile_map = std::string(val);
+    return;
+  }
+  if (key == "enable_instant_mode") {
+    bool b = false;
+    if (absl::SimpleAtob(val, &b)) config->enable_instant_mode = b;
+    return;
+  }
+
+  double d = 0.0;
+  if (absl::SimpleAtod(val, &d)) {
+    if (key == "instant_learning_rate") {
+      config->instant_learning_rate = d;
+    } else if (key == "instant_max_weight_delta") {
+      config->instant_max_weight_delta = d;
+    } else if (key == "english_fallback_cost_threshold") {
+      config->english_fallback_cost_threshold = d;
+    } else if (key == "gru_score_weight" || key == "score_weight") {
+      config->gru_score_weight = d;
+    } else if (key == "katakana_multiplier") {
+      config->katakana_multiplier = d;
+      if (has_katakana_mult) *has_katakana_mult = true;
+    } else if (key == "hiragana_multiplier") {
+      config->hiragana_multiplier = d;
+      if (has_hiragana_mult) *has_hiragana_mult = true;
+    } else if (key == "hiragana_length_power") {
+      config->hiragana_length_power = d;
+    } else if (key == "katakana_penalty") {
+      if (legacy_katakana_penalty) *legacy_katakana_penalty = d;
+      if (has_legacy_katakana_penalty) *has_legacy_katakana_penalty = true;
+    } else if (key == "hiragana_penalty") {
+      if (legacy_hiragana_penalty) *legacy_hiragana_penalty = d;
+      if (has_legacy_hiragana_penalty) *has_legacy_hiragana_penalty = true;
+    } else if (key == "emoji_penalty") {
+      config->emoji_penalty = d;
+    } else if (key == "alphabet_multiplier") {
+      config->alphabet_multiplier = d;
+    } else if (key == "resegment_threshold") {
+      config->resegment_threshold = d;
+    } else if (key == "online_learning_rate") {
+      config->online_learning_rate = d;
+    } else if (key == "online_learning_weight_decay") {
+      config->online_learning_weight_decay = d;
+    }
+  }
+}
+}  // namespace
 
 GruPenaltyConfig GruConfigManager::ParseConfigFile(
     const std::string& path,
@@ -812,6 +1313,7 @@ GruPenaltyConfig GruConfigManager::ParseConfigFile(
   bool has_legacy_hiragana_penalty = false;
   const bool in_test = IsInTestEnvironment();
 
+  std::string active_section = "";
   std::string line;
   while (std::getline(ifs, line)) {
     absl::string_view sv = line;
@@ -822,200 +1324,37 @@ GruPenaltyConfig GruConfigManager::ParseConfigFile(
     sv = absl::StripAsciiWhitespace(sv);
     if (sv.empty()) continue;
 
+    if (sv.front() == '[' && sv.back() == ']') {
+      std::string sec = std::string(absl::StripAsciiWhitespace(sv.substr(1, sv.size() - 2)));
+      if (absl::StartsWith(sec, "profile.")) {
+        active_section = sec.substr(8);
+      } else if (absl::StartsWith(sec, "profile:")) {
+        active_section = sec.substr(8);
+      } else if (sec == "default" || sec == "main" || sec == "root") {
+        active_section = "";
+      } else {
+        active_section = sec;
+      }
+      continue;
+    }
+
     const size_t eq_pos = sv.find('=');
     if (eq_pos == absl::string_view::npos) continue;
 
     absl::string_view key = absl::StripAsciiWhitespace(sv.substr(0, eq_pos));
     absl::string_view val = absl::StripAsciiWhitespace(sv.substr(eq_pos + 1));
 
-    if (key == "gru_model_path") {
-      if (!val.empty()) {
-        config.gru_model_path = std::string(val);
-      } else if (!in_test) {
-        config.gru_model_path.clear();
+    if (active_section.empty()) {
+      ApplyConfigKeyValue(&config, key, val, in_test,
+                          &has_katakana_mult, &has_hiragana_mult,
+                          &legacy_katakana_penalty, &has_legacy_katakana_penalty,
+                          &legacy_hiragana_penalty, &has_legacy_hiragana_penalty);
+    } else {
+      if (config.profiles.find(active_section) == config.profiles.end()) {
+        config.profiles[active_section] = config;
+        config.profiles[active_section].current_profile = active_section;
       }
-      continue;
-    }
-    if (key == "gru_chardata_path") {
-      if (!val.empty()) {
-        config.gru_chardata_path = std::string(val);
-      } else if (!in_test) {
-        config.gru_chardata_path.clear();
-      }
-      continue;
-    }
-    if (key == "gru_user_model_path") {
-      if (!val.empty()) {
-        config.gru_user_model_path = std::string(val);
-      } else if (!in_test) {
-        config.gru_user_model_path.clear();
-      }
-      continue;
-    }
-    if (key == "online_learning_mode") {
-      if (val == "full" || val == "full_bptt" || val == "bptt" ||
-          val == "output_only") {
-        config.online_learning_mode =
-            (val == "full_bptt" || val == "bptt") ? "full" : std::string(val);
-      }
-      continue;
-    }
-    if (key == "enable_gru_rewriter") {
-      bool b = true;
-      if (absl::SimpleAtob(val, &b)) {
-        config.enable_gru_rewriter = b;
-      }
-      continue;
-    }
-    if (key == "enable_live_conversion") {
-      bool b = true;
-      if (absl::SimpleAtob(val, &b)) {
-        config.enable_live_conversion = b;
-      }
-      continue;
-    }
-    if (key == "show_segment_separator_in_conversion" ||
-        key == "show_segment_separator") {
-      bool b = false;
-      if (absl::SimpleAtob(val, &b)) {
-        config.show_segment_separator_in_conversion = b;
-      }
-      continue;
-    }
-    if (key == "show_segment_separator_in_live_conversion") {
-      bool b = false;
-      if (absl::SimpleAtob(val, &b)) {
-        config.show_segment_separator_in_live_conversion = b;
-      }
-      continue;
-    }
-    if (key == "enable_live_conversion_prefix_freezing") {
-      bool b = true;
-      if (absl::SimpleAtob(val, &b)) {
-        config.enable_live_conversion_prefix_freezing = b;
-      }
-      continue;
-    }
-    if (key == "enable_live_conversion_auto_commit") {
-      bool b = false;
-      if (absl::SimpleAtob(val, &b)) {
-        config.enable_live_conversion_auto_commit = b;
-      }
-      continue;
-    }
-    if (key == "live_conversion_length_threshold") {
-      int32_t val_int = 24;
-      if (absl::SimpleAtoi(val, &val_int)) {
-        config.live_conversion_length_threshold = std::max<int32_t>(1, val_int);
-      }
-      continue;
-    }
-    if (key == "live_conversion_excluded_hiragana_characters") {
-      int32_t val_int = 0;
-      if (absl::SimpleAtoi(val, &val_int)) {
-        config.live_conversion_excluded_hiragana_characters = std::max<int32_t>(0, val_int);
-      }
-      continue;
-    }
-    if (key == "show_gru_score") {
-      bool b = true;
-      if (absl::SimpleAtob(val, &b)) {
-        config.show_gru_score = b;
-      }
-      continue;
-    }
-    if (key == "enable_resegmentation") {
-      bool b = true;
-      if (absl::SimpleAtob(val, &b)) {
-        config.enable_resegmentation = b;
-      }
-      continue;
-    }
-    if (key == "enable_online_learning") {
-      bool b = true;
-      if (absl::SimpleAtob(val, &b)) {
-        config.enable_online_learning = b;
-      }
-      continue;
-    }
-    if (key == "online_learning_save_interval") {
-      int32_t interval = 5;
-      if (absl::SimpleAtoi(val, &interval) && interval >= 1) {
-        config.online_learning_save_interval = interval;
-      }
-      continue;
-    }
-    if (key == "enable_english_fallback") {
-      bool b = true;
-      if (absl::SimpleAtob(val, &b)) {
-        config.enable_english_fallback = b;
-      }
-      continue;
-    }
-    if (key == "enable_live_conversion_english_fallback") {
-      bool b = true;
-      if (absl::SimpleAtob(val, &b)) {
-        config.enable_live_conversion_english_fallback = b;
-      }
-      continue;
-    }
-    if (key == "enable_conversion_stats") {
-      bool b = true;
-      if (absl::SimpleAtob(val, &b)) {
-        config.enable_conversion_stats = b;
-      }
-      continue;
-    }
-    if (key == "conversion_stats_path") {
-      config.conversion_stats_path = std::string(val);
-      continue;
-    }
-    if (key == "enable_conversion_history_log") {
-      bool b = false;
-      if (absl::SimpleAtob(val, &b)) {
-        config.enable_conversion_history_log = b;
-      }
-      continue;
-    }
-    if (key == "english_fallback_min_word_length") {
-      int32_t min_len = 3;
-      if (absl::SimpleAtoi(val, &min_len) && min_len >= 1) {
-        config.english_fallback_min_word_length = min_len;
-      }
-      continue;
-    }
-
-    double d = 0.0;
-    if (absl::SimpleAtod(val, &d)) {
-      if (key == "english_fallback_cost_threshold") {
-        config.english_fallback_cost_threshold = d;
-      } else if (key == "gru_score_weight" || key == "score_weight") {
-        config.gru_score_weight = d;
-      } else if (key == "katakana_multiplier") {
-        config.katakana_multiplier = d;
-        has_katakana_mult = true;
-      } else if (key == "hiragana_multiplier") {
-        config.hiragana_multiplier = d;
-        has_hiragana_mult = true;
-      } else if (key == "hiragana_length_power") {
-        config.hiragana_length_power = d;
-      } else if (key == "katakana_penalty") {
-        legacy_katakana_penalty = d;
-        has_legacy_katakana_penalty = true;
-      } else if (key == "hiragana_penalty") {
-        legacy_hiragana_penalty = d;
-        has_legacy_hiragana_penalty = true;
-      } else if (key == "emoji_penalty") {
-        config.emoji_penalty = d;
-      } else if (key == "alphabet_multiplier") {
-        config.alphabet_multiplier = d;
-      } else if (key == "resegment_threshold") {
-        config.resegment_threshold = d;
-      } else if (key == "online_learning_rate") {
-        config.online_learning_rate = d;
-      } else if (key == "online_learning_weight_decay") {
-        config.online_learning_weight_decay = d;
-      }
+      ApplyConfigKeyValue(&config.profiles[active_section], key, val, in_test);
     }
   }
 
@@ -1031,6 +1370,23 @@ GruPenaltyConfig GruConfigManager::ParseConfigFile(
 
 void GruConfigManager::ApplyEnvOverrides(GruPenaltyConfig* config) {
   if (config == nullptr) return;
+  if (const char* e = std::getenv("MOZC_GRU_PROFILE")) {
+    if (e[0] != '\0') {
+      config->current_profile = std::string(e);
+    }
+  }
+  if (const char* e = std::getenv("MOZC_GRU_INSTANT_MODE")) {
+    bool b = false;
+    if (absl::SimpleAtob(e, &b)) {
+      config->enable_instant_mode = b;
+    }
+  }
+  if (const char* e = std::getenv("MOZC_GRU_INSTANT_LEARNING_RATE")) {
+    double d = 0.0;
+    if (absl::SimpleAtod(e, &d) && d > 0.0) {
+      config->instant_learning_rate = d;
+    }
+  }
   if (const char* e = std::getenv("MOZC_GRU_ENABLE_REWRITER")) {
     bool b = true;
     if (absl::SimpleAtob(e, &b)) config->enable_gru_rewriter = b;
