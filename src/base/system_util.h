@@ -49,12 +49,12 @@ class SystemUtil {
   SystemUtil() = delete;
   SystemUtil(const SystemUtil&) = delete;
   SystemUtil& operator=(const SystemUtil&) = delete;
-  // return "~/.mozc" for Unix/Mac
-  // return "%USERPROFILE%\\AppData\\LocalLow\\"
-  //        "Google\\Google Japanese Input" for Windows Vista and later.
+  // return "$XDG_CONFIG_HOME/mogru" (default "~/.config/mogru") for Linux,
+  // return "~/Library/Application Support/MoGRU" for Mac,
+  // return "%USERPROFILE%\\AppData\\LocalLow\\MoGRU" for Windows.
   static std::string GetUserProfileDirectory();
 
-  // return ~/Library/Logs/Mozc for Mac
+  // return ~/Library/Logs/MoGRU for Mac
   // Otherwise same as GetUserProfileDirectory().
   static std::string GetLoggingDirectory();
 

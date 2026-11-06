@@ -216,12 +216,12 @@ std::string UserProfileDirectoryImpl::GetUserProfileDirectory() const {
 #endif  //  GOOGLE_JAPANESE_INPUT_BUILD
 
 #elif defined(__linux__)
-    // 1. If "$HOME/.mogru" already exists,
-    //    use "$HOME/.mogru" for backward compatibility.
-    // 2. If $XDG_CONFIG_HOME is defined
+    // 1. If $XDG_CONFIG_HOME is defined:
     //    use "$XDG_CONFIG_HOME/mogru".
-    // 3. Otherwise
-    //    use "$HOME/.config/mogru" as the default value of $XDG_CONFIG_HOME
+    // 2. Otherwise:
+    //    use "$HOME/.config/mogru" as the default value of $XDG_CONFIG_HOME.
+    // Legacy directories (~/.mozc, ~/.mogru) are strictly not used as user profile
+    // directories and are migrated in the config module.
     // https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
     std::string home = Environ::GetEnv("HOME");
     if (home.empty()) {

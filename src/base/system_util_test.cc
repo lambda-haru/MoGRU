@@ -84,11 +84,12 @@ TEST_F(SystemUtilTest, GetUserProfileDirectory) {
   // Resets again.
   SystemUtil::SetUserProfileDirectory("");
 
-  // If "$HOME/.mogru" exists, it is used for backward compatibility.
+  // Even if legacy "$HOME/.mogru" exists, ~/.config/mogru (or $XDG_CONFIG_HOME/mogru)
+  // is strictly used to enforce directory unification.
   EXPECT_OK(FileUtil::CreateDirectory("/home/mozcuser/.mogru"));
   EXPECT_OK(FileUtil::DirectoryExists("/home/mozcuser/.mogru"));
-  EXPECT_EQ("/home/mozcuser/.mogru", SystemUtil::GetUserProfileDirectory());
-  EXPECT_OK(FileUtil::DirectoryExists("/home/mozcuser/.mogru"));
+  environ_mock.SetEnv("XDG_CONFIG_HOME", "");
+  EXPECT_EQ("/home/mozcuser/.config/mogru", SystemUtil::GetUserProfileDirectory());
 
   // Resets again to avoid side effects to other tests.
   SystemUtil::SetUserProfileDirectory("");

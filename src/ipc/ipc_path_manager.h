@@ -70,7 +70,7 @@ class IPCPathManager {
   // do nothing.
   bool CreateNewPathName();
 
-  // Save ipc path to ~/.mozc/.<name>.ipc
+  // Save ipc path to <GetUserProfileDirectory()>/.<name>.ipc
   // if server_ipc_key_ is empty, CreateNewPathName() is called automatically.
   // If the file is already locked, return false
   bool SavePathName();

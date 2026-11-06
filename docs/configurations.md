@@ -64,9 +64,8 @@ Full customization is also available.
 
 ## Configuration path
 
-Mozc creates configuration files under `$XDG_CONFIG_HOME/mozc` (default:
-`~/.config/mozc`). If `~/.mozc` already exists, `~/.mozc` is used for backward
-compatibility.
+MoGRU creates configuration files under `$XDG_CONFIG_HOME/mogru` (default:
+`~/.config/mogru`).
 
 ## Configuration files
 
@@ -94,13 +93,10 @@ bazelisk build @com_google_protobuf//:protoc
 
 ## IBus
 
-Starting from version 2.26.4220, IBus specific configurations are customizable
-in `~/.config/mozc/ibus_config.textproto`.
+IBus specific configurations are customizable in `~/.config/mogru/ibus_config.textproto`
+(or `$XDG_CONFIG_HOME/mogru/ibus_config.textproto`).
 
-The file path may be `~/.mozc/ibus_config.textproto` if `~/.mozc` directory
-already exists.
-
-Here is the default configuration as of version 2.29.5205.
+Here is the default configuration:
 
 ```
 # `ibus write-cache; ibus restart` might be necessary to apply changes.

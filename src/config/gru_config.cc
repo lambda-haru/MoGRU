@@ -195,34 +195,44 @@ void MigrateLegacyFilesOnce() {
       if (!std::filesystem::exists(legacy_dir, ec)) {
         continue;
       }
-      const std::string legacy_ini =
-          FileUtil::JoinPath(legacy_dir, "gru_config.ini");
-      const std::string target_ini =
-          FileUtil::JoinPath(primary_user_dir, "gru_config.ini");
-      if (std::filesystem::exists(legacy_ini, ec) &&
-          !std::filesystem::exists(target_ini, ec)) {
-        std::filesystem::create_directories(primary_user_dir, ec);
-        std::filesystem::copy_file(
-            legacy_ini, target_ini,
-            std::filesystem::copy_options::overwrite_existing, ec);
+      for (const auto& entry :
+           std::filesystem::directory_iterator(legacy_dir, ec)) {
+        if (ec) {
+          break;
+        }
+        if (!entry.is_regular_file(ec)) {
+          continue;
+        }
+        const std::string fname = entry.path().filename().string();
+        const bool is_user_model =
+            (absl::StartsWith(fname, "grumodel_user") &&
+             absl::EndsWith(fname, ".bin"));
+        const bool is_config_or_stats =
+            (fname == "gru_config.ini" || fname == "conversion_stats.json" ||
+             fname == "conversion_history.tsv");
+        const bool is_stale_base =
+            (fname == "grumodel.bin" || fname == "chardata.bin" ||
+             fname == "grumodel_new.bin" || fname == "chardata_new.bin" ||
+             fname == "gru_config.ini.bak");
+
+        if (is_user_model || is_config_or_stats) {
+          const std::string target_file =
+              FileUtil::JoinPath(primary_user_dir, fname);
+          if (!std::filesystem::exists(target_file, ec)) {
+            std::filesystem::create_directories(primary_user_dir, ec);
+            std::filesystem::copy_file(
+                entry.path(), target_file,
+                std::filesystem::copy_options::overwrite_existing, ec);
+          }
+          std::filesystem::remove(entry.path(), ec);
+        } else if (is_stale_base) {
+          std::filesystem::remove(entry.path(), ec);
+        }
       }
 
-      const std::string legacy_user_model =
-          FileUtil::JoinPath(legacy_dir, "grumodel_user.bin");
-      const std::string target_user_model =
-          FileUtil::JoinPath(primary_user_dir, "grumodel_user.bin");
-      if (std::filesystem::exists(legacy_user_model, ec) &&
-          !std::filesystem::exists(target_user_model, ec)) {
-        std::filesystem::create_directories(primary_user_dir, ec);
-        std::filesystem::copy_file(
-            legacy_user_model, target_user_model,
-            std::filesystem::copy_options::overwrite_existing, ec);
-      }
-
-      for (const char* fname :
-           {"grumodel.bin", "chardata.bin", "gru_config.ini",
-            "gru_config.ini.bak", "grumodel_user.bin"}) {
-        std::filesystem::remove(FileUtil::JoinPath(legacy_dir, fname), ec);
+      // If legacy directory is ~/.mogru, delete the directory itself if empty
+      if (legacy_dir.find(".mogru") != std::string::npos) {
+        std::filesystem::remove(legacy_dir, ec);
       }
     }
 

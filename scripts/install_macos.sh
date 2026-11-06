@@ -112,9 +112,14 @@ echo "=== Installing MoGRU ==="
 for legacy_dir in \
   "$HOME/Library/Application Support/Mozc" \
   "$HOME/Library/Application Support/Google/JapaneseInput" \
-  "$HOME/.config/mozc"; do
+  "$HOME/.config/mozc" \
+  "$HOME/.mozc" \
+  "$HOME/.mogru"; do
   if [ -d "$legacy_dir" ]; then
-    rm -f "$legacy_dir/grumodel.bin" "$legacy_dir/chardata.bin" "$legacy_dir/gru_config.ini" "$legacy_dir/gru_config.ini.bak" "$legacy_dir/grumodel_user.bin"
+    rm -f "$legacy_dir/grumodel.bin" "$legacy_dir/chardata.bin" "$legacy_dir/grumodel_new.bin" "$legacy_dir/chardata_new.bin" "$legacy_dir/gru_config.ini" "$legacy_dir/gru_config.ini.bak" "$legacy_dir/grumodel_user.bin" "$legacy_dir"/grumodel_user*.bin "$legacy_dir/conversion_stats.json" "$legacy_dir/conversion_history.tsv"
+    if [ "$legacy_dir" = "$HOME/.mogru" ]; then
+      rmdir "$legacy_dir" 2>/dev/null || true
+    fi
   fi
 done
 

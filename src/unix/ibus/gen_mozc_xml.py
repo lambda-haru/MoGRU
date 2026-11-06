@@ -84,9 +84,8 @@ def OutputXml(component, ibus_mozc_path):
   print("""
 <!-- Settings of <engines> and <layout> are stored in ibus_config.textproto -->
 <!-- under the user configuration directory, which is either of: -->
-<!-- * $XDG_CONFIG_HOME/mozc/ibus_config.textproto -->
-<!-- * $HOME/.config/mozc/ibus_config.textproto -->
-<!-- * $HOME/.mozc/ibus_config.textproto -->
+<!-- * $XDG_CONFIG_HOME/mogru/ibus_config.textproto -->
+<!-- * $HOME/.config/mogru/ibus_config.textproto -->
 <!-- `ibus write-cache; ibus restart` might be necessary to apply changes. -->
 """)
 

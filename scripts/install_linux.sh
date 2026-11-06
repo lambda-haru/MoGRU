@@ -286,19 +286,40 @@ rm -f "$HOME/.local/lib64/fcitx5/fcitx5-mozc-gru.so"
 rm -f "$HOME/.local/share/fcitx5/addon/mozc-gru.conf"
 rm -f "$HOME/.local/share/fcitx5/inputmethod/mozc-gru.conf"
 
-# 7. Migrate old MoGRU configuration and learned model from ~/.config/mozc if present
-if [ -d "$HOME/.config/mozc" ] || [ -d "$HOME/.mozc" ]; then
-  for legacy_dir in "$HOME/.config/mozc" "$HOME/.mozc"; do
+# 7. Migrate old MoGRU configuration and learned model from legacy directories if present
+TARGET_MODELS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/mogru/models"
+TARGET_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mogru"
+mkdir -p "$TARGET_MODELS_DIR"
+mkdir -p "$TARGET_CONFIG_DIR"
+
+if [ -d "$HOME/.config/mozc" ] || [ -d "$HOME/.mozc" ] || [ -d "$HOME/.mogru" ]; then
+  for legacy_dir in "$HOME/.config/mozc" "$HOME/.mozc" "$HOME/.mogru"; do
     if [ -d "$legacy_dir" ]; then
-      if [ -f "$legacy_dir/gru_config.ini" ] && [ ! -f "$HOME/.config/mogru/gru_config.ini" ]; then
-        echo "[+] Migrating existing gru_config.ini from $legacy_dir to ~/.config/mogru/ ..."
-        cp -p "$legacy_dir/gru_config.ini" "$HOME/.config/mogru/gru_config.ini"
+      if [ -f "$legacy_dir/gru_config.ini" ] && [ ! -f "$TARGET_CONFIG_DIR/gru_config.ini" ]; then
+        echo "[+] Migrating existing gru_config.ini from $legacy_dir to $TARGET_CONFIG_DIR/ ..."
+        cp -p "$legacy_dir/gru_config.ini" "$TARGET_CONFIG_DIR/gru_config.ini"
       fi
-      if [ -f "$legacy_dir/grumodel_user.bin" ] && [ ! -f "$HOME/.config/mogru/grumodel_user.bin" ]; then
-        echo "[+] Migrating existing grumodel_user.bin from $legacy_dir to ~/.config/mogru/ ..."
-        cp -p "$legacy_dir/grumodel_user.bin" "$HOME/.config/mogru/grumodel_user.bin"
+      for f in "$legacy_dir"/grumodel_user*.bin; do
+        if [ -f "$f" ]; then
+          bname="$(basename "$f")"
+          if [ ! -f "$TARGET_CONFIG_DIR/$bname" ]; then
+            echo "[+] Migrating existing $bname from $legacy_dir to $TARGET_CONFIG_DIR/ ..."
+            cp -p "$f" "$TARGET_CONFIG_DIR/$bname"
+          fi
+          rm -f "$f"
+        fi
+      done
+      for fname in conversion_stats.json conversion_history.tsv; do
+        if [ -f "$legacy_dir/$fname" ] && [ ! -f "$TARGET_CONFIG_DIR/$fname" ]; then
+          echo "[+] Migrating existing $fname from $legacy_dir to $TARGET_CONFIG_DIR/ ..."
+          cp -p "$legacy_dir/$fname" "$TARGET_CONFIG_DIR/$fname"
+        fi
+        rm -f "$legacy_dir/$fname"
+      done
+      rm -f "$legacy_dir/grumodel.bin" "$legacy_dir/chardata.bin" "$legacy_dir/grumodel_new.bin" "$legacy_dir/chardata_new.bin" "$legacy_dir/gru_config.ini" "$legacy_dir/gru_config.ini.bak" "$legacy_dir/grumodel_user.bin"
+      if [ "$legacy_dir" = "$HOME/.mogru" ]; then
+        rmdir "$legacy_dir" 2>/dev/null || true
       fi
-      rm -f "$legacy_dir/grumodel.bin" "$legacy_dir/chardata.bin" "$legacy_dir/gru_config.ini" "$legacy_dir/gru_config.ini.bak" "$legacy_dir/grumodel_user.bin"
     fi
   done
 fi
@@ -307,10 +328,6 @@ fi
 # Base model files are installed to ~/.local/share/mogru/models (read-only data dir),
 # while user configuration (gru_config.ini) and learned user model (grumodel_user.bin)
 # reside in ~/.config/mogru.
-TARGET_MODELS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/mogru/models"
-TARGET_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mogru"
-mkdir -p "$TARGET_MODELS_DIR"
-mkdir -p "$TARGET_CONFIG_DIR"
 
 # Collect unique candidate models directories (package models takes top priority, then repo models)
 CANDIDATE_MODEL_DIRS=()
