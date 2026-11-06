@@ -548,32 +548,38 @@ void GruRewriter::Finish(const ConversionRequest& request,
     return;
   }
 
-  // Check for MoGRU inline command candidate selection
-  for (size_t i = 0; i < segments.segments_size(); ++i) {
-    const Segment& seg = segments.segment(i);
-    if (seg.candidates_size() > 0 && seg.segment_type() == Segment::FIXED_VALUE) {
-      const std::string& val = seg.candidate(0).value;
-      constexpr absl::string_view kProfPrefix = "MoGRU: プロファイル切替 [";
-      if (absl::StartsWith(val, kProfPrefix) && absl::EndsWith(val, "]")) {
-        const std::string new_profile =
-            val.substr(kProfPrefix.size(), val.size() - kProfPrefix.size() - 1);
-        absl::MutexLock l(mutex_);
-        penalty_config_.current_profile = new_profile;
-        config::GruConfigManager::SaveConfig(penalty_config_, config_file_path_);
-        SwitchProfileLocked(new_profile, penalty_config_);
-        return;
-      }
-      if (val == "MoGRU: インスタント速習モード ON") {
-        absl::MutexLock l(mutex_);
-        penalty_config_.enable_instant_mode = true;
-        config::GruConfigManager::SaveConfig(penalty_config_, config_file_path_);
-        return;
-      }
-      if (val == "MoGRU: インスタント速習モード OFF") {
-        absl::MutexLock l(mutex_);
-        penalty_config_.enable_instant_mode = false;
-        config::GruConfigManager::SaveConfig(penalty_config_, config_file_path_);
-        return;
+  const bool is_live_conversion =
+      (request.options().composer_key_selection ==
+       ConversionRequest::PREDICTION_KEY);
+
+  // Check for MoGRU inline command candidate selection (only for normal explicit conversions)
+  if (!is_live_conversion) {
+    for (size_t i = 0; i < segments.segments_size(); ++i) {
+      const Segment& seg = segments.segment(i);
+      if (seg.candidates_size() > 0 && seg.segment_type() == Segment::FIXED_VALUE) {
+        const std::string& val = seg.candidate(0).value;
+        constexpr absl::string_view kProfPrefix = "MoGRU: プロファイル切替 [";
+        if (absl::StartsWith(val, kProfPrefix) && absl::EndsWith(val, "]")) {
+          const std::string new_profile =
+              val.substr(kProfPrefix.size(), val.size() - kProfPrefix.size() - 1);
+          absl::MutexLock l(mutex_);
+          penalty_config_.current_profile = new_profile;
+          config::GruConfigManager::SaveConfig(penalty_config_, config_file_path_);
+          SwitchProfileLocked(new_profile, penalty_config_);
+          return;
+        }
+        if (val == "MoGRU: インスタント速習モード ON") {
+          absl::MutexLock l(mutex_);
+          penalty_config_.enable_instant_mode = true;
+          config::GruConfigManager::SaveConfig(penalty_config_, config_file_path_);
+          return;
+        }
+        if (val == "MoGRU: インスタント速習モード OFF") {
+          absl::MutexLock l(mutex_);
+          penalty_config_.enable_instant_mode = false;
+          config::GruConfigManager::SaveConfig(penalty_config_, config_file_path_);
+          return;
+        }
       }
     }
   }
@@ -733,23 +739,36 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
   const double alpha = penalty_config.gru_score_weight;
   const bool show_score = penalty_config.show_gru_score;
 
-  // Inline MoGRU command candidate suggestion
-  if (segments->conversion_segments_size() == 1) {
+  const size_t start_seg_idx = segments->history_segments_size();
+  const bool modified = RerankSegmentsWithBeamSearch(
+      segments, start_seg_idx, hist_prefix, penalty_config, alpha, show_score);
+
+  // Inline MoGRU command candidate suggestion:
+  // Must NEVER be suggested during Live Conversion (to prevent auto-commit/conversion),
+  // and must be added AFTER RerankSegmentsWithBeamSearch so that GRU does not score
+  // or sort them to Top-1.
+  const bool is_live_conversion =
+      (request.options().composer_key_selection ==
+       ConversionRequest::PREDICTION_KEY);
+  if (!is_live_conversion && segments->conversion_segments_size() == 1) {
     Segment* seg = segments->mutable_conversion_segment(0);
     const absl::string_view key = seg->key();
-    if (key == "ぷろふぁいる" || key == "もぐら" || key == "いんすたんと") {
+    if (key == "ぷろふぁいる" || key == "もぐら" || key == "いんすたんと" ||
+        key == "::profile" || key == "::instant" || key == "::mogru") {
       auto add_cmd = [&](const std::string& val, const std::string& desc) {
         Segment::Candidate* cand = seg->add_candidate();
         cand->value = val;
         cand->content_value = val;
+        cand->content_key = std::string(key);
+        cand->key = std::string(key);
         cand->description = desc;
-        cand->prefix = "【";
-        cand->suffix = "】";
-        cand->attributes |= converter::Attribute::NO_LEARNING;
-        cand->attributes |= converter::Attribute::COMMAND_CANDIDATE;
+        cand->cost = 100000;
+        cand->attributes |= (converter::Attribute::NO_LEARNING |
+                             converter::Attribute::COMMAND_CANDIDATE |
+                             converter::Attribute::NO_VARIANTS_EXPANSION);
       };
 
-      if (key == "ぷろふぁいる" || key == "もぐら") {
+      if (key == "ぷろふぁいる" || key == "もぐら" || key == "::profile" || key == "::mogru") {
         add_cmd("MoGRU: プロファイル切替 [coding]", "プログラミング・技術向けに切替");
         add_cmd("MoGRU: プロファイル切替 [business]", "公用文・ビジネス向けに切替");
         add_cmd("MoGRU: プロファイル切替 [casual]", "日常会話・SNS向けに切替");
@@ -757,19 +776,18 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
         add_cmd("MoGRU: プロファイル切替 [instant]", "インスタント速習プロファイルに切替");
         add_cmd("MoGRU: プロファイル切替 [default]", "標準プロファイルに切替");
       }
-      if (key == "いんすたんと" || key == "もぐら") {
+      if (key == "いんすたんと" || key == "もぐら" || key == "::instant" || key == "::mogru") {
         if (!penalty_config.enable_instant_mode) {
           add_cmd("MoGRU: インスタント速習モード ON", "1回確定で限界学習するモードを有効化");
         } else {
           add_cmd("MoGRU: インスタント速習モード OFF", "インスタント速習モードを解除");
         }
       }
+      return true;
     }
   }
 
-  const size_t start_seg_idx = segments->history_segments_size();
-  return RerankSegmentsWithBeamSearch(
-      segments, start_seg_idx, hist_prefix, penalty_config, alpha, show_score);
+  return modified;
 }
 
 bool GruRewriter::RerankSegmentsWithBeamSearch(

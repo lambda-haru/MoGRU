@@ -89,15 +89,11 @@ std::vector<std::string> GetUserProfileCandidateDirs() {
   }
   if (const char* home = std::getenv("HOME")) {
     add_unique(FileUtil::JoinPath(home, ".config/mogru"));
-    add_unique(FileUtil::JoinPath(home, ".mogru"));
   }
-  add_unique(SystemUtil::GetUserProfileDirectory());
 #else
-  add_unique(SystemUtil::GetUserProfileDirectory());
   if (const char* home = std::getenv("HOME")) {
     add_unique(FileUtil::JoinPath(home, "Library/Application Support/MoGRU"));
     add_unique(FileUtil::JoinPath(home, ".config/mogru"));
-    add_unique(FileUtil::JoinPath(home, ".mogru"));
   }
   if (const char* userprofile = std::getenv("USERPROFILE")) {
     add_unique(FileUtil::JoinPath(userprofile, "AppData/LocalLow/MoGRU"));
@@ -176,6 +172,7 @@ void MigrateLegacyFilesOnce() {
     if (const char* home = std::getenv("HOME")) {
       add_legacy(FileUtil::JoinPath(home, ".config/mozc"));
       add_legacy(FileUtil::JoinPath(home, ".mozc"));
+      add_legacy(FileUtil::JoinPath(home, ".mogru"));
     }
 #else
     if (const char* home = std::getenv("HOME")) {
@@ -183,6 +180,8 @@ void MigrateLegacyFilesOnce() {
       add_legacy(FileUtil::JoinPath(
           home, "Library/Application Support/Google/JapaneseInput"));
       add_legacy(FileUtil::JoinPath(home, ".config/mozc"));
+      add_legacy(FileUtil::JoinPath(home, ".mozc"));
+      add_legacy(FileUtil::JoinPath(home, ".mogru"));
     }
     if (const char* userprofile = std::getenv("USERPROFILE")) {
       add_legacy(FileUtil::JoinPath(userprofile, "AppData/LocalLow/Mozc"));

@@ -233,12 +233,7 @@ std::string UserProfileDirectoryImpl::GetUserProfileDirectory() const {
       }
     }
     if (home.empty()) {
-      return "/tmp/.mogru";
-    }
-
-    std::string old_dir = FileUtil::JoinPath(home, ".mogru");
-    if (FileUtil::DirectoryExists(old_dir).ok()) {
-      return old_dir;
+      return "/tmp/mogru";
     }
 
     const std::string xdg_config_home = Environ::GetEnv("XDG_CONFIG_HOME");

@@ -1035,14 +1035,7 @@ void ConfigDialog::SetupMogruUi() {
 
   QObject::connect(gruProfileComboBox,
                    QOverload<int>::of(&QComboBox::currentIndexChanged),
-                   [this](int /*index*/) {
-                     const std::string prof =
-                         gruProfileComboBox->currentData().toString().toStdString();
-                     const std::string effective_prof = prof.empty() ? "default" : prof;
-                     gruUserModelPathLineEdit->setPlaceholderText(
-                         QString::fromUtf8(config::GruConfigManager::ResolveProfileUserModelFilePath(
-                             "", effective_prof).c_str()));
-                   });
+                   this, &ConfigDialog::OnGruProfileChanged);
 
   QObject::connect(enableAppProfileSwitchingCheckBox, &QCheckBox::toggled,
                    [this](bool checked) {
@@ -1070,23 +1063,166 @@ void ConfigDialog::SetupMogruUi() {
   RefreshConversionStatsUi();
 }
 
+void ConfigDialog::OnGruProfileChanged(int index) {
+  if (index < 0) return;
+  const std::string new_profile =
+      gruProfileComboBox->itemData(index).toString().toStdString();
+  if (new_profile == current_dialog_profile_) {
+    return;
+  }
+
+  // Save current UI state for the previously displayed profile
+  SaveWidgetsToProfile(&working_profiles_[current_dialog_profile_]);
+
+  // Ensure new_profile exists in working_profiles_
+  if (working_profiles_.find(new_profile) == working_profiles_.end()) {
+    working_profiles_[new_profile] =
+        config::GruConfigManager::GetEffectiveProfileConfig(
+            cached_gru_config_, new_profile);
+  }
+
+  current_dialog_profile_ = new_profile;
+  PopulateWidgetsFromProfile(working_profiles_[new_profile]);
+  EnableApplyButton();
+}
+
+void ConfigDialog::SaveWidgetsToProfile(GruPenaltyConfig* p) {
+  if (p == nullptr) return;
+  p->gru_score_weight = gruScoreWeightSpinBox->value();
+  p->enable_resegmentation = enableGruResegmentationCheckBox->isChecked();
+  p->resegment_threshold = gruResegmentThresholdSpinBox->value();
+  p->katakana_multiplier = gruKatakanaMultiplierSpinBox->value();
+  p->hiragana_multiplier = gruHiraganaMultiplierSpinBox->value();
+  p->hiragana_length_power = gruHiraganaLengthPowerSpinBox->value();
+  p->alphabet_multiplier = gruAlphabetMultiplierSpinBox->value();
+  p->emoji_penalty = gruEmojiPenaltySpinBox->value();
+  p->enable_english_fallback = enableEnglishFallbackCheckBox->isChecked();
+  p->english_fallback_cost_threshold = englishFallbackCostThresholdSpinBox->value();
+  p->enable_online_learning = enableGruOnlineLearningCheckBox->isChecked();
+  p->online_learning_mode =
+      (gruOnlineLearningModeComboBox->currentIndex() == 1) ? "full" : "output_only";
+  p->online_learning_rate = gruOnlineLearningRateSpinBox->value();
+  p->online_learning_weight_decay = gruOnlineLearningWeightDecaySpinBox->value();
+  p->enable_instant_mode = enableInstantModeCheckBox->isChecked();
+  p->instant_learning_rate = instantLearningRateSpinBox->value();
+  p->instant_max_weight_delta = instantMaxWeightDeltaSpinBox->value();
+}
+
+void ConfigDialog::PopulateWidgetsFromProfile(const GruPenaltyConfig& p) {
+  gruScoreWeightSpinBox->blockSignals(true);
+  enableGruResegmentationCheckBox->blockSignals(true);
+  gruResegmentThresholdSpinBox->blockSignals(true);
+  gruKatakanaMultiplierSpinBox->blockSignals(true);
+  gruHiraganaMultiplierSpinBox->blockSignals(true);
+  gruHiraganaLengthPowerSpinBox->blockSignals(true);
+  gruAlphabetMultiplierSpinBox->blockSignals(true);
+  gruEmojiPenaltySpinBox->blockSignals(true);
+  enableEnglishFallbackCheckBox->blockSignals(true);
+  englishFallbackCostThresholdSpinBox->blockSignals(true);
+  enableGruOnlineLearningCheckBox->blockSignals(true);
+  gruOnlineLearningModeComboBox->blockSignals(true);
+  gruOnlineLearningRateSpinBox->blockSignals(true);
+  gruOnlineLearningWeightDecaySpinBox->blockSignals(true);
+  enableInstantModeCheckBox->blockSignals(true);
+  instantLearningRateSpinBox->blockSignals(true);
+  instantMaxWeightDeltaSpinBox->blockSignals(true);
+
+  gruScoreWeightSpinBox->setValue(p.gru_score_weight);
+  enableGruResegmentationCheckBox->setChecked(p.enable_resegmentation);
+  gruResegmentThresholdSpinBox->setValue(p.resegment_threshold);
+  gruKatakanaMultiplierSpinBox->setValue(p.katakana_multiplier);
+  gruHiraganaMultiplierSpinBox->setValue(p.hiragana_multiplier);
+  gruHiraganaLengthPowerSpinBox->setValue(p.hiragana_length_power);
+  gruAlphabetMultiplierSpinBox->setValue(p.alphabet_multiplier);
+  gruEmojiPenaltySpinBox->setValue(p.emoji_penalty);
+
+  enableEnglishFallbackCheckBox->setChecked(p.enable_english_fallback);
+  englishFallbackCostThresholdSpinBox->setValue(p.english_fallback_cost_threshold);
+  enableLiveConversionEnglishFallbackCheckBox->setEnabled(p.enable_english_fallback);
+  englishFallbackCostThresholdSpinBox->setEnabled(p.enable_english_fallback);
+  englishFallbackMinWordLengthSpinBox->setEnabled(p.enable_english_fallback);
+
+  enableGruOnlineLearningCheckBox->setChecked(p.enable_online_learning);
+  const int mode_index =
+      (p.online_learning_mode == "full" || p.online_learning_mode == "bptt" ||
+       p.online_learning_mode == "full_bptt")
+          ? 1
+          : 0;
+  gruOnlineLearningModeComboBox->setCurrentIndex(mode_index);
+  gruOnlineLearningRateSpinBox->setValue(p.online_learning_rate);
+  gruOnlineLearningWeightDecaySpinBox->setValue(p.online_learning_weight_decay);
+
+  enableInstantModeCheckBox->setChecked(p.enable_instant_mode);
+  instantLearningRateSpinBox->setValue(p.instant_learning_rate);
+  instantMaxWeightDeltaSpinBox->setValue(p.instant_max_weight_delta);
+  instantLearningRateSpinBox->setEnabled(p.enable_instant_mode);
+  instantMaxWeightDeltaSpinBox->setEnabled(p.enable_instant_mode);
+
+  const std::string custom_user_model =
+      gruUserModelPathLineEdit->text().trimmed().toStdString();
+  const std::string prof_to_resolve =
+      p.current_profile.empty() ? "default" : p.current_profile;
+  gruUserModelPathLineEdit->setPlaceholderText(
+      QString::fromUtf8(config::GruConfigManager::ResolveProfileUserModelFilePath(
+                            prof_to_resolve, custom_user_model)
+                            .c_str()));
+
+  gruScoreWeightSpinBox->blockSignals(false);
+  enableGruResegmentationCheckBox->blockSignals(false);
+  gruResegmentThresholdSpinBox->blockSignals(false);
+  gruKatakanaMultiplierSpinBox->blockSignals(false);
+  gruHiraganaMultiplierSpinBox->blockSignals(false);
+  gruHiraganaLengthPowerSpinBox->blockSignals(false);
+  gruAlphabetMultiplierSpinBox->blockSignals(false);
+  gruEmojiPenaltySpinBox->blockSignals(false);
+  enableEnglishFallbackCheckBox->blockSignals(false);
+  englishFallbackCostThresholdSpinBox->blockSignals(false);
+  enableGruOnlineLearningCheckBox->blockSignals(false);
+  gruOnlineLearningModeComboBox->blockSignals(false);
+  gruOnlineLearningRateSpinBox->blockSignals(false);
+  gruOnlineLearningWeightDecaySpinBox->blockSignals(false);
+  enableInstantModeCheckBox->blockSignals(false);
+  instantLearningRateSpinBox->blockSignals(false);
+  instantMaxWeightDeltaSpinBox->blockSignals(false);
+}
+
 void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
   cached_gru_config_ = gru_config;
+  working_profiles_.clear();
 
-  gruProfileComboBox->blockSignals(true);
-  gruProfileComboBox->clear();
-  const auto builtin = config::GruConfigManager::GetBuiltinDefaultProfiles();
+  // 1. Initialize default profile working copy from base config
+  working_profiles_["default"] = gru_config;
+  working_profiles_["default"].current_profile = "default";
+
+  // 2. Initialize builtin profiles and custom profiles
+  const auto builtin = config::GruConfigManager::GetBuiltinDefaultProfiles(gru_config);
   std::set<std::string> known_profiles;
+  known_profiles.insert("default");
   for (const auto& kv : builtin) {
     known_profiles.insert(kv.first);
+    working_profiles_[kv.first] =
+        config::GruConfigManager::GetEffectiveProfileConfig(gru_config, kv.first);
   }
   for (const auto& kv : gru_config.profiles) {
     known_profiles.insert(kv.first);
+    working_profiles_[kv.first] =
+        config::GruConfigManager::GetEffectiveProfileConfig(gru_config, kv.first);
   }
   if (!gru_config.current_profile.empty()) {
     known_profiles.insert(gru_config.current_profile);
+    if (working_profiles_.find(gru_config.current_profile) == working_profiles_.end()) {
+      working_profiles_[gru_config.current_profile] =
+          config::GruConfigManager::GetEffectiveProfileConfig(
+              gru_config, gru_config.current_profile);
+    }
   }
 
+  const std::string active_prof =
+      gru_config.current_profile.empty() ? "default" : gru_config.current_profile;
+  current_dialog_profile_ = active_prof;
+
+  gruProfileComboBox->blockSignals(true);
+  gruProfileComboBox->clear();
   const bool is_ja = (QLocale::system().language() == QLocale::Japanese);
   int selected_idx = 0;
   int current_idx = 0;
@@ -1114,8 +1250,7 @@ void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
       label = QString::fromUtf8(prof_name.c_str());
     }
     gruProfileComboBox->addItem(label, QString::fromUtf8(prof_name.c_str()));
-    if (prof_name == gru_config.current_profile ||
-        (gru_config.current_profile.empty() && prof_name == "default")) {
+    if (prof_name == active_prof) {
       selected_idx = current_idx;
     }
     current_idx++;
@@ -1123,26 +1258,7 @@ void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
   gruProfileComboBox->setCurrentIndex(selected_idx);
   gruProfileComboBox->blockSignals(false);
 
-  enableAppProfileSwitchingCheckBox->setChecked(
-      gru_config.enable_app_profile_switching);
-  appProfileMapLineEdit->setText(
-      QString::fromUtf8(gru_config.app_profile_map.c_str()));
-  appProfileMapLineEdit->setEnabled(gru_config.enable_app_profile_switching);
-
-  enableInstantModeCheckBox->setChecked(gru_config.enable_instant_mode);
-  instantLearningRateSpinBox->setValue(gru_config.instant_learning_rate);
-  instantMaxWeightDeltaSpinBox->setValue(gru_config.instant_max_weight_delta);
-  instantLearningRateSpinBox->setEnabled(gru_config.enable_instant_mode);
-  instantMaxWeightDeltaSpinBox->setEnabled(gru_config.enable_instant_mode);
-
-  const std::string effective_prof = gru_config.current_profile.empty()
-                                         ? "default"
-                                         : gru_config.current_profile;
-  gruUserModelPathLineEdit->setPlaceholderText(
-      QString::fromUtf8(config::GruConfigManager::ResolveProfileUserModelFilePath(
-                            "", effective_prof)
-                            .c_str()));
-
+  // Global settings
   enableGruRewriterCheckBox->setChecked(gru_config.enable_gru_rewriter);
   enableLiveConversionCheckBox->setChecked(gru_config.enable_live_conversion);
   showGruScoreCheckBox->setChecked(gru_config.show_gru_score);
@@ -1158,7 +1274,6 @@ void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
       gru_config.live_conversion_length_threshold);
   liveConversionExcludedHiraganaCharactersSpinBox->setValue(
       gru_config.live_conversion_excluded_hiragana_characters);
-  gruScoreWeightSpinBox->setValue(gru_config.gru_score_weight);
 
   gruModelPathLineEdit->setText(
       QString::fromUtf8(gru_config.gru_model_path.c_str()));
@@ -1167,48 +1282,29 @@ void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
   gruUserModelPathLineEdit->setText(
       QString::fromUtf8(gru_config.gru_user_model_path.c_str()));
 
-  enableGruResegmentationCheckBox->setChecked(gru_config.enable_resegmentation);
-  gruResegmentThresholdSpinBox->setValue(gru_config.resegment_threshold);
-
-  gruKatakanaMultiplierSpinBox->setValue(gru_config.katakana_multiplier);
-  gruHiraganaMultiplierSpinBox->setValue(gru_config.hiragana_multiplier);
-  gruHiraganaLengthPowerSpinBox->setValue(gru_config.hiragana_length_power);
-  gruAlphabetMultiplierSpinBox->setValue(gru_config.alphabet_multiplier);
-  gruEmojiPenaltySpinBox->setValue(gru_config.emoji_penalty);
-
-  enableEnglishFallbackCheckBox->setChecked(gru_config.enable_english_fallback);
   enableLiveConversionEnglishFallbackCheckBox->setChecked(
       gru_config.enable_live_conversion_english_fallback);
-  englishFallbackCostThresholdSpinBox->setValue(
-      gru_config.english_fallback_cost_threshold);
   englishFallbackMinWordLengthSpinBox->setValue(
       gru_config.english_fallback_min_word_length);
-  const bool fallback_enabled = gru_config.enable_english_fallback;
-  enableLiveConversionEnglishFallbackCheckBox->setEnabled(fallback_enabled);
-  englishFallbackCostThresholdSpinBox->setEnabled(fallback_enabled);
-  englishFallbackMinWordLengthSpinBox->setEnabled(fallback_enabled);
-
-  enableGruOnlineLearningCheckBox->setChecked(
-      gru_config.enable_online_learning);
-  const int mode_index =
-      (gru_config.online_learning_mode == "full" ||
-       gru_config.online_learning_mode == "bptt" ||
-       gru_config.online_learning_mode == "full_bptt")
-          ? 1
-          : 0;
-  gruOnlineLearningModeComboBox->setCurrentIndex(mode_index);
-  gruOnlineLearningRateSpinBox->setValue(gru_config.online_learning_rate);
-  gruOnlineLearningWeightDecaySpinBox->setValue(
-      gru_config.online_learning_weight_decay);
   gruOnlineLearningSaveIntervalSpinBox->setValue(
       std::max<int>(1, gru_config.online_learning_save_interval));
   enableConversionHistoryLogCheckBox->setChecked(
       gru_config.enable_conversion_history_log);
+
+  enableAppProfileSwitchingCheckBox->setChecked(
+      gru_config.enable_app_profile_switching);
+  appProfileMapLineEdit->setText(
+      QString::fromUtf8(gru_config.app_profile_map.c_str()));
+  appProfileMapLineEdit->setEnabled(gru_config.enable_app_profile_switching);
+
+  // Populate active profile's specific parameters
+  PopulateWidgetsFromProfile(working_profiles_[active_prof]);
   RefreshConversionStatsUi();
 }
 
 GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
   GruPenaltyConfig cfg = cached_gru_config_;
+
   cfg.enable_gru_rewriter = enableGruRewriterCheckBox->isChecked();
   cfg.enable_live_conversion = enableLiveConversionCheckBox->isChecked();
   cfg.show_gru_score = showGruScoreCheckBox->isChecked();
@@ -1224,7 +1320,6 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
       liveConversionLengthThresholdSpinBox->value();
   cfg.live_conversion_excluded_hiragana_characters =
       liveConversionExcludedHiraganaCharactersSpinBox->value();
-  cfg.gru_score_weight = gruScoreWeightSpinBox->value();
 
   cfg.gru_model_path =
       gruModelPathLineEdit->text().trimmed().toStdString();
@@ -1233,49 +1328,79 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
   cfg.gru_user_model_path =
       gruUserModelPathLineEdit->text().trimmed().toStdString();
 
-  cfg.enable_resegmentation = enableGruResegmentationCheckBox->isChecked();
-  cfg.resegment_threshold = gruResegmentThresholdSpinBox->value();
-
-  cfg.katakana_multiplier = gruKatakanaMultiplierSpinBox->value();
-  cfg.hiragana_multiplier = gruHiraganaMultiplierSpinBox->value();
-  cfg.hiragana_length_power = gruHiraganaLengthPowerSpinBox->value();
-  cfg.alphabet_multiplier = gruAlphabetMultiplierSpinBox->value();
-  cfg.emoji_penalty = gruEmojiPenaltySpinBox->value();
-
-  cfg.enable_english_fallback = enableEnglishFallbackCheckBox->isChecked();
   cfg.enable_live_conversion_english_fallback =
       enableLiveConversionEnglishFallbackCheckBox->isChecked();
-  cfg.english_fallback_cost_threshold =
-      englishFallbackCostThresholdSpinBox->value();
   cfg.english_fallback_min_word_length =
       englishFallbackMinWordLengthSpinBox->value();
-
-  cfg.enable_online_learning = enableGruOnlineLearningCheckBox->isChecked();
-  cfg.online_learning_mode =
-      (gruOnlineLearningModeComboBox->currentIndex() == 1) ? "full"
-                                                           : "output_only";
-  cfg.online_learning_rate = gruOnlineLearningRateSpinBox->value();
-  cfg.online_learning_weight_decay =
-      gruOnlineLearningWeightDecaySpinBox->value();
   cfg.online_learning_save_interval =
       gruOnlineLearningSaveIntervalSpinBox->value();
   cfg.enable_conversion_history_log =
       enableConversionHistoryLogCheckBox->isChecked();
 
-  // Profile settings
+  // Profile selection
   const int prof_idx = gruProfileComboBox->currentIndex();
-  if (prof_idx >= 0) {
-    cfg.current_profile =
-        gruProfileComboBox->itemData(prof_idx).toString().toStdString();
-  }
+  const std::string selected_prof =
+      (prof_idx >= 0)
+          ? gruProfileComboBox->itemData(prof_idx).toString().toStdString()
+          : "default";
+  cfg.current_profile = selected_prof;
   cfg.enable_app_profile_switching =
       enableAppProfileSwitchingCheckBox->isChecked();
   cfg.app_profile_map = appProfileMapLineEdit->text().trimmed().toStdString();
 
-  // Instant mode settings
-  cfg.enable_instant_mode = enableInstantModeCheckBox->isChecked();
-  cfg.instant_learning_rate = instantLearningRateSpinBox->value();
-  cfg.instant_max_weight_delta = instantMaxWeightDeltaSpinBox->value();
+  // Make a working copy of working_profiles_ and save currently visible widgets into it
+  auto wp = working_profiles_;
+  auto it_active = wp.find(current_dialog_profile_);
+  if (it_active != wp.end()) {
+    GruPenaltyConfig& active_wp = it_active->second;
+    active_wp.gru_score_weight = gruScoreWeightSpinBox->value();
+    active_wp.enable_resegmentation = enableGruResegmentationCheckBox->isChecked();
+    active_wp.resegment_threshold = gruResegmentThresholdSpinBox->value();
+    active_wp.katakana_multiplier = gruKatakanaMultiplierSpinBox->value();
+    active_wp.hiragana_multiplier = gruHiraganaMultiplierSpinBox->value();
+    active_wp.hiragana_length_power = gruHiraganaLengthPowerSpinBox->value();
+    active_wp.alphabet_multiplier = gruAlphabetMultiplierSpinBox->value();
+    active_wp.emoji_penalty = gruEmojiPenaltySpinBox->value();
+    active_wp.enable_english_fallback = enableEnglishFallbackCheckBox->isChecked();
+    active_wp.english_fallback_cost_threshold = englishFallbackCostThresholdSpinBox->value();
+    active_wp.enable_online_learning = enableGruOnlineLearningCheckBox->isChecked();
+    active_wp.online_learning_mode =
+        (gruOnlineLearningModeComboBox->currentIndex() == 1) ? "full" : "output_only";
+    active_wp.online_learning_rate = gruOnlineLearningRateSpinBox->value();
+    active_wp.online_learning_weight_decay = gruOnlineLearningWeightDecaySpinBox->value();
+    active_wp.enable_instant_mode = enableInstantModeCheckBox->isChecked();
+    active_wp.instant_learning_rate = instantLearningRateSpinBox->value();
+    active_wp.instant_max_weight_delta = instantMaxWeightDeltaSpinBox->value();
+  }
+
+  // If default was modified, update base fields of cfg
+  auto it_def = wp.find("default");
+  if (it_def != wp.end()) {
+    const auto& def = it_def->second;
+    cfg.gru_score_weight = def.gru_score_weight;
+    cfg.enable_resegmentation = def.enable_resegmentation;
+    cfg.resegment_threshold = def.resegment_threshold;
+    cfg.katakana_multiplier = def.katakana_multiplier;
+    cfg.hiragana_multiplier = def.hiragana_multiplier;
+    cfg.hiragana_length_power = def.hiragana_length_power;
+    cfg.alphabet_multiplier = def.alphabet_multiplier;
+    cfg.emoji_penalty = def.emoji_penalty;
+    cfg.enable_english_fallback = def.enable_english_fallback;
+    cfg.english_fallback_cost_threshold = def.english_fallback_cost_threshold;
+    cfg.enable_online_learning = def.enable_online_learning;
+    cfg.online_learning_mode = def.online_learning_mode;
+    cfg.online_learning_rate = def.online_learning_rate;
+    cfg.online_learning_weight_decay = def.online_learning_weight_decay;
+    cfg.enable_instant_mode = def.enable_instant_mode;
+    cfg.instant_learning_rate = def.instant_learning_rate;
+    cfg.instant_max_weight_delta = def.instant_max_weight_delta;
+  }
+
+  // Update cfg.profiles with non-default profiles
+  for (const auto& kv : wp) {
+    if (kv.first == "default") continue;
+    cfg.profiles[kv.first] = kv.second;
+  }
 
   return cfg;
 }
@@ -1390,8 +1515,8 @@ void ConfigDialog::ResetGruUserModel() {
   const std::string custom_path =
       gruUserModelPathLineEdit->text().trimmed().toStdString();
   const std::string path =
-      config::GruConfigManager::ResolveProfileUserModelFilePath(custom_path,
-                                                                active_prof);
+      config::GruConfigManager::ResolveProfileUserModelFilePath(active_prof,
+                                                                custom_path);
   if (!path.empty()) {
     FileUtil::UnlinkIfExists(path).IgnoreError();
   }

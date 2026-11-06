@@ -83,6 +83,7 @@ class ConfigDialog : public QDialog, private Ui::ConfigDialog {
   virtual void CheckGruConfigFileModified();
   virtual void RefreshConversionStatsUi();
   virtual void ResetConversionStats();
+  virtual void OnGruProfileChanged(int index);
 
  protected:
   bool eventFilter(QObject* obj, QEvent* event) override;
@@ -98,6 +99,8 @@ class ConfigDialog : public QDialog, private Ui::ConfigDialog {
   void ConvertFromProto(const config::Config& config);
   void SetupMogruUi();
   void LoadGruConfigToUi(const GruPenaltyConfig& gru_config);
+  void PopulateWidgetsFromProfile(const GruPenaltyConfig& p);
+  void SaveWidgetsToProfile(GruPenaltyConfig* p);
   bool SaveGruConfigFromUi();
   GruPenaltyConfig CollectGruConfigFromUi() const;
   bool Update();
@@ -118,6 +121,8 @@ class ConfigDialog : public QDialog, private Ui::ConfigDialog {
   int64_t gru_config_mtime_ = 0;
   QTimer* gru_config_watch_timer_ = nullptr;
   GruPenaltyConfig cached_gru_config_;
+  std::string current_dialog_profile_ = "default";
+  std::map<std::string, GruPenaltyConfig> working_profiles_;
 };
 
 }  // namespace gui

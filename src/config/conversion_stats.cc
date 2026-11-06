@@ -98,27 +98,22 @@ std::string GetPrimaryUserProfileDirectory() {
   }
   if (const char* home = std::getenv("HOME")) {
     add_unique(FileUtil::JoinPath(home, ".config/mogru"));
-    add_unique(FileUtil::JoinPath(home, ".mogru"));
   }
-  add_unique(SystemUtil::GetUserProfileDirectory());
 #elif defined(__APPLE__)
   if (const char* home = std::getenv("HOME")) {
     add_unique(FileUtil::JoinPath(home, "Library/Application Support/MoGRU"));
     add_unique(FileUtil::JoinPath(home, ".config/mogru"));
-    add_unique(FileUtil::JoinPath(home, ".mogru"));
   }
-  add_unique(SystemUtil::GetUserProfileDirectory());
 #else
   if (const char* userprofile = std::getenv("USERPROFILE")) {
     add_unique(FileUtil::JoinPath(userprofile, "AppData/LocalLow/MoGRU"));
   }
-  add_unique(SystemUtil::GetUserProfileDirectory());
 #endif
 
   if (!dirs.empty()) {
     return dirs.front();
   }
-  return SystemUtil::GetUserProfileDirectory();
+  return "";
 }
 
 absl::Mutex& GetStatsMutex() {

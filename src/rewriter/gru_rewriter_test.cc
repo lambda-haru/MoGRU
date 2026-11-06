@@ -1306,7 +1306,7 @@ TEST_F(GruRewriterTest, ProfileAndInstantModeConfigRoundTrip) {
 TEST_F(GruRewriterTest, InlineCommandCandidatesAndProfileSwitching) {
   ConversionRequest request;
 
-  // 1. "ぷろふぁいる" triggers profile switch command candidates
+  // 1. "ぷろふぁいる" triggers profile switch command candidates appended at the bottom
   {
     Segments segments;
     Segment* seg = segments.add_segment();
@@ -1314,15 +1314,39 @@ TEST_F(GruRewriterTest, InlineCommandCandidatesAndProfileSwitching) {
     AddCandidate("ぷろふぁいる", "プロファイル", 1000, seg);
 
     EXPECT_TRUE(rewriter_->Rewrite(request, &segments));
+    // Verify Top-1 candidate remains the normal dictionary candidate
+    EXPECT_EQ(seg->candidate(0).value, "プロファイル");
+    EXPECT_FALSE(seg->candidate(0).attributes & converter::Attribute::COMMAND_CANDIDATE);
+
     bool found_coding_cmd = false;
-    for (size_t i = 0; i < seg->candidates_size(); ++i) {
+    for (size_t i = 1; i < seg->candidates_size(); ++i) {
       if (seg->candidate(i).value == "MoGRU: プロファイル切替 [coding]") {
         found_coding_cmd = true;
         EXPECT_TRUE(seg->candidate(i).attributes & converter::Attribute::COMMAND_CANDIDATE);
+        EXPECT_EQ(seg->candidate(i).description, "プログラミング・技術向けに切替");
+        EXPECT_FALSE(absl::StrContains(seg->candidate(i).description, "NLL="));
         break;
       }
     }
     EXPECT_TRUE(found_coding_cmd);
+
+    // Live conversion must NEVER add command candidates
+    ConversionRequest::Options live_options;
+    live_options.composer_key_selection = ConversionRequest::PREDICTION_KEY;
+    const ConversionRequest live_request =
+        ConversionRequestBuilder()
+            .SetOptions(std::move(live_options))
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    Segments live_segments;
+    Segment* live_seg = live_segments.add_segment();
+    live_seg->set_key("ぷろふぁいる");
+    AddCandidate("ぷろふぁいる", "プロファイル", 1000, live_seg);
+    rewriter_->Rewrite(live_request, &live_segments);
+    for (size_t i = 0; i < live_seg->candidates_size(); ++i) {
+      EXPECT_FALSE(live_seg->candidate(i).attributes & converter::Attribute::COMMAND_CANDIDATE);
+      EXPECT_FALSE(absl::StartsWith(live_seg->candidate(i).value, "MoGRU:"));
+    }
 
     // Commit coding profile switch command
     Segments commit_segments;
@@ -1347,10 +1371,14 @@ TEST_F(GruRewriterTest, InlineCommandCandidatesAndProfileSwitching) {
     AddCandidate("いんすたんと", "インスタント", 1000, seg);
 
     EXPECT_TRUE(rewriter_->Rewrite(request, &segments));
+    EXPECT_EQ(seg->candidate(0).value, "インスタント");
+
     bool found_instant_cmd = false;
-    for (size_t i = 0; i < seg->candidates_size(); ++i) {
+    for (size_t i = 1; i < seg->candidates_size(); ++i) {
       if (seg->candidate(i).value == "MoGRU: インスタント速習モード ON") {
         found_instant_cmd = true;
+        EXPECT_EQ(seg->candidate(i).description, "1回確定で限界学習するモードを有効化");
+        EXPECT_FALSE(absl::StrContains(seg->candidate(i).description, "NLL="));
         break;
       }
     }
