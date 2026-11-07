@@ -681,6 +681,59 @@ std::vector<Node*> ImmutableConverter::Lookup(int begin_pos,
     dictionary_.LookupReverse(key_substr, options, &builder);
   } else {
     dictionary_.LookupPrefix(key_substr, options, &builder);
+
+    if (!key_substr.empty()) {
+      const Utf8AsChars32 utf8_chars(key_substr);
+      if (utf8_chars.begin() != utf8_chars.end()) {
+        const char32_t c = utf8_chars.begin().char32();
+        const size_t char_len = utf8_chars.begin().view().size();
+        const bool is_comma = (c == 0x002C || c == 0xFF0C || c == 0xFF64);
+        const bool is_period = (c == 0x002E || c == 0xFF0E || c == 0xFF61);
+
+        if (is_comma || is_period) {
+          bool prev_is_num = false;
+          if (begin_pos > 0) {
+            ConstChar32ReverseIterator riter(key.substr(0, begin_pos));
+            if (!riter.Done()) {
+              prev_is_num = (Util::GetScriptType(riter.Get()) == Util::NUMBER);
+            }
+          }
+          bool next_is_num = false;
+          if (begin_pos + char_len < key.size()) {
+            const absl::string_view next_str = key.substr(begin_pos + char_len);
+            const Utf8AsChars32 next_chars(next_str);
+            if (next_chars.begin() != next_chars.end()) {
+              next_is_num =
+                  (Util::GetScriptType(next_chars.begin().char32()) == Util::NUMBER);
+            }
+          }
+
+          if (!prev_is_num || !next_is_num) {
+            const absl::string_view lookup_key = is_comma ? "、" : "。";
+            BaseNodeListBuilder punct_builder(lattice->node_allocator(),
+                                              kMaxNodesSize);
+            dictionary_.LookupPrefix(lookup_key, options, &punct_builder);
+            for (Node* pnode : punct_builder.result()) {
+              Node* new_node = lattice->NewNode();
+              new_node->Init();
+              new_node->key.assign(key_substr.substr(0, char_len));
+              new_node->lid = pnode->lid;
+              new_node->rid = pnode->rid;
+              new_node->wcost = pnode->wcost;
+              new_node->node_type = Node::NOR_NODE;
+              if (is_comma) {
+                new_node->value =
+                    (c == 0xFF0C || c == ',') ? "，" : (c == 0xFF64 ? "､" : "、");
+              } else {
+                new_node->value =
+                    (c == 0xFF0E || c == '.') ? "．" : (c == 0xFF61 ? "｡" : "。");
+              }
+              builder.AppendToResult(new_node);
+            }
+          }
+        }
+      }
+    }
   }
   AddCharacterTypeBasedNodes(key_substr, lattice, &builder);
 
