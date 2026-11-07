@@ -60,9 +60,9 @@ class UtilTest(unittest.TestCase):
 
       file_path = os.path.join(extract_dir, 'test.txt')
       self.assertTrue(os.path.isfile(file_path))
-      self.assertEqual(os.stat(file_path).st_mode & 0o777, 0o755)
 
       if not util.IsWindows():
+        self.assertEqual(os.stat(file_path).st_mode & 0o777, 0o755)
         sym_path = os.path.join(extract_dir, 'test_link')
         self.assertTrue(os.path.islink(sym_path))
         self.assertEqual(
