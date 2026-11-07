@@ -1303,6 +1303,73 @@ TEST_F(GruRewriterTest, ProfileAndInstantModeConfigRoundTrip) {
   std::filesystem::remove(test_config, ec);
 }
 
+TEST_F(GruRewriterTest, ResolveProfileUserModelFilePath_NoDoubling) {
+  // Test default profile
+  EXPECT_TRUE(absl::EndsWith(
+      config::GruConfigManager::ResolveProfileUserModelFilePath("default", ""),
+      "grumodel_user.bin"));
+  EXPECT_TRUE(absl::EndsWith(
+      config::GruConfigManager::ResolveProfileUserModelFilePath("default", "grumodel_user.bin"),
+      "grumodel_user.bin"));
+  EXPECT_TRUE(absl::EndsWith(
+      config::GruConfigManager::ResolveProfileUserModelFilePath("default", "grumodel_user_business.bin"),
+      "grumodel_user.bin"));
+
+  // Test business profile
+  EXPECT_TRUE(absl::EndsWith(
+      config::GruConfigManager::ResolveProfileUserModelFilePath("business", ""),
+      "grumodel_user_business.bin"));
+  EXPECT_TRUE(absl::EndsWith(
+      config::GruConfigManager::ResolveProfileUserModelFilePath("business", "grumodel_user.bin"),
+      "grumodel_user_business.bin"));
+
+  // Crucial: Repeated resolution must NEVER double to _business_business.bin
+  EXPECT_TRUE(absl::EndsWith(
+      config::GruConfigManager::ResolveProfileUserModelFilePath("business", "grumodel_user_business.bin"),
+      "grumodel_user_business.bin"));
+  EXPECT_FALSE(absl::StrContains(
+      config::GruConfigManager::ResolveProfileUserModelFilePath("business", "grumodel_user_business.bin"),
+      "_business_business"));
+
+  // Self-heal already duplicated paths
+  EXPECT_TRUE(absl::EndsWith(
+      config::GruConfigManager::ResolveProfileUserModelFilePath("business", "grumodel_user_business_business.bin"),
+      "grumodel_user_business.bin"));
+  EXPECT_FALSE(absl::StrContains(
+      config::GruConfigManager::ResolveProfileUserModelFilePath("business", "grumodel_user_business_business.bin"),
+      "_business_business"));
+
+  // Custom model paths
+  EXPECT_EQ(
+      config::GruConfigManager::ResolveProfileUserModelFilePath("business", "/tmp/my_weights.bin"),
+      "/tmp/my_weights_business.bin");
+  EXPECT_EQ(
+      config::GruConfigManager::ResolveProfileUserModelFilePath("business", "/tmp/my_weights_business.bin"),
+      "/tmp/my_weights_business.bin");
+  EXPECT_EQ(
+      config::GruConfigManager::ResolveProfileUserModelFilePath("coding", "/tmp/my_weights_business.bin"),
+      "/tmp/my_weights_coding.bin");
+}
+
+TEST_F(GruRewriterTest, KatakanaKeyTriggersProfileSwitchCommand) {
+  ConversionRequest request;
+  Segments segments;
+  Segment* seg = segments.add_segment();
+  seg->set_key("プロファイル");
+  AddCandidate("プロファイル", "プロファイル", 1000, seg);
+
+  EXPECT_TRUE(rewriter_->Rewrite(request, &segments));
+  bool found_cmd = false;
+  for (size_t i = 1; i < seg->candidates_size(); ++i) {
+    if (seg->candidate(i).value == "MoGRU: プロファイル切替 [business]") {
+      found_cmd = true;
+      EXPECT_TRUE(seg->candidate(i).attributes & converter::Attribute::COMMAND_CANDIDATE);
+      break;
+    }
+  }
+  EXPECT_TRUE(found_cmd);
+}
+
 TEST_F(GruRewriterTest, InlineCommandCandidatesAndProfileSwitching) {
   ConversionRequest request;
 
@@ -1394,6 +1461,103 @@ TEST_F(GruRewriterTest, InlineCommandCandidatesAndProfileSwitching) {
 
     GruPenaltyConfig cfg = rewriter_->penalty_config();
     EXPECT_TRUE(cfg.enable_instant_mode);
+  }
+}
+
+TEST_F(GruRewriterTest, AppRegistrationCommandCandidateAndCommit) {
+  commands::Context context;
+  context.set_application_name("gedit");
+  const ConversionRequest request =
+      ConversionRequestBuilder().SetContextView(context).Build();
+
+  Segments segments;
+  Segment* seg = segments.add_segment();
+  seg->set_key("プロファイル");
+  AddCandidate("プロファイル", "プロファイル", 1000, seg);
+
+  EXPECT_TRUE(rewriter_->Rewrite(request, &segments));
+
+  bool found_app_bind_cmd = false;
+  for (size_t i = 1; i < seg->candidates_size(); ++i) {
+    if (seg->candidate(i).value == "MoGRU: 現在のアプリ (gedit) を [default] に登録") {
+      found_app_bind_cmd = true;
+      EXPECT_TRUE(seg->candidate(i).attributes & converter::Attribute::COMMAND_CANDIDATE);
+      EXPECT_EQ(seg->candidate(i).description, "アプリ「gedit」使用時にプロファイル [default] を自動適用");
+      break;
+    }
+  }
+  EXPECT_TRUE(found_app_bind_cmd);
+
+  // Commit registering gedit to creative profile
+  Segments commit_segments;
+  Segment* fixed = commit_segments.add_segment();
+  fixed->set_key("プロファイル");
+  fixed->set_segment_type(Segment::FIXED_VALUE);
+  AddCandidate("プロファイル", "MoGRU: 現在のアプリ (gedit) を [creative] に登録", 0, fixed);
+  rewriter_->Finish(request, commit_segments);
+
+  EXPECT_EQ(rewriter_->active_profile(), "creative");
+  const std::string config_path =
+      config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+  const GruPenaltyConfig loaded = config::GruConfigManager::LoadConfig(config_path);
+  EXPECT_TRUE(loaded.enable_app_profile_switching);
+  EXPECT_EQ(config::GruConfigManager::DetectProfileFromApplication("gedit", loaded), "creative");
+}
+
+TEST_F(GruRewriterTest, AppAwareAutomaticProfileSwitching) {
+  // Configure app_profile_map
+  const std::string config_path =
+      config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+  GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
+  cfg.enable_app_profile_switching = true;
+  cfg.current_profile = "default";
+  cfg.app_profile_map = "code:coding,slack:business";
+  config::GruConfigManager::SaveConfig(cfg, config_path);
+  rewriter_->Reload();
+
+  // 1. In VS Code ("code") -> auto switches to coding profile
+  {
+    commands::Context context;
+    context.set_application_name("code");
+    const ConversionRequest request =
+        ConversionRequestBuilder().SetContextView(context).Build();
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("とうろく");
+    AddCandidate("とうろく", "登録", 1000, seg);
+
+    rewriter_->Rewrite(request, &segments);
+    EXPECT_EQ(rewriter_->active_profile(), "coding");
+  }
+
+  // 2. In Slack ("slack") -> auto switches to business profile
+  {
+    commands::Context context;
+    context.set_application_name("slack");
+    const ConversionRequest request =
+        ConversionRequestBuilder().SetContextView(context).Build();
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("おつかれさま");
+    AddCandidate("おつかれさま", "お疲れ様", 1000, seg);
+
+    rewriter_->Rewrite(request, &segments);
+    EXPECT_EQ(rewriter_->active_profile(), "business");
+  }
+
+  // 3. In unmapped app ("gedit") -> falls back to base current_profile ("default")
+  {
+    commands::Context context;
+    context.set_application_name("gedit");
+    const ConversionRequest request =
+        ConversionRequestBuilder().SetContextView(context).Build();
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("てすと");
+    AddCandidate("てすと", "テスト", 1000, seg);
+
+    rewriter_->Rewrite(request, &segments);
+    EXPECT_EQ(rewriter_->active_profile(), "default");
   }
 }
 

@@ -132,6 +132,10 @@ bool MozcState::TrySendKeyEvent(InputContext* ic,
   }
 
   mozc::commands::Context context;
+  if (ic && !ic->program().empty()) {
+    context.set_application_name(ic->program());
+    context.add_experimental_features(std::string("app:") + ic->program());
+  }
   SurroundingTextInfo surrounding_text_info;
   if (GetSurroundingText(ic, &surrounding_text_info,
                          engine_->clipboardAddon())) {
@@ -192,7 +196,12 @@ bool MozcState::TrySendRawCommand(const mozc::commands::SessionCommand& command,
                                   mozc::commands::Output* out,
                                   std::string* out_error) const {
   MOZC_VLOG(1) << "TrySendRawCommand: " << command.DebugString();
-  if (!GetClient()->SendCommand(command, out)) {
+  mozc::commands::Context context;
+  if (ic_ && !ic_->program().empty()) {
+    context.set_application_name(ic_->program());
+    context.add_experimental_features(std::string("app:") + ic_->program());
+  }
+  if (!GetClient()->SendCommandWithContext(command, context, out)) {
     *out_error = "SendCommand failed";
     MOZC_VLOG(1) << "ERROR";
     return false;

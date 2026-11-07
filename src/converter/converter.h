@@ -156,7 +156,7 @@ class Converter final : public ConverterInterface {
                        const ConversionRequest& request) const;
 
   // Reloads internal data, e.g., user dictionary, etc.
-  bool Reload();
+  bool Reload() override;
 
   // Synchronizes internal data, e.g., user dictionary, etc.
   bool Sync();

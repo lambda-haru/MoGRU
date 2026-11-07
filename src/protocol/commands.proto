@@ -536,6 +536,9 @@ message Context {
   // should update the revision whenever the input focus is changed.
   optional int32 revision = 5 [default = 0];
 
+  // Client application name (e.g. "code", "slack", "discord").
+  optional string application_name = 6;
+
   // Repeated fields to be used for experimental features.
   repeated string experimental_features = 100;
 }

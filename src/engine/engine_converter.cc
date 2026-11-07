@@ -45,6 +45,7 @@
 #include "absl/flags/flag.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "base/text_normalizer.h"
@@ -1845,6 +1846,74 @@ bool EngineConverter::MaybePerformCommandCandidate(const size_t index,
     const converter::Candidate& candidate =
         segments_.conversion_segment(i).candidate(id);
     if (candidate.attributes & converter::Attribute::COMMAND_CANDIDATE) {
+      const std::string& val = candidate.value;
+      constexpr absl::string_view kProfPrefix = "MoGRU: プロファイル切替 [";
+      if (absl::StartsWith(val, kProfPrefix) && absl::EndsWith(val, "]")) {
+        const std::string new_profile =
+            val.substr(kProfPrefix.size(), val.size() - kProfPrefix.size() - 1);
+        const std::string config_path =
+            config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+        GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
+        cfg.current_profile = new_profile;
+        config::GruConfigManager::SaveConfig(cfg, config_path);
+        if (converter_) {
+          const_cast<ConverterInterface*>(converter_.get())->Reload();
+        }
+        LOG(INFO) << "EngineConverter: Switched MoGRU profile to: " << new_profile;
+        return true;
+      }
+      constexpr absl::string_view kAppBindPrefix = "MoGRU: 現在のアプリ (";
+      if (absl::StartsWith(val, kAppBindPrefix)) {
+        constexpr absl::string_view kMiddle = ") を [";
+        constexpr absl::string_view kSuffix = "] に登録";
+        size_t app_start = kAppBindPrefix.size();
+        size_t app_end = val.find(kMiddle, app_start);
+        if (app_end != std::string::npos) {
+          std::string app_name = val.substr(app_start, app_end - app_start);
+          size_t prof_start = app_end + kMiddle.size();
+          size_t prof_end = val.find(kSuffix, prof_start);
+          if (prof_end != std::string::npos) {
+            std::string target_profile = val.substr(prof_start, prof_end - prof_start);
+            const std::string config_path =
+                config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+            GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
+            config::GruConfigManager::AddOrUpdateAppProfileMapping(&cfg, app_name, target_profile);
+            cfg.enable_app_profile_switching = true;
+            config::GruConfigManager::SaveConfig(cfg, config_path);
+            if (converter_) {
+              const_cast<ConverterInterface*>(converter_.get())->Reload();
+            }
+            LOG(INFO) << "EngineConverter: Registered app '" << app_name
+                      << "' to profile '" << target_profile << "'";
+            return true;
+          }
+        }
+      }
+      if (val == "MoGRU: インスタント速習モード ON") {
+        const std::string config_path =
+            config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+        GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
+        cfg.enable_instant_mode = true;
+        config::GruConfigManager::SaveConfig(cfg, config_path);
+        if (converter_) {
+          const_cast<ConverterInterface*>(converter_.get())->Reload();
+        }
+        LOG(INFO) << "EngineConverter: Enabled MoGRU instant mode";
+        return true;
+      }
+      if (val == "MoGRU: インスタント速習モード OFF") {
+        const std::string config_path =
+            config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+        GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
+        cfg.enable_instant_mode = false;
+        config::GruConfigManager::SaveConfig(cfg, config_path);
+        if (converter_) {
+          const_cast<ConverterInterface*>(converter_.get())->Reload();
+        }
+        LOG(INFO) << "EngineConverter: Disabled MoGRU instant mode";
+        return true;
+      }
+
       switch (candidate.command) {
         case converter::Candidate::DEFAULT_COMMAND:
           // Do nothing

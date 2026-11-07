@@ -46,6 +46,7 @@
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
@@ -53,6 +54,7 @@
 #include "absl/time/time.h"
 #include "base/file_util.h"
 #include "base/system_util.h"
+#include "protocol/commands.pb.h"
 
 namespace mozc {
 namespace config {
@@ -259,6 +261,31 @@ void MigrateLegacyFilesOnce() {
         }
       }
     }
+
+    // Self-heal any corrupted double-profile filenames (e.g. grumodel_user_business_business.bin)
+    for (const auto& udir : user_dirs) {
+      if (!std::filesystem::exists(udir, ec)) continue;
+      for (const auto& entry : std::filesystem::directory_iterator(udir, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file(ec)) continue;
+        const std::string fname = entry.path().filename().string();
+        for (const char* kp : {"default", "business", "coding", "casual", "creative", "instant"}) {
+          const std::string dbl = std::string("_") + kp + "_" + kp + ".bin";
+          if (absl::EndsWith(fname, dbl)) {
+            const std::string correct_fname = (std::string(kp) == "default")
+                                                  ? "grumodel_user.bin"
+                                                  : ("grumodel_user_" + std::string(kp) + ".bin");
+            const std::string correct_path = FileUtil::JoinPath(udir, correct_fname);
+            if (!std::filesystem::exists(correct_path, ec)) {
+              std::filesystem::rename(entry.path(), correct_path, ec);
+            } else {
+              std::filesystem::remove(entry.path(), ec);
+            }
+            break;
+          }
+        }
+      }
+    }
   });
 }
 
@@ -415,35 +442,87 @@ std::string GruConfigManager::ResolveUserModelFilePath(
 std::string GruConfigManager::ResolveProfileUserModelFilePath(
     const std::string& profile_name,
     const std::string& user_specified) {
-  if (profile_name.empty() || profile_name == "default") {
-    return ResolveUserModelFilePath(user_specified);
-  }
-  if (!user_specified.empty()) {
-    std::string path = ExpandTilde(user_specified);
-    const std::string ext = ".bin";
-    if (absl::EndsWith(path, ext)) {
-      return path.substr(0, path.size() - ext.size()) + "_" + profile_name + ext;
+  const std::string prof = (profile_name.empty() || profile_name == "default")
+                               ? "default"
+                               : profile_name;
+
+  if (user_specified.empty()) {
+    const std::string filename = (prof == "default")
+                                     ? "grumodel_user.bin"
+                                     : ("grumodel_user_" + prof + ".bin");
+    MigrateLegacyFilesOnce();
+    if (const char* test_tmpdir = std::getenv("TEST_TMPDIR")) {
+      if (test_tmpdir[0] != '\0') {
+        return FileUtil::JoinPath(test_tmpdir, filename);
+      }
     }
-    return path + "_" + profile_name;
+    const auto dirs = GetUserProfileCandidateDirs();
+    for (const auto& dir : dirs) {
+      const std::string p = FileUtil::JoinPath(dir, filename);
+      if (std::filesystem::exists(p)) {
+        return p;
+      }
+    }
+    if (!dirs.empty()) {
+      return FileUtil::JoinPath(dirs.front(), filename);
+    }
+    return "";
   }
-  const std::string filename = "grumodel_user_" + profile_name + ".bin";
-  MigrateLegacyFilesOnce();
-  if (const char* test_tmpdir = std::getenv("TEST_TMPDIR")) {
-    if (test_tmpdir[0] != '\0') {
-      return FileUtil::JoinPath(test_tmpdir, filename);
+
+  // user_specified is provided.
+  std::string path = ExpandTilde(user_specified);
+  std::string dir = FileUtil::Dirname(path);
+  std::string basename = FileUtil::Basename(path);
+
+  // If basename starts with grumodel_user:
+  // e.g. grumodel_user.bin, grumodel_user_business.bin, grumodel_user_business_business.bin
+  if (absl::StartsWith(basename, "grumodel_user")) {
+    std::string new_basename = (prof == "default")
+                                   ? "grumodel_user.bin"
+                                   : ("grumodel_user_" + prof + ".bin");
+    if (dir.empty()) {
+      return ResolveProfileUserModelFilePath(prof, "");
+    }
+    return FileUtil::JoinPath(dir, new_basename);
+  }
+
+  // For generic custom names like /path/to/custom_model.bin:
+  // Strip known profile suffixes if already present (e.g. _business.bin, _coding.bin, etc.)
+  const std::string ext = ".bin";
+  std::string stem = basename;
+  bool has_bin = false;
+  if (absl::EndsWith(stem, ext)) {
+    stem = stem.substr(0, stem.size() - ext.size());
+    has_bin = true;
+  }
+
+  // Remove existing profile suffix if present (e.g., _business, _business_business)
+  static const char* kKnownProfiles[] = {
+      "default", "business", "coding", "casual", "creative", "instant"};
+  bool stripped = true;
+  while (stripped) {
+    stripped = false;
+    for (const char* kp : kKnownProfiles) {
+      const std::string suffix = std::string("_") + kp;
+      if (absl::EndsWith(stem, suffix)) {
+        stem = stem.substr(0, stem.size() - suffix.size());
+        stripped = true;
+        break;
+      }
     }
   }
-  const auto dirs = GetUserProfileCandidateDirs();
-  for (const auto& dir : dirs) {
-    const std::string p = FileUtil::JoinPath(dir, filename);
-    if (std::filesystem::exists(p)) {
-      return p;
-    }
+
+  std::string new_basename;
+  if (prof == "default") {
+    new_basename = has_bin ? (stem + ext) : stem;
+  } else {
+    new_basename = stem + "_" + prof + (has_bin ? ext : "");
   }
-  if (!dirs.empty()) {
-    return FileUtil::JoinPath(dirs.front(), filename);
+
+  if (dir.empty()) {
+    return new_basename;
   }
-  return "";
+  return FileUtil::JoinPath(dir, new_basename);
 }
 
 std::map<std::string, GruPenaltyConfig> GruConfigManager::GetBuiltinDefaultProfiles(
@@ -585,6 +664,61 @@ std::string GruConfigManager::DetectProfileFromApplication(
     }
   }
   return "";
+}
+
+std::string GruConfigManager::GetCurrentApplicationName(
+    const commands::Context* context) {
+  if (context != nullptr) {
+    if (context->has_application_name() && !context->application_name().empty()) {
+      return context->application_name();
+    }
+    for (const auto& feat : context->experimental_features()) {
+      if (absl::StartsWith(feat, "app:")) {
+        return feat.substr(4);
+      }
+    }
+  }
+  const char* env_app = getenv("MOGRU_APP_NAME");
+  if (env_app && *env_app) {
+    return env_app;
+  }
+  const char* mozc_app = getenv("MOZC_CURRENT_APP");
+  if (mozc_app && *mozc_app) {
+    return mozc_app;
+  }
+  return "";
+}
+
+void GruConfigManager::AddOrUpdateAppProfileMapping(
+    GruPenaltyConfig* config,
+    absl::string_view app_name,
+    absl::string_view profile_name) {
+  if (config == nullptr || app_name.empty() || profile_name.empty()) {
+    return;
+  }
+  std::string lower_app = absl::AsciiStrToLower(app_name);
+  std::vector<std::string_view> pairs =
+      absl::StrSplit(config->app_profile_map, ',', absl::SkipEmpty());
+  std::vector<std::string> updated_pairs;
+  bool found = false;
+  for (auto pair : pairs) {
+    std::pair<std::string_view, std::string_view> kv = absl::StrSplit(pair, ':');
+    std::string key = std::string(absl::StripAsciiWhitespace(kv.first));
+    std::string val = std::string(absl::StripAsciiWhitespace(kv.second));
+    if (!key.empty()) {
+      if (absl::AsciiStrToLower(key) == lower_app) {
+        updated_pairs.push_back(absl::StrCat(key, ":", profile_name));
+        found = true;
+      } else {
+        updated_pairs.push_back(absl::StrCat(key, ":", val));
+      }
+    }
+  }
+  if (!found) {
+    updated_pairs.push_back(absl::StrCat(app_name, ":", profile_name));
+  }
+  config->app_profile_map = absl::StrJoin(updated_pairs, ",");
+  config->enable_app_profile_switching = true;
 }
 
 int64_t GruConfigManager::GetFileMtime(const std::string& path) {

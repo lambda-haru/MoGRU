@@ -144,6 +144,7 @@ mozc_cc_library(
     deps = [
         "//base:file_util",
         "//base:system_util",
+        "//protocol:commands_cc_proto",
         "@com_google_absl//absl/base:no_destructor",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings",

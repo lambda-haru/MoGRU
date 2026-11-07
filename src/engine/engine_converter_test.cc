@@ -51,6 +51,7 @@
 #include "base/file_util.h"
 #include "base/system_util.h"
 #include "config/conversion_stats.h"
+#include "config/gru_config.h"
 #include "absl/log/check.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -3589,6 +3590,63 @@ TEST_F(EngineConverterTest, ExecuteCommandCandidate) {
     EXPECT_TRUE(output.has_config());
     EXPECT_FALSE(output.config().presentation_mode());
     EXPECT_FALSE(config_->presentation_mode());
+  }
+
+  // MoGRU Profile Switch Command Candidate
+  {
+    auto mock_converter = std::make_shared<MockConverter>();
+    EngineConverter converter(mock_converter, request_, config_);
+
+    Segments segments;
+    SetAiueo(&segments);
+    SetCommandCandidate(&segments, 0, 0, converter::Candidate::DEFAULT_COMMAND);
+    segments.mutable_conversion_segment(0)->mutable_candidate(0)->value =
+        "MoGRU: プロファイル切替 [business]";
+    EXPECT_CALL(*mock_converter, StartConversion(_, _))
+        .WillOnce(DoAll(SetArgPointee<1>(segments), Return(true)));
+
+    composer_->InsertCharacterPreedit(kChars_Aiueo);
+    EXPECT_TRUE(converter.Convert(*composer_));
+
+    converter.Commit(*composer_, Context::default_instance());
+    commands::Output output;
+    converter.FillOutput(*composer_, &output);
+    EXPECT_FALSE(output.has_result());
+
+    // Verify config was updated
+    const std::string config_path =
+        config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+    const auto cfg = config::GruConfigManager::LoadConfig(config_path);
+    EXPECT_EQ(cfg.current_profile, "business");
+  }
+
+  // MoGRU App Profile Registration Command Candidate
+  {
+    auto mock_converter = std::make_shared<MockConverter>();
+    EngineConverter converter(mock_converter, request_, config_);
+
+    Segments segments;
+    SetAiueo(&segments);
+    SetCommandCandidate(&segments, 0, 0, converter::Candidate::DEFAULT_COMMAND);
+    segments.mutable_conversion_segment(0)->mutable_candidate(0)->value =
+        "MoGRU: 現在のアプリ (slack) を [business] に登録";
+    EXPECT_CALL(*mock_converter, StartConversion(_, _))
+        .WillOnce(DoAll(SetArgPointee<1>(segments), Return(true)));
+
+    composer_->InsertCharacterPreedit(kChars_Aiueo);
+    EXPECT_TRUE(converter.Convert(*composer_));
+
+    converter.Commit(*composer_, Context::default_instance());
+    commands::Output output;
+    converter.FillOutput(*composer_, &output);
+    EXPECT_FALSE(output.has_result());
+
+    // Verify app profile map was updated and app profile switching was enabled
+    const std::string config_path =
+        config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+    const auto cfg = config::GruConfigManager::LoadConfig(config_path);
+    EXPECT_TRUE(cfg.enable_app_profile_switching);
+    EXPECT_EQ(config::GruConfigManager::DetectProfileFromApplication("slack", cfg), "business");
   }
 }
 

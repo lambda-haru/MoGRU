@@ -453,6 +453,8 @@ mozc_cc_test(
         "//base:util",
         "//composer",
         "//composer:table",
+        "//config:conversion_stats",
+        "//config:gru_config",
         "//converter:attribute",
         "//converter:converter_mock",
         "//converter:inner_segment",

@@ -35,7 +35,13 @@
 #include <string>
 #include <vector>
 
+#include "absl/strings/string_view.h"
+
 namespace mozc {
+
+namespace commands {
+class Context;
+}
 
 struct GruPenaltyConfig {
   bool enable_gru_rewriter = true;
@@ -128,6 +134,17 @@ class GruConfigManager {
   static std::string DetectProfileFromApplication(
       const std::string& app_name,
       const GruPenaltyConfig& config);
+
+  // Resolves the current application name from Context, env vars, or active window.
+  static std::string GetCurrentApplicationName(
+      const commands::Context* context = nullptr);
+
+  // Adds or updates an app-to-profile mapping in config->app_profile_map,
+  // enabling app profile switching.
+  static void AddOrUpdateAppProfileMapping(
+      GruPenaltyConfig* config,
+      absl::string_view app_name,
+      absl::string_view profile_name);
 
   // Returns the modification timestamp of `path` (or 0 if missing).
   static int64_t GetFileMtime(const std::string& path);

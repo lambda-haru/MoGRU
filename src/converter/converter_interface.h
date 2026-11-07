@@ -162,6 +162,9 @@ class ConverterInterface {
   // Syncs user-modified context.
   virtual void CommitContext(const ConversionRequest& request) const = 0;
 
+  // Reloads internal data, e.g., user dictionary, rewriters, etc.
+  virtual bool Reload() { return true; }
+
  protected:
   ConverterInterface() = default;
 };

@@ -118,6 +118,8 @@ class GruRewriter : public RewriterInterface {
 
   bool EnsureInitialized() const;
   GruPenaltyConfig GetPenaltyConfig() const;
+  void CheckAndApplyAppProfileLocked(const commands::Context* context) const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
   bool SwitchProfileLocked(
       const std::string& new_profile,
       const GruPenaltyConfig& root_config) const
@@ -148,6 +150,7 @@ class GruRewriter : public RewriterInterface {
   mutable std::string user_model_path_ ABSL_GUARDED_BY(mutex_);
   mutable std::string active_profile_ ABSL_GUARDED_BY(mutex_) = "default";
   mutable std::string config_file_path_ ABSL_GUARDED_BY(mutex_);
+  mutable GruPenaltyConfig root_penalty_config_ ABSL_GUARDED_BY(mutex_);
   mutable GruPenaltyConfig penalty_config_ ABSL_GUARDED_BY(mutex_);
   mutable int64_t last_config_mtime_ ABSL_GUARDED_BY(mutex_) = 0;
   mutable absl::Time last_config_check_time_ ABSL_GUARDED_BY(mutex_) = absl::InfinitePast();

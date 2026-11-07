@@ -347,6 +347,7 @@ GruPenaltyConfig GruRewriter::GetPenaltyConfig() const {
       root_config = base;
     }
     config::GruConfigManager::ApplyEnvOverrides(&root_config);
+    root_penalty_config_ = root_config;
 
     const std::string target_profile =
         root_config.current_profile.empty() ? "default" : root_config.current_profile;
@@ -369,6 +370,28 @@ GruPenaltyConfig GruRewriter::GetPenaltyConfig() const {
   return penalty_config_;
 }
 
+void GruRewriter::CheckAndApplyAppProfileLocked(
+    const commands::Context* context) const {
+  if (!root_penalty_config_.enable_app_profile_switching) {
+    return;
+  }
+  const std::string app_name =
+      config::GruConfigManager::GetCurrentApplicationName(context);
+  if (app_name.empty()) {
+    return;
+  }
+  const std::string target_profile =
+      config::GruConfigManager::DetectProfileFromApplication(
+          app_name, root_penalty_config_);
+  const std::string effective_profile =
+      target_profile.empty() ? root_penalty_config_.current_profile : target_profile;
+  const std::string final_profile =
+      effective_profile.empty() ? "default" : effective_profile;
+  if (final_profile != active_profile_) {
+    SwitchProfileLocked(final_profile, root_penalty_config_);
+  }
+}
+
 bool GruRewriter::SwitchProfileLocked(
     const std::string& new_profile,
     const GruPenaltyConfig& root_config) const {
@@ -378,13 +401,11 @@ bool GruRewriter::SwitchProfileLocked(
   penalty_config_ = config::GruConfigManager::GetEffectiveProfileConfig(
       root_config, effective_profile);
 
-  const std::string configured_user_model =
+  const std::string target_user_model_path =
       !penalty_config_.gru_user_model_path.empty()
           ? penalty_config_.gru_user_model_path
-          : absl::GetFlag(FLAGS_gru_user_model_path);
-  const std::string target_user_model_path =
-      config::GruConfigManager::ResolveProfileUserModelFilePath(
-          effective_profile, configured_user_model);
+          : config::GruConfigManager::ResolveProfileUserModelFilePath(
+                effective_profile, root_config.gru_user_model_path);
 
   if (active_profile_ != effective_profile || user_model_path_ != target_user_model_path) {
     if (model_ && unsaved_updates_count_ > 0 && !user_model_path_.empty()) {
@@ -428,8 +449,10 @@ bool GruRewriter::EnsureInitialized() const {
       config::GruConfigManager::ResolveDataFilePath(
           configured_model, "grumodel.bin");
   const std::string user_model_path =
-      config::GruConfigManager::ResolveProfileUserModelFilePath(
-          active_profile_, configured_user_model);
+      !penalty_config_.gru_user_model_path.empty()
+          ? penalty_config_.gru_user_model_path
+          : config::GruConfigManager::ResolveProfileUserModelFilePath(
+                active_profile_, configured_user_model);
 
   if (is_initialized_ && model_ && model_->is_loaded() && indexer_ &&
       loaded_chardata_path_ == chardata_path &&
@@ -563,21 +586,53 @@ void GruRewriter::Finish(const ConversionRequest& request,
           const std::string new_profile =
               val.substr(kProfPrefix.size(), val.size() - kProfPrefix.size() - 1);
           absl::MutexLock l(mutex_);
-          penalty_config_.current_profile = new_profile;
-          config::GruConfigManager::SaveConfig(penalty_config_, config_file_path_);
-          SwitchProfileLocked(new_profile, penalty_config_);
+          GruPenaltyConfig root_config =
+              config::GruConfigManager::LoadConfig(config_file_path_);
+          root_config.current_profile = new_profile;
+          config::GruConfigManager::SaveConfig(root_config, config_file_path_);
+          SwitchProfileLocked(new_profile, root_config);
           return;
+        }
+        constexpr absl::string_view kAppBindPrefix = "MoGRU: 現在のアプリ (";
+        if (absl::StartsWith(val, kAppBindPrefix)) {
+          constexpr absl::string_view kMiddle = ") を [";
+          constexpr absl::string_view kSuffix = "] に登録";
+          size_t app_start = kAppBindPrefix.size();
+          size_t app_end = val.find(kMiddle, app_start);
+          if (app_end != std::string::npos) {
+            std::string app_name = val.substr(app_start, app_end - app_start);
+            size_t prof_start = app_end + kMiddle.size();
+            size_t prof_end = val.find(kSuffix, prof_start);
+            if (prof_end != std::string::npos) {
+              std::string target_profile = val.substr(prof_start, prof_end - prof_start);
+              absl::MutexLock l(mutex_);
+              GruPenaltyConfig root_config =
+                  config::GruConfigManager::LoadConfig(config_file_path_);
+              config::GruConfigManager::AddOrUpdateAppProfileMapping(&root_config, app_name, target_profile);
+              root_config.enable_app_profile_switching = true;
+              config::GruConfigManager::SaveConfig(root_config, config_file_path_);
+              root_penalty_config_ = root_config;
+              SwitchProfileLocked(target_profile, root_config);
+              return;
+            }
+          }
         }
         if (val == "MoGRU: インスタント速習モード ON") {
           absl::MutexLock l(mutex_);
+          GruPenaltyConfig root_config =
+              config::GruConfigManager::LoadConfig(config_file_path_);
+          root_config.enable_instant_mode = true;
+          config::GruConfigManager::SaveConfig(root_config, config_file_path_);
           penalty_config_.enable_instant_mode = true;
-          config::GruConfigManager::SaveConfig(penalty_config_, config_file_path_);
           return;
         }
         if (val == "MoGRU: インスタント速習モード OFF") {
           absl::MutexLock l(mutex_);
+          GruPenaltyConfig root_config =
+              config::GruConfigManager::LoadConfig(config_file_path_);
+          root_config.enable_instant_mode = false;
+          config::GruConfigManager::SaveConfig(root_config, config_file_path_);
           penalty_config_.enable_instant_mode = false;
-          config::GruConfigManager::SaveConfig(penalty_config_, config_file_path_);
           return;
         }
       }
@@ -735,6 +790,11 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
     return false;
   }
 
+  {
+    absl::MutexLock l(mutex_);
+    CheckAndApplyAppProfileLocked(&request.context());
+  }
+
   const std::string hist_prefix = GetHistoryPrefix(&request, *segments);
   const double alpha = penalty_config.gru_score_weight;
   const bool show_score = penalty_config.show_gru_score;
@@ -753,8 +813,29 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
   if (!is_live_conversion && segments->conversion_segments_size() == 1) {
     Segment* seg = segments->mutable_conversion_segment(0);
     const absl::string_view key = seg->key();
-    if (key == "ぷろふぁいる" || key == "もぐら" || key == "いんすたんと" ||
-        key == "::profile" || key == "::instant" || key == "::mogru") {
+    bool match_profile = (key == "ぷろふぁいる" || key == "プロファイル" ||
+                          key == "profile" || key == "purofairu" ||
+                          key == "::profile" || key == "もぐら" ||
+                          key == "モグラ" || key == "mogru" ||
+                          key == "::mogru");
+    bool match_instant = (key == "いんすたんと" || key == "インスタント" ||
+                          key == "instant" || key == "insutanto" ||
+                          key == "::instant" || key == "もぐら" ||
+                          key == "モグラ" || key == "mogru" ||
+                          key == "::mogru");
+
+    if (!match_profile && !match_instant) {
+      for (size_t ci = 0; ci < seg->candidates_size(); ++ci) {
+        const absl::string_view val = seg->candidate(ci).value;
+        if (val == "プロファイル" || val == "ぷろふぁいる") {
+          match_profile = true;
+        } else if (val == "インスタント" || val == "いんすたんと") {
+          match_instant = true;
+        }
+      }
+    }
+
+    if (match_profile || match_instant) {
       auto add_cmd = [&](const std::string& val, const std::string& desc) {
         Segment::Candidate* cand = seg->add_candidate();
         cand->value = val;
@@ -768,7 +849,16 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
                              converter::Attribute::NO_VARIANTS_EXPANSION);
       };
 
-      if (key == "ぷろふぁいる" || key == "もぐら" || key == "::profile" || key == "::mogru") {
+      if (match_profile) {
+        const std::string current_app =
+            config::GruConfigManager::GetCurrentApplicationName(&request.context());
+        const std::string prof = active_profile();
+        if (!current_app.empty()) {
+          add_cmd(absl::StrFormat("MoGRU: 現在のアプリ (%s) を [%s] に登録",
+                                  current_app, prof),
+                  absl::StrFormat("アプリ「%s」使用時にプロファイル [%s] を自動適用",
+                                  current_app, prof));
+        }
         add_cmd("MoGRU: プロファイル切替 [coding]", "プログラミング・技術向けに切替");
         add_cmd("MoGRU: プロファイル切替 [business]", "公用文・ビジネス向けに切替");
         add_cmd("MoGRU: プロファイル切替 [casual]", "日常会話・SNS向けに切替");
@@ -776,7 +866,7 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
         add_cmd("MoGRU: プロファイル切替 [instant]", "インスタント速習プロファイルに切替");
         add_cmd("MoGRU: プロファイル切替 [default]", "標準プロファイルに切替");
       }
-      if (key == "いんすたんと" || key == "もぐら" || key == "::instant" || key == "::mogru") {
+      if (match_instant) {
         if (!penalty_config.enable_instant_mode) {
           add_cmd("MoGRU: インスタント速習モード ON", "1回確定で限界学習するモードを有効化");
         } else {
