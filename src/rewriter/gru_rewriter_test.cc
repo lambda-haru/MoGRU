@@ -1464,6 +1464,21 @@ TEST_F(GruRewriterTest, InlineCommandCandidatesAndProfileSwitching) {
   }
 }
 
+TEST_F(GruRewriterTest, CompositorProxyAppNameIgnoredInWayland) {
+  commands::Context context;
+  context.set_application_name("gnome-shell");
+  EXPECT_EQ(config::GruConfigManager::GetCurrentApplicationName(&context), "");
+
+  context.set_application_name("kwin_wayland");
+  EXPECT_EQ(config::GruConfigManager::GetCurrentApplicationName(&context), "");
+
+  context.set_application_name("mutter");
+  EXPECT_EQ(config::GruConfigManager::GetCurrentApplicationName(&context), "");
+
+  context.set_application_name("code");
+  EXPECT_EQ(config::GruConfigManager::GetCurrentApplicationName(&context), "code");
+}
+
 TEST_F(GruRewriterTest, AppRegistrationCommandCandidateAndCommit) {
   commands::Context context;
   context.set_application_name("gedit");

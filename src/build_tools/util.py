@@ -34,6 +34,7 @@ import logging
 import multiprocessing
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import zipfile
@@ -184,10 +185,10 @@ def PrintErrorAndExit(error_message):
 
 
 class _ZipFileWithPermissions(zipfile.ZipFile):
-  """Subclass of zipfile.ZipFile to support permissions."""
+  """Subclass of zipfile.ZipFile to support permissions and symbolic links."""
 
   def _extract_member(self, member, targetpath, pwd):
-    """Calls superclass's function, then keep the file permissions."""
+    """Calls superclass's function, then keep file permissions and symbolic links."""
     if not isinstance(member, zipfile.ZipInfo):
       member = self.getinfo(member)
 
@@ -197,8 +198,18 @@ class _ZipFileWithPermissions(zipfile.ZipFile):
       targetpath = super()._extract_member(member, targetpath, pwd)  # pyrefly: ignore[missing-attribute]
 
     attr = member.external_attr >> 16
+    if stat.S_ISLNK(attr):
+      try:
+        with open(targetpath, 'r', encoding='utf-8') as f:
+          link_target = f.read()
+        os.unlink(targetpath)
+        os.symlink(link_target, targetpath)
+      except OSError:
+        pass
+      return targetpath
+
     if attr != 0:
-      os.chmod(targetpath, attr)
+      os.chmod(targetpath, attr & 0o7777)
     return targetpath
 
 

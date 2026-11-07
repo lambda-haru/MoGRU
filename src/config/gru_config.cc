@@ -666,27 +666,44 @@ std::string GruConfigManager::DetectProfileFromApplication(
   return "";
 }
 
+static bool IsCompositorOrProxyAppName(absl::string_view name) {
+  std::string lower = absl::AsciiStrToLower(name);
+  return lower == "gnome-shell" || lower == "kwin_wayland" ||
+         lower == "mutter" || lower == "weston" || lower == "xwayland";
+}
+
 std::string GruConfigManager::GetCurrentApplicationName(
     const commands::Context* context) {
+  std::string app_name;
   if (context != nullptr) {
     if (context->has_application_name() && !context->application_name().empty()) {
-      return context->application_name();
+      app_name = context->application_name();
     }
-    for (const auto& feat : context->experimental_features()) {
-      if (absl::StartsWith(feat, "app:")) {
-        return feat.substr(4);
+    if (app_name.empty()) {
+      for (const auto& feat : context->experimental_features()) {
+        if (absl::StartsWith(feat, "app:")) {
+          app_name = feat.substr(4);
+          break;
+        }
       }
     }
   }
-  const char* env_app = getenv("MOGRU_APP_NAME");
-  if (env_app && *env_app) {
-    return env_app;
+  if (app_name.empty()) {
+    const char* env_app = getenv("MOGRU_APP_NAME");
+    if (env_app && *env_app) {
+      app_name = env_app;
+    }
   }
-  const char* mozc_app = getenv("MOZC_CURRENT_APP");
-  if (mozc_app && *mozc_app) {
-    return mozc_app;
+  if (app_name.empty()) {
+    const char* mozc_app = getenv("MOZC_CURRENT_APP");
+    if (mozc_app && *mozc_app) {
+      app_name = mozc_app;
+    }
   }
-  return "";
+  if (IsCompositorOrProxyAppName(app_name)) {
+    return "";
+  }
+  return app_name;
 }
 
 void GruConfigManager::AddOrUpdateAppProfileMapping(

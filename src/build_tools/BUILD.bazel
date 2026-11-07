@@ -101,6 +101,13 @@ mozc_py_library(
     srcs = ["util.py"],
 )
 
+py_test(
+    name = "util_test",
+    size = "small",
+    srcs = ["util_test.py"],
+    deps = [":util"],
+)
+
 mozc_py_library(
     name = "zlib_util_lib",
     srcs = ["zlib_util.py"],

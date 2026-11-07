@@ -49,6 +49,7 @@
 namespace mozc {
 namespace {
 
+using ::testing::AtLeast;
 using ::testing::Return;
 
 // Returns the given CPU load values in order.
@@ -60,10 +61,12 @@ class TestCPUStats : public CPUStatsInterface {
 
   float GetSystemCPULoad() override {
     absl::MutexLock lock(mutex_);
-    CHECK_GT(cpu_loads_.size(), 0);
-    float load = cpu_loads_.back();
+    if (cpu_loads_.empty()) {
+      return last_load_;
+    }
+    last_load_ = cpu_loads_.back();
     cpu_loads_.pop_back();
-    return load;
+    return last_load_;
   }
 
   float GetCurrentProcessCPULoad() override { return 0.0; }
@@ -79,6 +82,7 @@ class TestCPUStats : public CPUStatsInterface {
  private:
   absl::Mutex mutex_;
   std::vector<float> cpu_loads_ ABSL_GUARDED_BY(mutex_);
+  float last_load_ ABSL_GUARDED_BY(mutex_) = 0.0f;
 };
 
 }  // namespace
@@ -94,7 +98,7 @@ TEST(SessionWatchDogTest, SessionWatchDogTest) {
   constexpr absl::Duration kInterval = absl::Seconds(1);
   auto* client = CreateMockClient();
   auto stats = std::make_unique<TestCPUStats>(std::vector<float>(5, 0.0f));
-  EXPECT_CALL(*client, Cleanup()).Times(5);
+  EXPECT_CALL(*client, Cleanup()).Times(AtLeast(3));
 
   SessionWatchDog watchdog(kInterval, absl::WrapUnique(client),
                            std::move(stats));

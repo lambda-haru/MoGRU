@@ -209,11 +209,11 @@ def TweakForProductbuild(
     # /Applications/MoGRU/ConfigDialog.app is a symlink to
     # /Library/Input Methods/MoGRU.app/Contents/Resources/ConfigDialog.app
     os.symlink(
-        resources_dir + 'ConfigDialog.app/',
+        resources_dir + 'ConfigDialog.app',
         f'root/Applications/{folder}/ConfigDialog.app',
     )
     os.symlink(
-        resources_dir + 'DictionaryTool.app/',
+        resources_dir + 'DictionaryTool.app',
         f'root/Applications/{folder}/DictionaryTool.app',
     )
 
@@ -267,7 +267,7 @@ def TweakInstallerFiles(args: argparse.Namespace, work_dir: str) -> None:
     shutil.rmtree(top_dir)
 
   # The zip file should contain the 'installer' directory.
-  util.RunOrDie(['unzip', '-q', args.input, '-d', work_dir])
+  util.ExtractZip(args.input, work_dir)
 
   tweak_qt = not args.noqt
 
