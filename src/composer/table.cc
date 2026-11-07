@@ -242,34 +242,62 @@ bool Table::InitializeWithRequestAndConfig(const commands::Request& request,
   // Initialize punctuations.
   const config::Config::PunctuationMethod punctuation_method =
       config.punctuation_method();
-  const mozc::composer::Entry* entry = nullptr;
+  const absl::string_view target_comma =
+      (punctuation_method == config::Config::COMMA_PERIOD ||
+       punctuation_method == config::Config::COMMA_KUTEN)
+          ? kComma
+          : kKuten;
+  const absl::string_view target_period =
+      (punctuation_method == config::Config::COMMA_PERIOD ||
+       punctuation_method == config::Config::TOUTEN_PERIOD)
+          ? kPeriod
+          : kTouten;
 
-  // Comma / Kuten
-  entry = LookUp(",");
-  if (entry == nullptr ||
-      (entry->result() == kKuten && entry->pending().empty())) {
-    if (punctuation_method == config::Config::COMMA_PERIOD ||
-        punctuation_method == config::Config::COMMA_KUTEN) {
-      AddRule(",", kComma, "");
-    } else {
-      AddRule(",", kKuten, "");
+  // Normalize punctuation rules in the table according to punctuation_method.
+  // This ensures that custom romaji tables with direct definitions of
+  // fullwidth ('，', '．') or halfwidth (',', '.') are normalized as well.
+  struct RuleToUpdate {
+    std::string input;
+    std::string output;
+    std::string pending;
+    TableAttributes attributes;
+  };
+  std::vector<RuleToUpdate> rules_to_update;
+
+  for (const auto& entry_ptr : entry_set_) {
+    const absl::string_view res = entry_ptr->result();
+    if (res == kKuten || res == kComma || res == "," || res == "､") {
+      if (res != target_comma) {
+        rules_to_update.push_back({std::string(entry_ptr->input()),
+                                   std::string(target_comma),
+                                   std::string(entry_ptr->pending()),
+                                   entry_ptr->attributes()});
+      }
+    } else if (res == kTouten || res == kPeriod || res == "." ||
+               res == "｡") {
+      if (res != target_period) {
+        rules_to_update.push_back({std::string(entry_ptr->input()),
+                                   std::string(target_period),
+                                   std::string(entry_ptr->pending()),
+                                   entry_ptr->attributes()});
+      }
     }
   }
 
-  // Period / Touten
-  entry = LookUp(".");
-  if (entry == nullptr ||
-      (entry->result() == kTouten && entry->pending().empty())) {
-    if (punctuation_method == config::Config::COMMA_PERIOD ||
-        punctuation_method == config::Config::TOUTEN_PERIOD) {
-      AddRule(".", kPeriod, "");
-    } else {
-      AddRule(".", kTouten, "");
-    }
+  for (const auto& r : rules_to_update) {
+    AddRuleWithAttributes(r.input, r.output, r.pending, r.attributes);
+  }
+
+  if (LookUp(",") == nullptr) {
+    AddRule(",", target_comma, "");
+  }
+  if (LookUp(".") == nullptr) {
+    AddRule(".", target_period, "");
   }
 
   // Initialize symbols.
   const config::Config::SymbolMethod symbol_method = config.symbol_method();
+  const mozc::composer::Entry* entry = nullptr;
 
   // Slash / Middle dot
   entry = LookUp("/");

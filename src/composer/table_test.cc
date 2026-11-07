@@ -383,6 +383,125 @@ TEST_F(TableTest, CustomPunctuationsAndSymbols) {
   EXPECT_EQ(entry->result(), "CLOSE");
 }
 
+TEST_F(TableTest, CustomRomajiPunctuationNormalization) {
+  // Test that direct definitions of fullwidth ('，', '．') or halfwidth (',', '.')
+  // in custom roman table are normalized according to punctuation_method.
+  const std::string custom_roman_table =
+      "r\t，\n"
+      "t\t．\n"
+      "R\t,\n"
+      "T\t.\n"
+      ",\t，\n"
+      ".\t．\n"
+      ",d\tま\n";
+
+  commands::Request request;
+
+  // 1. TOUTEN_KUTEN (default: '、' and '。')
+  {
+    config::Config config;
+    config.set_punctuation_method(config::Config::TOUTEN_KUTEN);
+    config.set_custom_roman_table(custom_roman_table);
+
+    Table table;
+    ASSERT_TRUE(table.InitializeWithRequestAndConfig(request, config));
+
+    // Fullwidth punctuation definitions normalized to '、' and '。'
+    const Entry* entry_r = table.LookUp("r");
+    ASSERT_NE(entry_r, nullptr);
+    EXPECT_EQ(entry_r->result(), "、");
+
+    const Entry* entry_t = table.LookUp("t");
+    ASSERT_NE(entry_t, nullptr);
+    EXPECT_EQ(entry_t->result(), "。");
+
+    // Halfwidth punctuation definitions normalized to '、' and '。'
+    const Entry* entry_R = table.LookUp("R");
+    ASSERT_NE(entry_R, nullptr);
+    EXPECT_EQ(entry_R->result(), "、");
+
+    const Entry* entry_T = table.LookUp("T");
+    ASSERT_NE(entry_T, nullptr);
+    EXPECT_EQ(entry_T->result(), "。");
+
+    // Standard comma / period keys normalized
+    const Entry* entry_comma = table.LookUp(",");
+    ASSERT_NE(entry_comma, nullptr);
+    EXPECT_EQ(entry_comma->result(), "、");
+
+    const Entry* entry_period = table.LookUp(".");
+    ASSERT_NE(entry_period, nullptr);
+    EXPECT_EQ(entry_period->result(), "。");
+
+    // Non-punctuation rule like ",d" -> "ま" must be preserved!
+    const Entry* entry_kd = table.LookUp(",d");
+    ASSERT_NE(entry_kd, nullptr);
+    EXPECT_EQ(entry_kd->result(), "ま");
+  }
+
+  // 2. COMMA_PERIOD ('，' and '．')
+  {
+    config::Config config;
+    config.set_punctuation_method(config::Config::COMMA_PERIOD);
+    config.set_custom_roman_table(custom_roman_table);
+
+    Table table;
+    ASSERT_TRUE(table.InitializeWithRequestAndConfig(request, config));
+
+    const Entry* entry_r = table.LookUp("r");
+    ASSERT_NE(entry_r, nullptr);
+    EXPECT_EQ(entry_r->result(), "，");
+
+    const Entry* entry_t = table.LookUp("t");
+    ASSERT_NE(entry_t, nullptr);
+    EXPECT_EQ(entry_t->result(), "．");
+
+    const Entry* entry_comma = table.LookUp(",");
+    ASSERT_NE(entry_comma, nullptr);
+    EXPECT_EQ(entry_comma->result(), "，");
+
+    const Entry* entry_period = table.LookUp(".");
+    ASSERT_NE(entry_period, nullptr);
+    EXPECT_EQ(entry_period->result(), "．");
+  }
+
+  // 3. TOUTEN_PERIOD ('、' and '．')
+  {
+    config::Config config;
+    config.set_punctuation_method(config::Config::TOUTEN_PERIOD);
+    config.set_custom_roman_table(custom_roman_table);
+
+    Table table;
+    ASSERT_TRUE(table.InitializeWithRequestAndConfig(request, config));
+
+    const Entry* entry_r = table.LookUp("r");
+    ASSERT_NE(entry_r, nullptr);
+    EXPECT_EQ(entry_r->result(), "、");
+
+    const Entry* entry_t = table.LookUp("t");
+    ASSERT_NE(entry_t, nullptr);
+    EXPECT_EQ(entry_t->result(), "．");
+  }
+
+  // 4. COMMA_KUTEN ('，' and '。')
+  {
+    config::Config config;
+    config.set_punctuation_method(config::Config::COMMA_KUTEN);
+    config.set_custom_roman_table(custom_roman_table);
+
+    Table table;
+    ASSERT_TRUE(table.InitializeWithRequestAndConfig(request, config));
+
+    const Entry* entry_r = table.LookUp("r");
+    ASSERT_NE(entry_r, nullptr);
+    EXPECT_EQ(entry_r->result(), "，");
+
+    const Entry* entry_t = table.LookUp("t");
+    ASSERT_NE(entry_t, nullptr);
+    EXPECT_EQ(entry_t->result(), "。");
+  }
+}
+
 TEST_F(TableTest, CaseSensitive) {
   Table table;
   table.AddRule("a", "[a]", "");
