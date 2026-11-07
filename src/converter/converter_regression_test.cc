@@ -93,5 +93,25 @@ TEST_F(ConverterRegressionTest, Regression3323108) {
   EXPECT_EQ(segments.conversion_segment(1).key(), "きものをぬぐ");
 }
 
+TEST_F(ConverterRegressionTest, PunctuationTest) {
+  std::unique_ptr<Engine> engine = EngineFactory::Create().value();
+  std::shared_ptr<const ConverterInterface> converter = engine->GetConverter();
+  for (const std::string& key : {
+      "きょうは、よいてんきですね。",
+      "きょうは，よいてんきですね．",
+      "きょうは,よいてんきですね."}) {
+    Segments segments;
+    EXPECT_TRUE(converter->StartConversion(ConvReq(key), &segments));
+    std::cout << "=== KEY: " << key << " (segments: " << segments.conversion_segments_size() << ") ===" << std::endl;
+    for (size_t i = 0; i < segments.conversion_segments_size(); ++i) {
+      const auto& seg = segments.conversion_segment(i);
+      std::cout << "  seg " << i << " key='" << seg.key() << "' candidates:" << std::endl;
+      for (size_t j = 0; j < std::min<size_t>(3, seg.candidates_size()); ++j) {
+        std::cout << "    [" << j << "] " << seg.candidate(j).value << " (cost=" << seg.candidate(j).cost << ")" << std::endl;
+      }
+    }
+  }
+}
+
 }  // namespace
 }  // namespace mozc
