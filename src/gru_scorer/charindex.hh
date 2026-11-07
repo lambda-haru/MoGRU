@@ -114,8 +114,8 @@ namespace charindex
     {
         if (c > 65535) [[unlikely]] return 0;
         if (!char2Index_) [[unlikely]] return 0;
-        if (c == 0xFF0C || c == 0xFF64) [[unlikely]] return char2Index_[0x3001]; // '，' / '､' -> '、'
-        if (c == 0xFF0E || c == 0xFF61) [[unlikely]] return char2Index_[0x3002]; // '．' / '｡' -> '。'
+        if (c == 0xFF0C || c == 0xFF64 || c == 0x002C) [[unlikely]] return char2Index_[0x3001]; // '，' / '､' / ',' -> '、'
+        if (c == 0xFF0E || c == 0xFF61 || c == 0x002E) [[unlikely]] return char2Index_[0x3002]; // '．' / '｡' / '.' -> '。'
         return char2Index_[c];
     }
 

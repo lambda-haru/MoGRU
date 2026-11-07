@@ -654,16 +654,25 @@ TEST_F(GruRewriterTest, PunctuationNormalizationScore) {
   AddCandidate("きょうは，", "今日は，", 1000, seg1);
   AddCandidate("きょうは，", "教派，", 1000, seg1);
 
+  Segments segments_ascii_comma;
+  Segment* seg2 = segments_ascii_comma.add_segment();
+  seg2->set_key("きょうは,");
+  AddCandidate("きょうは,", "今日は,", 1000, seg2);
+  AddCandidate("きょうは,", "教派,", 1000, seg2);
+
   rewriter_->Rewrite(request, &segments_touten);
   rewriter_->Rewrite(request, &segments_comma);
+  rewriter_->Rewrite(request, &segments_ascii_comma);
 
-  // Both should select identical candidates and produce identical ranking
+  // All should select identical candidates and produce identical ranking
   EXPECT_EQ(segments_touten.conversion_segment(0).candidate(0).value, "教派、");
   EXPECT_EQ(segments_comma.conversion_segment(0).candidate(0).value, "教派，");
+  EXPECT_EQ(segments_ascii_comma.conversion_segment(0).candidate(0).value, "教派,");
 
   // Descriptions should contain identical GRU score values
   const std::string desc_touten = segments_touten.conversion_segment(0).candidate(0).description;
   const std::string desc_comma = segments_comma.conversion_segment(0).candidate(0).description;
+  const std::string desc_ascii = segments_ascii_comma.conversion_segment(0).candidate(0).description;
 
   auto extract_gru_tag = [](const std::string& desc) {
     const size_t pos = desc.find("GRU:");
@@ -671,8 +680,40 @@ TEST_F(GruRewriterTest, PunctuationNormalizationScore) {
     const size_t end = desc.find('[', pos);
     return desc.substr(pos, (end != std::string::npos) ? end - pos : std::string::npos);
   };
-  EXPECT_FALSE(extract_gru_tag(desc_touten).empty());
-  EXPECT_EQ(extract_gru_tag(desc_comma), extract_gru_tag(desc_touten));
+  // Test period (touten/period) normalization across fullwidth '．', ASCII '.', and Japanese '。'
+  Segments segments_kuten;
+  Segment* seg3 = segments_kuten.add_segment();
+  seg3->set_key("てんきですね。");
+  AddCandidate("てんきですね。", "天気ですね。", 1000, seg3);
+  AddCandidate("てんきですね。", "転機ですね。", 1000, seg3);
+
+  Segments segments_fullwidth_period;
+  Segment* seg4 = segments_fullwidth_period.add_segment();
+  seg4->set_key("てんきですね．");
+  AddCandidate("てんきですね．", "天気ですね．", 1000, seg4);
+  AddCandidate("てんきですね．", "転機ですね．", 1000, seg4);
+
+  Segments segments_ascii_period;
+  Segment* seg5 = segments_ascii_period.add_segment();
+  seg5->set_key("てんきですね.");
+  AddCandidate("てんきですね.", "天気ですね.", 1000, seg5);
+  AddCandidate("てんきですね.", "転機ですね.", 1000, seg5);
+
+  rewriter_->Rewrite(request, &segments_kuten);
+  rewriter_->Rewrite(request, &segments_fullwidth_period);
+  rewriter_->Rewrite(request, &segments_ascii_period);
+
+  EXPECT_EQ(segments_kuten.conversion_segment(0).candidate(0).value, "天気ですね。");
+  EXPECT_EQ(segments_fullwidth_period.conversion_segment(0).candidate(0).value, "天気ですね．");
+  EXPECT_EQ(segments_ascii_period.conversion_segment(0).candidate(0).value, "天気ですね.");
+
+  const std::string desc_kuten = segments_kuten.conversion_segment(0).candidate(0).description;
+  const std::string desc_period = segments_fullwidth_period.conversion_segment(0).candidate(0).description;
+  const std::string desc_ascii_period = segments_ascii_period.conversion_segment(0).candidate(0).description;
+
+  EXPECT_FALSE(extract_gru_tag(desc_kuten).empty());
+  EXPECT_EQ(extract_gru_tag(desc_period), extract_gru_tag(desc_kuten));
+  EXPECT_EQ(extract_gru_tag(desc_ascii_period), extract_gru_tag(desc_kuten));
 }
 
 class StubImmutableConverter : public ImmutableConverterInterface {

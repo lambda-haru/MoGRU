@@ -57,12 +57,14 @@ bool CharIndex::LoadFile(const std::string path)
     auto* mutable_char2index = reinterpret_cast<uint16_t*>(raw_bytes);
 
     // Normalize Japanese punctuation marks:
-    // Map fullwidth comma '，' (U+FF0C) and halfwidth comma '､' (U+FF64) to '、' (U+3001)
-    // Map fullwidth full stop '．' (U+FF0E) and halfwidth full stop '｡' (U+FF61) to '。' (U+3002)
+    // Map fullwidth comma '，' (U+FF0C), halfwidth comma '､' (U+FF64), and ASCII comma ',' (U+002C) to '、' (U+3001)
+    // Map fullwidth full stop '．' (U+FF0E), halfwidth full stop '｡' (U+FF61), and ASCII full stop '.' (U+002E) to '。' (U+3002)
     mutable_char2index[0xFF0C] = mutable_char2index[0x3001];
     mutable_char2index[0xFF64] = mutable_char2index[0x3001];
+    mutable_char2index[0x002C] = mutable_char2index[0x3001];
     mutable_char2index[0xFF0E] = mutable_char2index[0x3002];
     mutable_char2index[0xFF61] = mutable_char2index[0x3002];
+    mutable_char2index[0x002E] = mutable_char2index[0x3002];
 
     char2Index_ = mutable_char2index;
     index2Char_ = reinterpret_cast<const Utf8Entry*>(raw_bytes + 65536 * sizeof(uint16_t));
