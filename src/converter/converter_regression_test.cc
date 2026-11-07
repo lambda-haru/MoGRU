@@ -96,20 +96,59 @@ TEST_F(ConverterRegressionTest, Regression3323108) {
 TEST_F(ConverterRegressionTest, PunctuationTest) {
   std::unique_ptr<Engine> engine = EngineFactory::Create().value();
   std::shared_ptr<const ConverterInterface> converter = engine->GetConverter();
-  for (const std::string& key : {
-      "きょうは、よいてんきですね。",
-      "きょうは，よいてんきですね．",
-      "きょうは,よいてんきですね."}) {
+
+  // Test 1: Japanese '、' and '。'
+  {
     Segments segments;
-    EXPECT_TRUE(converter->StartConversion(ConvReq(key), &segments));
-    std::cout << "=== KEY: " << key << " (segments: " << segments.conversion_segments_size() << ") ===" << std::endl;
-    for (size_t i = 0; i < segments.conversion_segments_size(); ++i) {
-      const auto& seg = segments.conversion_segment(i);
-      std::cout << "  seg " << i << " key='" << seg.key() << "' candidates:" << std::endl;
-      for (size_t j = 0; j < std::min<size_t>(3, seg.candidates_size()); ++j) {
-        std::cout << "    [" << j << "] " << seg.candidate(j).value << " (cost=" << seg.candidate(j).cost << ")" << std::endl;
-      }
-    }
+    EXPECT_TRUE(converter->StartConversion(ConvReq("きょうは、よいてんきですね。"), &segments));
+    ASSERT_EQ(segments.conversion_segments_size(), 4);
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "今日は");
+    EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "、");
+    EXPECT_EQ(segments.conversion_segment(2).candidate(0).value, "良い天気ですね");
+    EXPECT_EQ(segments.conversion_segment(3).candidate(0).value, "。");
+  }
+
+  // Test 2: Fullwidth '，' and '．' directly in input
+  {
+    Segments segments;
+    EXPECT_TRUE(converter->StartConversion(ConvReq("きょうは，よいてんきですね．"), &segments));
+    ASSERT_EQ(segments.conversion_segments_size(), 4);
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "今日は");
+    EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "，");
+    EXPECT_EQ(segments.conversion_segment(2).candidate(0).value, "良い天気ですね");
+    EXPECT_EQ(segments.conversion_segment(3).candidate(0).value, "．");
+  }
+
+  // Test 3: ASCII ',' and '.' directly in input
+  {
+    Segments segments;
+    EXPECT_TRUE(converter->StartConversion(ConvReq("きょうは,よいてんきですね."), &segments));
+    ASSERT_EQ(segments.conversion_segments_size(), 4);
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "今日は");
+    EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, ",");
+    EXPECT_EQ(segments.conversion_segment(2).candidate(0).value, "良い天気ですね");
+    EXPECT_EQ(segments.conversion_segment(3).candidate(0).value, ".");
+  }
+
+  // Test 4: COMMA_PERIOD configuration method applied to Japanese punctuations
+  {
+    config::Config config;
+    config.set_punctuation_method(config::Config::COMMA_PERIOD);
+    composer::Composer composer;
+    composer.SetPreeditTextForTestOnly("きょうは、よいてんきですね。");
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetConfigView(config)
+            .Build();
+
+    Segments segments;
+    EXPECT_TRUE(converter->StartConversion(request, &segments));
+    ASSERT_EQ(segments.conversion_segments_size(), 4);
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "今日は");
+    EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "，");
+    EXPECT_EQ(segments.conversion_segment(2).candidate(0).value, "良い天気ですね");
+    EXPECT_EQ(segments.conversion_segment(3).candidate(0).value, "．");
   }
 }
 

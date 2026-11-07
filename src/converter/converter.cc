@@ -154,6 +154,155 @@ bool IsValidSegments(const ConversionRequest& request,
   return true;
 }
 
+std::string NormalizePunctuationForConversion(absl::string_view input) {
+  std::vector<char32_t> codepoints;
+  for (ConstChar32Iterator iter(input); !iter.Done(); iter.Next()) {
+    codepoints.push_back(iter.Get());
+  }
+
+  std::string result;
+  result.reserve(input.size());
+
+  for (size_t i = 0; i < codepoints.size(); ++i) {
+    const char32_t c = codepoints[i];
+    const bool prev_is_num =
+        (i > 0 && Util::GetScriptType(codepoints[i - 1]) == Util::NUMBER);
+    const bool next_is_num =
+        (i + 1 < codepoints.size() &&
+         Util::GetScriptType(codepoints[i + 1]) == Util::NUMBER);
+    const bool is_number_punct = prev_is_num && next_is_num;
+
+    if (!is_number_punct) {
+      if (c == 0xFF0C || c == ',' || c == 0xFF64) {
+        // Normalize comma to '、' (U+3001)
+        Util::CodepointToUtf8Append(0x3001, &result);
+        continue;
+      } else if (c == 0xFF0E || c == '.' || c == 0xFF61) {
+        // Normalize period to '。' (U+3002)
+        Util::CodepointToUtf8Append(0x3002, &result);
+        continue;
+      }
+    }
+    Util::CodepointToUtf8Append(c, &result);
+  }
+  return result;
+}
+
+void AdjustPunctuationSegments(const ConversionRequest& request,
+                              Segments* segments) {
+  if (segments == nullptr) return;
+
+  // Determine source text to extract original punctuation styles:
+  // Prefer Composer's preedit text (which retains as-is characters like '，' and '．'),
+  // fallback to request.key().
+  std::string source_text;
+  source_text = request.composer().GetStringForPreedit();
+  if (source_text.empty()) {
+    source_text = std::string(request.key());
+  }
+
+  // Collect original punctuation marks from source_text (excluding numbers)
+  std::vector<char32_t> original_puncts;
+  std::vector<char32_t> codepoints;
+  for (ConstChar32Iterator iter(source_text); !iter.Done(); iter.Next()) {
+    codepoints.push_back(iter.Get());
+  }
+  for (size_t i = 0; i < codepoints.size(); ++i) {
+    const char32_t c = codepoints[i];
+    const bool prev_is_num =
+        (i > 0 && Util::GetScriptType(codepoints[i - 1]) == Util::NUMBER);
+    const bool next_is_num =
+        (i + 1 < codepoints.size() &&
+         Util::GetScriptType(codepoints[i + 1]) == Util::NUMBER);
+    if (prev_is_num && next_is_num) continue;
+    if (c == 0xFF0C || c == ',' || c == 0xFF64 || c == 0x3001 ||
+        c == 0xFF0E || c == '.' || c == 0xFF61 || c == 0x3002) {
+      original_puncts.push_back(c);
+    }
+  }
+
+  size_t punct_idx = 0;
+  const config::Config::PunctuationMethod method =
+      request.config().punctuation_method();
+
+  for (size_t i = 0; i < segments->conversion_segments_size(); ++i) {
+    Segment* seg = segments->mutable_conversion_segment(i);
+    const absl::string_view key = seg->key();
+    const bool is_comma_seg = (key == "、" || key == "，" || key == ",");
+    const bool is_period_seg = (key == "。" || key == "．" || key == ".");
+
+    if (!is_comma_seg && !is_period_seg) {
+      continue;
+    }
+
+    char32_t orig_c = 0;
+    if (punct_idx < original_puncts.size()) {
+      orig_c = original_puncts[punct_idx++];
+    }
+
+    std::string target_val;
+    if (is_comma_seg) {
+      if (orig_c == 0xFF0C) {
+        target_val = "，";
+      } else if (orig_c == ',') {
+        target_val = (method == config::Config::COMMA_PERIOD ||
+                      method == config::Config::COMMA_KUTEN)
+                         ? "，"
+                         : ",";
+      } else if (orig_c == 0xFF64) {
+        target_val = "､";
+      } else if (method == config::Config::COMMA_PERIOD ||
+                 method == config::Config::COMMA_KUTEN) {
+        target_val = "，";
+      } else {
+        target_val = "、";
+      }
+    } else if (is_period_seg) {
+      if (orig_c == 0xFF0E) {
+        target_val = "．";
+      } else if (orig_c == '.') {
+        target_val = (method == config::Config::COMMA_PERIOD ||
+                      method == config::Config::TOUTEN_PERIOD)
+                         ? "．"
+                         : ".";
+      } else if (orig_c == 0xFF61) {
+        target_val = "｡";
+      } else if (method == config::Config::COMMA_PERIOD ||
+                 method == config::Config::TOUTEN_PERIOD) {
+        target_val = "．";
+      } else {
+        target_val = "。";
+      }
+    }
+
+    if (!target_val.empty() && seg->candidates_size() > 0) {
+      int existing_idx = -1;
+      for (size_t c_idx = 0; c_idx < seg->candidates_size(); ++c_idx) {
+        if (seg->candidate(c_idx).value == target_val) {
+          existing_idx = static_cast<int>(c_idx);
+          break;
+        }
+      }
+
+      if (existing_idx > 0) {
+        seg->move_candidate(existing_idx, 0);
+      } else if (existing_idx < 0) {
+        converter::Candidate new_cand = seg->candidate(0);
+        new_cand.value = target_val;
+        new_cand.content_value = target_val;
+        converter::Candidate* inserted = seg->push_front_candidate();
+        *inserted = std::move(new_cand);
+      }
+
+      seg->set_key(target_val);
+      for (size_t c_idx = 0; c_idx < seg->candidates_size(); ++c_idx) {
+        seg->mutable_candidate(c_idx)->key = target_val;
+        seg->mutable_candidate(c_idx)->content_key = target_val;
+      }
+    }
+  }
+}
+
 }  // namespace
 
 Converter::Converter(
@@ -197,8 +346,21 @@ bool Converter::StartConversion(const ConversionRequest& request,
     return false;
   }
 
-  segments->InitForConvert(key);
-  ApplyConversion(segments, request);
+  const std::string normalized_key = NormalizePunctuationForConversion(key);
+  segments->InitForConvert(normalized_key);
+
+  if (normalized_key == key) {
+    ApplyConversion(segments, request);
+  } else {
+    const ConversionRequest normalized_request =
+        ConversionRequestBuilder()
+            .SetConversionRequestView(request)
+            .SetKey(normalized_key)
+            .Build();
+    ApplyConversion(segments, normalized_request);
+  }
+
+  AdjustPunctuationSegments(request, segments);
   return IsValidSegments(request, *segments);
 }
 
@@ -547,6 +709,7 @@ bool Converter::ResizeSegments(Segments* segments,
   }
 
   ApplyConversion(segments, request);
+  AdjustPunctuationSegments(request, segments);
   return true;
 }
 
