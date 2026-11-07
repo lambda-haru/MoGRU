@@ -78,6 +78,16 @@ def RemoveQtFrameworks(app_dir: str, app_name: str) -> None:
     util.RunOrDie(cmd)
 
 
+def SafeRemove(path: str) -> None:
+  """Removes a file, directory, or symlink safely."""
+  if os.path.islink(path):
+    os.unlink(path)
+  elif os.path.isdir(path):
+    shutil.rmtree(path)
+  elif os.path.exists(path):
+    os.remove(path)
+
+
 def SymlinkQtFrameworks(app_dir: str) -> None:
   """Create symbolic links of Qt frameworks."""
   frameworks = ['QtCore', 'QtGui', 'QtPrintSupport', 'QtWidgets']
@@ -96,17 +106,17 @@ def SymlinkQtFrameworks(app_dir: str) -> None:
 
     # rm {app_dir}/QtCore.framework/Versions/Current
     # ln -s A {app_dir}/QtCore.framework/Versions/Current
-    os.remove(framework_dir + 'Versions/Current')
+    SafeRemove(framework_dir + 'Versions/Current')
     os.symlink('A', framework_dir + 'Versions/Current')
 
     # rm {app_dir}/QtCore.framework/QtCore
     # ln -s Versions/Current/QtCore {app_dir}/QtCore.framework/QtCore
-    os.remove(framework_dir + framework)
+    SafeRemove(framework_dir + framework)
     os.symlink('Versions/Current/' + framework, framework_dir + framework)
 
     # rm {app_dir}/QtCore.framework/Resources
     # ln -s Versions/Current/Resources {app_dir}/QtCore.framework/Resources
-    os.remove(framework_dir + 'Resources')
+    SafeRemove(framework_dir + 'Resources')
     os.symlink('Versions/Current/Resources', framework_dir + 'Resources')
 
 

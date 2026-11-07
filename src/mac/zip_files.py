@@ -69,8 +69,13 @@ def main():
     os.mkdir(out_dir)
 
     CopyFiles(args.inputs, out_dir)
-    basename = os.path.splitext(args.output)[0]
-    shutil.make_archive(basename, format='zip', root_dir=tmp_dir)
+    if os.path.exists(args.output):
+      os.remove(args.output)
+    orig_dir = os.getcwd()
+    os.chdir(tmp_dir)
+    cmd = ['zip', '-q', '-ry', os.path.join(orig_dir, args.output), out_path]
+    util.RunOrDie(cmd)
+    os.chdir(orig_dir)
 
 
 if __name__ == '__main__':

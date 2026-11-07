@@ -202,7 +202,12 @@ class _ZipFileWithPermissions(zipfile.ZipFile):
       try:
         with open(targetpath, 'r', encoding='utf-8') as f:
           link_target = f.read()
-        os.unlink(targetpath)
+        if os.path.islink(targetpath):
+          os.unlink(targetpath)
+        elif os.path.isdir(targetpath):
+          shutil.rmtree(targetpath)
+        else:
+          os.unlink(targetpath)
         os.symlink(link_target, targetpath)
       except OSError:
         pass
