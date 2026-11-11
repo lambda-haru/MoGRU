@@ -31,6 +31,7 @@
 #define MOZC_REWRITER_USER_BOUNDARY_HISTORY_REWRITER_H_
 
 #include <optional>
+#include <string>
 
 #include "converter/segments.h"
 #include "request/conversion_request.h"
@@ -59,8 +60,13 @@ class UserBoundaryHistoryRewriter : public RewriterInterface {
 
  private:
   bool Insert(const ConversionRequest& request, const Segments& segments);
+  void EnsureActiveProfileLoaded(
+      const ConversionRequest* request = nullptr) const;
+  bool OpenStorageForFileName(const std::string& filename) const;
 
-  storage::LruStorage storage_;
+  mutable storage::LruStorage storage_;
+  mutable std::string active_profile_ = "default";
+  mutable std::string last_target_filename_;
 };
 
 }  // namespace mozc

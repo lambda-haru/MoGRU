@@ -37,6 +37,7 @@
 #include "base/file_util.h"
 #include "base/system_util.h"
 #include "config/config_handler.h"
+#include "config/gru_config.h"
 #include "converter/candidate.h"
 #include "converter/segments.h"
 #include "protocol/config.pb.h"
@@ -452,6 +453,65 @@ TEST_F(UserBoundaryHistoryRewriterTest, FailureOfSplitIsNotFatal) {
         rewriter.CheckResizeSegmentsRequest(convreq, segments);
     EXPECT_FALSE(resize_request.has_value());
   }
+}
+
+TEST_F(UserBoundaryHistoryRewriterTest, ProfileSeparationTest) {
+  SetIncognito(false);
+  SetLearningLevel(config::Config::DEFAULT_HISTORY);
+
+  GruPenaltyConfig cfg;
+  cfg.current_profile = "business";
+  config::GruConfigManager::SaveConfig(cfg);
+
+  UserBoundaryHistoryRewriter rewriter;
+  const ConversionRequest convreq = CreateConversionRequest();
+
+  // 1. Learn ["たん", "ぽぽ"] boundary in "business" profile
+  {
+    Segments segments = MakeSegments({"たん", "ぽぽ"}, Segment::FIXED_VALUE);
+    segments.set_resized(true);
+    rewriter.Finish(convreq, segments);
+
+    const std::string business_file = FileUtil::JoinPath(
+        SystemUtil::GetUserProfileDirectory(), "boundary_business.db");
+    EXPECT_OK(FileUtil::FileExists(business_file));
+
+    Segments query = MakeSegments({"たんぽぽ"}, Segment::FREE);
+    auto resize_req = rewriter.CheckResizeSegmentsRequest(convreq, query);
+    ASSERT_TRUE(resize_req.has_value());
+    EXPECT_THAT(resize_req->segment_sizes,
+                ElementsAre(2, 2, 0, 0, 0, 0, 0, 0));
+  }
+
+  // 2. Switch to "casual" profile -> ["たんぽぽ"] is not resized
+  {
+    cfg.current_profile = "casual";
+    config::GruConfigManager::SaveConfig(cfg);
+
+    Segments query = MakeSegments({"たんぽぽ"}, Segment::FREE);
+    auto resize_req = rewriter.CheckResizeSegmentsRequest(convreq, query);
+    EXPECT_FALSE(resize_req.has_value());
+  }
+
+  // 3. Switch back to "business" profile -> ["たんぽぽ"] is resized to [2, 2]
+  {
+    cfg.current_profile = "business";
+    config::GruConfigManager::SaveConfig(cfg);
+
+    Segments query = MakeSegments({"たんぽぽ"}, Segment::FREE);
+    auto resize_req = rewriter.CheckResizeSegmentsRequest(convreq, query);
+    ASSERT_TRUE(resize_req.has_value());
+    EXPECT_THAT(resize_req->segment_sizes,
+                ElementsAre(2, 2, 0, 0, 0, 0, 0, 0));
+  }
+
+  // Reset to default profile
+  cfg.current_profile = "default";
+  config::GruConfigManager::SaveConfig(cfg);
+  const std::string test_cfg = config::GruConfigManager::ResolveConfigFilePath(
+      "", /*allow_in_test=*/true);
+  FileUtil::UnlinkIfExists(test_cfg).IgnoreError();
+  config::GruConfigManager::InvalidateConfigCache();
 }
 
 }  // namespace

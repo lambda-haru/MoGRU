@@ -52,6 +52,7 @@
 #include "base/hash.h"
 #include "base/util.h"
 #include "config/character_form_manager.h"
+#include "config/gru_config.h"
 #include "prediction/user_history_predictor.pb.h"
 #include "storage/encrypted_string_storage.h"
 #include "storage/lru_cache.h"
@@ -78,13 +79,20 @@ constexpr absl::string_view kFileName = "user://.history.db";
 }  // namespace
 
 UserHistoryStorage::UserHistoryStorage(absl::string_view filename)
-    : dic_(std::make_unique<DicCache>(kLruCacheSize)), filename_(filename) {
+    : dic_(std::make_unique<DicCache>(kLruCacheSize)),
+      filename_(filename),
+      has_custom_filename_(true) {
   AsyncLoad();
 }
 
 UserHistoryStorage::UserHistoryStorage()
-    : UserHistoryStorage::UserHistoryStorage(
-          ConfigFileStream::GetFileName(kFileName)) {}
+    : dic_(std::make_unique<DicCache>(kLruCacheSize)),
+      active_profile_(config::GruConfigManager::ResolveEffectiveActiveProfile()),
+      has_custom_filename_(false) {
+  filename_ = config::GruConfigManager::ResolveProfileHistoryFileName(
+      kFileName, active_profile_);
+  AsyncLoad();
+}
 
 UserHistoryStorage::~UserHistoryStorage() {
   if (IsSyncerRunning()) {
@@ -245,6 +253,39 @@ bool UserHistoryStorage::Save() {
 
   needs_sync_ = false;
 
+  return true;
+}
+
+bool UserHistoryStorage::EnsureProfileLoaded(absl::string_view profile_name) {
+  if (has_custom_filename_) {
+    return false;
+  }
+  const std::string prof =
+      config::GruConfigManager::SanitizeProfileName(profile_name);
+  const std::string target_filename =
+      config::GruConfigManager::ResolveProfileHistoryFileName(kFileName, prof);
+  {
+    auto lock = AcquireUniqueLock();
+    if (active_profile_ == prof && filename_ == target_filename) {
+      return false;
+    }
+  }
+
+  Wait();
+  Save();
+
+  {
+    auto lock = AcquireUniqueLock();
+    active_profile_ = prof;
+    filename_ = target_filename;
+    dic_->Clear();
+    needs_sync_ = false;
+    config::CharacterFormManager::GetCharacterFormManager()->ClearHistory();
+  }
+
+  if (FileUtil::FileExists(target_filename).ok()) {
+    Load();
+  }
   return true;
 }
 

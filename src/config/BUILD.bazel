@@ -142,6 +142,7 @@ mozc_cc_library(
     hdrs = ["gru_config.h"],
     visibility = ["//:__subpackages__"],
     deps = [
+        "//base:config_file_stream",
         "//base:file_util",
         "//base:system_util",
         "//protocol:commands_cc_proto",

@@ -158,6 +158,13 @@ class UserHistoryStorage {
   // Saves the user history to the local disk. This method is blocking.
   bool Save();
 
+  // Ensures that the user history storage for `profile_name` is loaded.
+  // If the profile has changed (and this instance was not created with a
+  // custom test filename), saves any pending changes to the previous profile's
+  // history file and loads the new profile's history file.
+  // Returns true if the active profile storage was switched.
+  bool EnsureProfileLoaded(absl::string_view profile_name);
+
   // Iterates the all entries in LRU order.
   // `func` is the callback. When `func` returns false, stops the iteration.
   void ForEach(absl::FunctionRef<bool(uint64_t, const Entry&)> func) const;
@@ -254,7 +261,9 @@ class UserHistoryStorage {
   mutable RecursiveMutex mutex_;
   mutable std::unique_ptr<DicCache> dic_;
 
-  const std::string filename_;
+  std::string filename_;
+  std::string active_profile_ = "default";
+  const bool has_custom_filename_ = false;
 };
 }  // namespace mozc::prediction
 

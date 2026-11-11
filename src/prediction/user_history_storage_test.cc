@@ -509,4 +509,37 @@ TEST_F(UserHistoryStorageTest, ClearWhileAsyncLoadAndSaveTest) {
   EXPECT_FALSE(FileUtil::FileExists(file.path()).ok());
 }
 
+TEST_F(UserHistoryStorageTest, ProfileSeparationTest) {
+  UserHistoryStorage storage;
+  storage.Wait();
+  storage.Clear();
+
+  // 1. Insert entry in "business" profile
+  EXPECT_TRUE(storage.EnsureProfileLoaded("business"));
+  storage.Clear();
+  const Entry business_entry = MakeEntry(42);
+  storage.Insert(business_entry);
+  EXPECT_TRUE(storage.Contains(UserHistoryStorage::Fingerprint(business_entry)));
+
+  // 2. Switch to "casual" profile -> saves "business" and starts with clean "casual"
+  EXPECT_TRUE(storage.EnsureProfileLoaded("casual"));
+  storage.Clear();
+  EXPECT_FALSE(storage.Contains(UserHistoryStorage::Fingerprint(business_entry)));
+  const Entry casual_entry = MakeEntry(99);
+  storage.Insert(casual_entry);
+  EXPECT_TRUE(storage.Contains(UserHistoryStorage::Fingerprint(casual_entry)));
+
+  // 3. Switch back to "business" profile -> restores business_entry, excludes casual_entry
+  EXPECT_TRUE(storage.EnsureProfileLoaded("business"));
+  EXPECT_TRUE(storage.Contains(UserHistoryStorage::Fingerprint(business_entry)));
+  EXPECT_FALSE(storage.Contains(UserHistoryStorage::Fingerprint(casual_entry)));
+
+  // Clean up both profile histories
+  storage.Clear();
+  EXPECT_TRUE(storage.EnsureProfileLoaded("casual"));
+  storage.Clear();
+  EXPECT_TRUE(storage.EnsureProfileLoaded("default"));
+  storage.Clear();
+}
+
 }  // namespace mozc::prediction

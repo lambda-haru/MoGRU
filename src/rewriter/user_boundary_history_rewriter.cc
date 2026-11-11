@@ -47,6 +47,7 @@
 #include "base/config_file_stream.h"
 #include "base/file_util.h"
 #include "base/vlog.h"
+#include "config/gru_config.h"
 #include "converter/segments.h"
 #include "protocol/config.pb.h"
 #include "request/conversion_request.h"
@@ -189,6 +190,7 @@ void UserBoundaryHistoryRewriter::Finish(const ConversionRequest& request,
   }
 
   if (segments.resized()) {
+    EnsureActiveProfileLoaded(&request);
     Insert(request, segments);
   }
 }
@@ -231,6 +233,8 @@ UserBoundaryHistoryRewriter::CheckResizeSegmentsRequest(
   if (target_segments_size == 0) {
     return std::nullopt;
   }
+
+  EnsureActiveProfileLoaded(&request);
 
   std::optional<const SegmentsKey> segments_key = SegmentsKey::Create(segments);
   if (!segments_key) {
@@ -279,8 +283,26 @@ UserBoundaryHistoryRewriter::CheckResizeSegmentsRequest(
 
 bool UserBoundaryHistoryRewriter::Sync() { return true; }
 
-bool UserBoundaryHistoryRewriter::Reload() {
-  const std::string filename = ConfigFileStream::GetFileName(kFileName);
+void UserBoundaryHistoryRewriter::EnsureActiveProfileLoaded(
+    const ConversionRequest* request) const {
+  const commands::Context* context =
+      (request != nullptr) ? &request->context() : nullptr;
+  const std::string profile =
+      config::GruConfigManager::ResolveEffectiveActiveProfile(context);
+  const std::string filename =
+      config::GruConfigManager::ResolveProfileHistoryFileName(kFileName,
+                                                              profile);
+  if (active_profile_ == profile && last_target_filename_ == filename &&
+      (storage_.filename().empty() || storage_.filename() == filename)) {
+    return;
+  }
+  active_profile_ = profile;
+  last_target_filename_ = filename;
+  OpenStorageForFileName(filename);
+}
+
+bool UserBoundaryHistoryRewriter::OpenStorageForFileName(
+    const std::string& filename) const {
   if (!storage_.OpenOrCreate(filename.c_str(), kValueSize, kLruSize,
                              kSeedValue)) {
     LOG(WARNING) << "cannot initialize UserBoundaryHistoryRewriter";
@@ -300,6 +322,18 @@ bool UserBoundaryHistoryRewriter::Reload() {
   }
 
   return true;
+}
+
+bool UserBoundaryHistoryRewriter::Reload() {
+  config::GruConfigManager::InvalidateConfigCache();
+  const std::string profile =
+      config::GruConfigManager::ResolveEffectiveActiveProfile(nullptr);
+  const std::string filename =
+      config::GruConfigManager::ResolveProfileHistoryFileName(kFileName,
+                                                              profile);
+  active_profile_ = profile;
+  last_target_filename_ = filename;
+  return OpenStorageForFileName(filename);
 }
 
 bool UserBoundaryHistoryRewriter::Insert(const ConversionRequest& request,
@@ -342,6 +376,7 @@ bool UserBoundaryHistoryRewriter::Insert(const ConversionRequest& request,
 }
 
 void UserBoundaryHistoryRewriter::Clear() {
+  EnsureActiveProfileLoaded(nullptr);
   MOZC_VLOG(1) << "Clearing user segment data";
   storage_.Clear();
 }

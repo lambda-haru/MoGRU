@@ -52,6 +52,7 @@
 #include "base/strings/japanese.h"
 #include "base/util.h"
 #include "base/vlog.h"
+#include "config/gru_config.h"
 #include "converter/attribute.h"
 #include "converter/candidate.h"
 #include "converter/inner_segment.h"
@@ -572,6 +573,8 @@ bool UserSegmentHistoryRewriter::IsAvailable(const ConversionRequest& request,
     return false;
   }
 
+  EnsureActiveProfileLoaded(&request);
+
   if (storage_ == nullptr) {
     MOZC_VLOG(2) << "storage is NULL";
     return false;
@@ -676,14 +679,36 @@ void UserSegmentHistoryRewriter::Finish(const ConversionRequest& request,
 
 bool UserSegmentHistoryRewriter::Sync() { return true; }
 
-bool UserSegmentHistoryRewriter::Reload() {
-  const std::string filename = ConfigFileStream::GetFileName(kFileName);
+void UserSegmentHistoryRewriter::EnsureActiveProfileLoaded(
+    const ConversionRequest* request) const {
+  const commands::Context* context =
+      (request != nullptr) ? &request->context() : nullptr;
+  const std::string profile =
+      config::GruConfigManager::ResolveEffectiveActiveProfile(context);
+  const std::string filename =
+      config::GruConfigManager::ResolveProfileHistoryFileName(kFileName,
+                                                              profile);
+  if (active_profile_ == profile && last_target_filename_ == filename &&
+      (storage_ == nullptr || storage_->filename() == filename)) {
+    return;
+  }
+  active_profile_ = profile;
+  last_target_filename_ = filename;
+  OpenStorageForFileName(filename);
+}
+
+bool UserSegmentHistoryRewriter::OpenStorageForFileName(
+    const std::string& filename) const {
+  if (storage_ == nullptr) {
+    storage_ = std::make_unique<LruStorage>();
+  }
   if (!storage_->OpenOrCreate(filename.c_str(), kValueSize, kLruSize,
                               kSeedValue)) {
     LOG(WARNING) << "cannot initialize UserSegmentHistoryRewriter";
     storage_.reset();
     return false;
   }
+  revert_cache_.Clear();
 
   constexpr char kFileSuffix[] = ".merge_pending";
   const std::string merge_pending_file = filename + kFileSuffix;
@@ -697,6 +722,18 @@ bool UserSegmentHistoryRewriter::Reload() {
   }
 
   return true;
+}
+
+bool UserSegmentHistoryRewriter::Reload() {
+  config::GruConfigManager::InvalidateConfigCache();
+  const std::string profile =
+      config::GruConfigManager::ResolveEffectiveActiveProfile(nullptr);
+  const std::string filename =
+      config::GruConfigManager::ResolveProfileHistoryFileName(kFileName,
+                                                              profile);
+  active_profile_ = profile;
+  last_target_filename_ = filename;
+  return OpenStorageForFileName(filename);
 }
 
 bool UserSegmentHistoryRewriter::ShouldRewrite(
@@ -834,6 +871,7 @@ bool UserSegmentHistoryRewriter::Rewrite(const ConversionRequest& request,
 }
 
 void UserSegmentHistoryRewriter::Clear() {
+  EnsureActiveProfileLoaded(nullptr);
   if (storage_ != nullptr) {
     MOZC_VLOG(1) << "Clearing user segment data";
     storage_->Clear();
@@ -841,6 +879,10 @@ void UserSegmentHistoryRewriter::Clear() {
 }
 
 void UserSegmentHistoryRewriter::Revert(const Segments& segments) {
+  EnsureActiveProfileLoaded(nullptr);
+  if (storage_ == nullptr) {
+    return;
+  }
   const std::vector<std::string>* revert_entries =
       revert_cache_.LookupWithoutInsert(segments.revert_id());
   if (!revert_entries) {
@@ -855,6 +897,10 @@ void UserSegmentHistoryRewriter::Revert(const Segments& segments) {
 bool UserSegmentHistoryRewriter::ClearHistoryEntry(const Segments& segments,
                                                    size_t segment_index,
                                                    int candidate_index) {
+  EnsureActiveProfileLoaded(nullptr);
+  if (storage_ == nullptr) {
+    return false;
+  }
   DCHECK_LT(segment_index, segments.segments_size());
   const Segment& segment = segments.segment(segment_index);
   DCHECK(segment.is_valid_index(candidate_index));

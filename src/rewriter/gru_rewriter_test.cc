@@ -65,6 +65,13 @@ void AddCandidate(absl::string_view key, absl::string_view value,
 class GruRewriterTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    const std::string test_cfg = config::GruConfigManager::ResolveConfigFilePath(
+        "", /*allow_in_test=*/true);
+    if (!test_cfg.empty() && std::filesystem::exists(test_cfg)) {
+      std::error_code ec;
+      std::filesystem::remove(test_cfg, ec);
+    }
+    config::GruConfigManager::InvalidateConfigCache();
     absl::SetFlag(&FLAGS_enable_gru_rewriter, true);
     rewriter_ = std::make_unique<GruRewriter>();
   }

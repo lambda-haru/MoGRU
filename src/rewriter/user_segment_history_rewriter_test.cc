@@ -48,6 +48,7 @@
 #include "base/system_util.h"
 #include "config/character_form_manager.h"
 #include "config/config_handler.h"
+#include "config/gru_config.h"
 #include "converter/attribute.h"
 #include "converter/candidate.h"
 #include "converter/inner_segment.h"
@@ -2285,6 +2286,86 @@ TEST_F(UserSegmentHistoryRewriterTest,
                     strlen("2日")}},
                   "ふつか", "2日"));
   }
+}
+
+TEST_F(UserSegmentHistoryRewriterTest, ProfileSeparationTest) {
+  Segments segments;
+  std::unique_ptr<UserSegmentHistoryRewriter> rewriter(
+      CreateUserSegmentHistoryRewriter());
+
+  GruPenaltyConfig cfg;
+  cfg.enable_app_profile_switching = true;
+  cfg.current_profile = "business";
+  cfg.app_profile_map = "slack:business,discord:casual";
+  config::GruConfigManager::SaveConfig(cfg);
+
+  // 1. In "business" profile, learn "candidate2" for segment0
+  {
+    const ConversionRequest convreq = CreateConversionRequest();
+    InitSegments(&segments, 1);
+    segments.mutable_segment(0)->move_candidate(2, 0);
+    segments.mutable_segment(0)->mutable_candidate(0)->attributes |=
+        converter::Attribute::RERANKED;
+    segments.mutable_segment(0)->set_segment_type(Segment::FIXED_VALUE);
+    rewriter->Finish(convreq, segments);
+
+    const std::string business_file = FileUtil::JoinPath(
+        SystemUtil::GetUserProfileDirectory(), "segment_business.db");
+    EXPECT_OK(FileUtil::FileExists(business_file));
+
+    InitSegments(&segments, 1);
+    EXPECT_TRUE(rewriter->Rewrite(convreq, &segments));
+    EXPECT_EQ(segments.segment(0).candidate(0).value, "candidate2");
+  }
+
+  // 2. Switch to "casual" profile via app context ("discord") -> "candidate2" is not promoted
+  {
+    commands::Context ctx;
+    ctx.set_application_name("discord");
+    const ConversionRequest casual_req =
+        ConversionRequestBuilder()
+            .SetConfig(*config_)
+            .SetRequest(*request_)
+            .SetContextView(ctx)
+            .Build();
+    InitSegments(&segments, 1);
+    EXPECT_FALSE(rewriter->Rewrite(casual_req, &segments));
+    EXPECT_EQ(segments.segment(0).candidate(0).value, "candidate0");
+
+    // Learn "candidate3" in "casual" profile
+    segments.mutable_segment(0)->move_candidate(3, 0);
+    segments.mutable_segment(0)->mutable_candidate(0)->attributes |=
+        converter::Attribute::RERANKED;
+    segments.mutable_segment(0)->set_segment_type(Segment::FIXED_VALUE);
+    rewriter->Finish(casual_req, segments);
+
+    InitSegments(&segments, 1);
+    EXPECT_TRUE(rewriter->Rewrite(casual_req, &segments));
+    EXPECT_EQ(segments.segment(0).candidate(0).value, "candidate3");
+  }
+
+  // 3. Switch back to "business" profile via app context ("slack") -> "candidate2" is promoted
+  {
+    commands::Context ctx;
+    ctx.set_application_name("slack");
+    const ConversionRequest business_req =
+        ConversionRequestBuilder()
+            .SetConfig(*config_)
+            .SetRequest(*request_)
+            .SetContextView(ctx)
+            .Build();
+    InitSegments(&segments, 1);
+    EXPECT_TRUE(rewriter->Rewrite(business_req, &segments));
+    EXPECT_EQ(segments.segment(0).candidate(0).value, "candidate2");
+  }
+
+  // Reset to default profile
+  cfg.current_profile = "default";
+  config::GruConfigManager::SaveConfig(cfg);
+  const std::string test_cfg = config::GruConfigManager::ResolveConfigFilePath(
+      "", /*allow_in_test=*/true);
+  FileUtil::UnlinkIfExists(test_cfg).IgnoreError();
+  config::GruConfigManager::InvalidateConfigCache();
 }
 
 }  // namespace

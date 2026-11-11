@@ -123,12 +123,18 @@ class UserSegmentHistoryRewriter : public RewriterInterface {
   // Returns true if deletion succeeded.
   bool DeleteEntry(absl::string_view key);
 
-  std::unique_ptr<storage::LruStorage> storage_;
+  void EnsureActiveProfileLoaded(
+      const ConversionRequest* request = nullptr) const;
+  bool OpenStorageForFileName(const std::string& filename) const;
+
+  mutable std::unique_ptr<storage::LruStorage> storage_;
+  mutable std::string active_profile_ = "default";
+  mutable std::string last_target_filename_;
   const dictionary::PosMatcher* pos_matcher_;
   const dictionary::PosGroup* pos_group_;
 
   // Internal LRU cache to store reverted key.
-  storage::LruCache<uint64_t, std::vector<std::string>> revert_cache_;
+  mutable storage::LruCache<uint64_t, std::vector<std::string>> revert_cache_;
 };
 
 }  // namespace mozc

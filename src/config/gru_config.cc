@@ -52,6 +52,7 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "base/config_file_stream.h"
 #include "base/file_util.h"
 #include "base/system_util.h"
 #include "protocol/commands.pb.h"
@@ -397,7 +398,23 @@ std::string GruConfigManager::ResolveConfigFilePath(
     return expanded;
   }
 
-  if (!allow_in_test && IsInTestEnvironment()) {
+  if (IsInTestEnvironment()) {
+    const std::string test_profile_dir = SystemUtil::GetUserProfileDirectory();
+    if (!test_profile_dir.empty()) {
+      const std::string test_cfg =
+          FileUtil::JoinPath(test_profile_dir, "gru_config.ini");
+      if (allow_in_test || std::filesystem::exists(test_cfg)) {
+        return test_cfg;
+      }
+    }
+    if (!allow_in_test) {
+      return "";
+    }
+    if (const char* test_tmpdir = std::getenv("TEST_TMPDIR")) {
+      if (test_tmpdir[0] != '\0') {
+        return FileUtil::JoinPath(test_tmpdir, "gru_config.ini");
+      }
+    }
     return "";
   }
 
@@ -523,6 +540,124 @@ std::string GruConfigManager::ResolveProfileUserModelFilePath(
     return new_basename;
   }
   return FileUtil::JoinPath(dir, new_basename);
+}
+
+namespace {
+
+struct ActiveProfileCacheState {
+  absl::Mutex mutex;
+  absl::Time last_check_time = absl::InfinitePast();
+  int64_t last_mtime = -1;
+  std::string last_path;
+  GruPenaltyConfig cached_root_config;
+  std::string active_profile = "default";
+  bool has_cached = false;
+};
+
+ActiveProfileCacheState& GetActiveProfileCacheState() {
+  static absl::NoDestructor<ActiveProfileCacheState> state;
+  return *state;
+}
+
+}  // namespace
+
+std::string GruConfigManager::SanitizeProfileName(
+    absl::string_view profile_name) {
+  std::string out;
+  out.reserve(profile_name.size());
+  for (const char c : profile_name) {
+    if (absl::ascii_isalnum(static_cast<unsigned char>(c)) || c == '_' ||
+        c == '-') {
+      out.push_back(c);
+    }
+  }
+  if (out.empty() || out == "default") {
+    return "default";
+  }
+  return out;
+}
+
+std::string GruConfigManager::ResolveProfileHistoryFileName(
+    absl::string_view base_uri,
+    absl::string_view profile_name) {
+  const std::string prof = SanitizeProfileName(profile_name);
+  if (prof == "default") {
+    return ConfigFileStream::GetFileName(base_uri);
+  }
+  std::string profile_uri;
+  if (absl::EndsWith(base_uri, ".db")) {
+    profile_uri = absl::StrCat(
+        base_uri.substr(0, base_uri.size() - 3), "_", prof, ".db");
+  } else {
+    profile_uri = absl::StrCat(base_uri, "_", prof);
+  }
+  return ConfigFileStream::GetFileName(profile_uri);
+}
+
+void GruConfigManager::InvalidateConfigCache() {
+  auto& state = GetActiveProfileCacheState();
+  absl::MutexLock lock(state.mutex);
+  state.last_check_time = absl::InfinitePast();
+  state.last_mtime = -1;
+  state.has_cached = false;
+}
+
+std::string GruConfigManager::ResolveEffectiveActiveProfile(
+    const commands::Context* context,
+    const std::string& explicit_config_path) {
+  auto& state = GetActiveProfileCacheState();
+  absl::MutexLock lock(state.mutex);
+
+  const std::string path =
+      ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
+  if (path.empty()) {
+    if (state.has_cached && !state.last_path.empty()) {
+      state.cached_root_config = GruPenaltyConfig();
+      state.active_profile = "default";
+      state.last_path.clear();
+      state.last_mtime = -1;
+      state.has_cached = false;
+    }
+    if (!state.has_cached) {
+      state.cached_root_config = GruPenaltyConfig();
+      ApplyEnvOverrides(&state.cached_root_config);
+      state.active_profile =
+          SanitizeProfileName(state.cached_root_config.current_profile);
+      state.has_cached = true;
+    }
+  } else {
+    const absl::Time now = absl::Now();
+    if (!state.has_cached || path != state.last_path ||
+        (now - state.last_check_time) >= absl::Seconds(1)) {
+      state.last_check_time = now;
+      EnsureConfigFileExists(path);
+      const int64_t mtime = GetFileMtime(path);
+      if (!state.has_cached || path != state.last_path ||
+          mtime != state.last_mtime) {
+        state.last_path = path;
+        state.last_mtime = mtime;
+        state.cached_root_config = ParseConfigFile(path, GruPenaltyConfig());
+        ApplyEnvOverrides(&state.cached_root_config);
+        state.active_profile =
+            SanitizeProfileName(state.cached_root_config.current_profile);
+        state.has_cached = true;
+      }
+    }
+  }
+
+  if (state.cached_root_config.enable_app_profile_switching) {
+    const std::string app_name = GetCurrentApplicationName(context);
+    if (!app_name.empty()) {
+      const std::string target_profile =
+          DetectProfileFromApplication(app_name, state.cached_root_config);
+      const std::string effective = target_profile.empty()
+                                        ? state.cached_root_config.current_profile
+                                        : target_profile;
+      state.active_profile = SanitizeProfileName(effective);
+    }
+  }
+
+  return state.active_profile;
 }
 
 std::map<std::string, GruPenaltyConfig> GruConfigManager::GetBuiltinDefaultProfiles(
@@ -1736,6 +1871,19 @@ bool GruConfigManager::SaveConfig(const GruPenaltyConfig& config,
     } else {
       any_saved = true;
     }
+  }
+
+  if (any_saved) {
+    auto& state = GetActiveProfileCacheState();
+    absl::MutexLock lock(state.mutex);
+    state.cached_root_config = config;
+    ApplyEnvOverrides(&state.cached_root_config);
+    state.active_profile =
+        SanitizeProfileName(state.cached_root_config.current_profile);
+    state.last_path = targets.front();
+    state.last_mtime = GetFileMtime(targets.front());
+    state.last_check_time = absl::Now();
+    state.has_cached = true;
   }
 
   return any_saved;

@@ -121,6 +121,28 @@ class GruConfigManager {
       const std::string& profile_name,
       const std::string& user_specified = "");
 
+  // Sanitizes a profile name into a safe filename token (alphanumeric, '_', '-').
+  // Returns "default" if empty or invalid.
+  static std::string SanitizeProfileName(absl::string_view profile_name);
+
+  // Resolves a ConfigFileStream URI (e.g. "user://segment.db", "user://boundary.db",
+  // "user://.history.db") to a profile-specific file path.
+  // For "default" profile, returns ConfigFileStream::GetFileName(base_uri).
+  // For other profiles, appends "_<profile>" before ".db".
+  static std::string ResolveProfileHistoryFileName(
+      absl::string_view base_uri,
+      absl::string_view profile_name);
+
+  // Resolves the currently active profile name by checking gru_config.ini
+  // (with 1-second throttled mtime hot-reload) and applying app-based automatic
+  // profile switching when `context` provides an application name.
+  static std::string ResolveEffectiveActiveProfile(
+      const commands::Context* context = nullptr,
+      const std::string& explicit_config_path = "");
+
+  // Forces the next call to ResolveEffectiveActiveProfile to re-read gru_config.ini.
+  static void InvalidateConfigCache();
+
   // Returns built-in default profile configs for presets (business, coding, casual, creative, instant).
   static std::map<std::string, GruPenaltyConfig> GetBuiltinDefaultProfiles(
       const GruPenaltyConfig& base_config = GruPenaltyConfig());

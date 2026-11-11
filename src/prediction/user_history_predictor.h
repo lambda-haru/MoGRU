@@ -512,6 +512,10 @@ class UserHistoryPredictor : public PredictorInterface {
       const ConversionRequest& request, absl::string_view request_key,
       const UserHistoryPredictor::MatchType mtype, const Entry& entry);
 
+  // Ensures that `storage_` is loaded for the currently active profile.
+  void EnsureActiveProfileLoaded(
+      const ConversionRequest* request = nullptr) const;
+
   const dictionary::UserDictionaryInterface& user_dictionary_;
   const engine::Modules& modules_;
 
@@ -519,7 +523,7 @@ class UserHistoryPredictor : public PredictorInterface {
   UserHistoryStorage& storage_;
 
   // Internal LRU cache to store dic_key/Entry to be reverted.
-  FlatConcurrentCache<uint64_t, RevertEntries> revert_cache_;
+  mutable FlatConcurrentCache<uint64_t, RevertEntries> revert_cache_;
 
   // `last_committed_entries_` stores the entries to be re-committed
   // after Revert().  Note that `last_committed_entries_` is not associated with

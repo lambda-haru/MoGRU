@@ -69,6 +69,7 @@
 #include "composer/table.h"
 #include "config/character_form_manager.h"
 #include "config/config_handler.h"
+#include "config/gru_config.h"
 #include "converter/attribute.h"
 #include "converter/inner_segment.h"
 #include "data_manager/testing/mock_data_manager.h"
@@ -6712,6 +6713,62 @@ TEST_F(UserHistoryPredictorTest, CharacterFormNormalization) {
   // Restore CharacterFormManager default state.
   char_form_manager->SetDefaultRule();
   char_form_manager->ClearHistory();
+}
+
+TEST_F(UserHistoryPredictorTest, ProfileSeparationTest) {
+  UserHistoryPredictor* predictor = GetUserHistoryPredictorWithClearedHistory();
+  SegmentsProxy segments_proxy;
+
+  GruPenaltyConfig cfg;
+  cfg.current_profile = "business";
+  config::GruConfigManager::SaveConfig(cfg);
+  predictor->ClearAllHistory();
+
+  // 1. Learn "貴社" for "きしゃ" in "business" profile
+  {
+    const ConversionRequest convreq =
+        SetUpInputForConversion("きしゃ", &composer_, &segments_proxy);
+    segments_proxy.AddCandidate(0, "貴社");
+    predictor->Finish(convreq, segments_proxy.MakeLearningResults(), kRevertId);
+    EXPECT_TRUE(IsSuggested(predictor, "きしゃ", "貴社"));
+  }
+
+  // 2. Switch to "casual" profile -> "貴社" is not suggested
+  {
+    cfg.current_profile = "casual";
+    config::GruConfigManager::SaveConfig(cfg);
+    predictor->ClearAllHistory();
+    EXPECT_FALSE(IsSuggested(predictor, "きしゃ", "貴社"));
+
+    // Learn "汽車" for "きしゃ" in "casual" profile
+    segments_proxy.Clear();
+    const ConversionRequest convreq =
+        SetUpInputForConversion("きしゃ", &composer_, &segments_proxy);
+    segments_proxy.AddCandidate(0, "汽車");
+    predictor->Finish(convreq, segments_proxy.MakeLearningResults(), kRevertId);
+    EXPECT_TRUE(IsSuggested(predictor, "きしゃ", "汽車"));
+  }
+
+  // 3. Switch back to "business" profile -> "貴社" is suggested, "汽車" is not
+  {
+    cfg.current_profile = "business";
+    config::GruConfigManager::SaveConfig(cfg);
+    EXPECT_TRUE(IsSuggested(predictor, "きしゃ", "貴社"));
+    EXPECT_FALSE(IsSuggested(predictor, "きしゃ", "汽車"));
+  }
+
+  // Clean up test profiles
+  predictor->ClearAllHistory();
+  cfg.current_profile = "casual";
+  config::GruConfigManager::SaveConfig(cfg);
+  predictor->ClearAllHistory();
+  cfg.current_profile = "default";
+  config::GruConfigManager::SaveConfig(cfg);
+  predictor->ClearAllHistory();
+  const std::string test_cfg = config::GruConfigManager::ResolveConfigFilePath(
+      "", /*allow_in_test=*/true);
+  FileUtil::UnlinkIfExists(test_cfg).IgnoreError();
+  config::GruConfigManager::InvalidateConfigCache();
 }
 
 }  // namespace mozc::prediction

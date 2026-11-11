@@ -66,6 +66,7 @@
 #include "composer/composer.h"
 #include "composer/query.h"
 #include "config/character_form_manager.h"
+#include "config/gru_config.h"
 #include "converter/attribute.h"
 #include "converter/inner_segment.h"
 #include "dictionary/dictionary_interface.h"
@@ -331,23 +332,44 @@ UserHistoryPredictor::UserHistoryPredictor(const engine::Modules& modules,
 
 UserHistoryPredictor::~UserHistoryPredictor() = default;
 
+void UserHistoryPredictor::EnsureActiveProfileLoaded(
+    const ConversionRequest* request) const {
+  const commands::Context* context =
+      (request != nullptr) ? &request->context() : nullptr;
+  const std::string profile =
+      config::GruConfigManager::ResolveEffectiveActiveProfile(context);
+  if (storage_.EnsureProfileLoaded(profile)) {
+    revert_cache_.Clear();
+    last_committed_entries_.store(nullptr);
+  }
+}
+
 bool UserHistoryPredictor::Wait() {
   storage_.Wait();
   return true;
 }
 
 bool UserHistoryPredictor::Sync() {
+  EnsureActiveProfileLoaded(nullptr);
   storage_.AsyncSave();
   return true;
 }
 
 bool UserHistoryPredictor::Reload() {
-  storage_.Wait();
-  storage_.AsyncLoad();
+  config::GruConfigManager::InvalidateConfigCache();
+  if (!storage_.EnsureProfileLoaded(
+          config::GruConfigManager::ResolveEffectiveActiveProfile(nullptr))) {
+    storage_.Wait();
+    storage_.AsyncLoad();
+  } else {
+    revert_cache_.Clear();
+    last_committed_entries_.store(nullptr);
+  }
   return true;
 }
 
 bool UserHistoryPredictor::ClearAllHistory() {
+  EnsureActiveProfileLoaded(nullptr);
   storage_.Clear();  // Clear is blocking.
   return true;
 }
@@ -508,6 +530,7 @@ bool UserHistoryPredictor::RemoveEntryWithInnerSegment(absl::string_view key,
 
 bool UserHistoryPredictor::ClearHistoryEntry(absl::string_view key,
                                              absl::string_view value) {
+  EnsureActiveProfileLoaded(nullptr);
   bool deleted = false;
 
   // The stored data uses the kPrefixZeroSpace for the prefix space, so
@@ -561,6 +584,7 @@ bool UserHistoryPredictor::ClearHistoryEntry(absl::string_view key,
 
 bool UserHistoryPredictor::AddHistoryEntry(absl::string_view key,
                                            absl::string_view value) {
+  EnsureActiveProfileLoaded(nullptr);
   key = absl::StripAsciiWhitespace(key);
   value = absl::StripAsciiWhitespace(value);
 
@@ -1349,6 +1373,7 @@ bool UserHistoryPredictor::LookupEntry(
 
 std::vector<Result> UserHistoryPredictor::Predict(
     const ConversionRequest& request) const {
+  EnsureActiveProfileLoaded(&request);
   const bool is_empty_input = request.key().empty();
   // Workaround for b/499745591
   // Predict() may be triggered when BS key is pressed, which is not expected.
@@ -1402,6 +1427,7 @@ std::vector<Result> UserHistoryPredictor::Predict(
 
 std::vector<Result> UserHistoryPredictor::Convert(
     const ConversionRequest& request) const {
+  EnsureActiveProfileLoaded(&request);
   if (!ShouldPredict(request)) {
     return {};
   }
@@ -2097,6 +2123,8 @@ void UserHistoryPredictor::Finish(const ConversionRequest& request,
     return;
   }
 
+  EnsureActiveProfileLoaded(&request);
+
   if (storage_.IsSyncerInCriticalSection()) {
     MOZC_VLOG(2) << "Syncer is running";
     return;
@@ -2416,6 +2444,7 @@ void UserHistoryPredictor::InsertHistoryForConversionSegments(
 }
 
 void UserHistoryPredictor::Revert(uint32_t revert_id) {
+  EnsureActiveProfileLoaded(nullptr);
   if (storage_.IsSyncerInCriticalSection()) {
     MOZC_VLOG(2) << "Syncer is running";
     return;
@@ -2471,6 +2500,7 @@ void UserHistoryPredictor::Revert(uint32_t revert_id) {
 
 void UserHistoryPredictor::CommitContext(
     const ConversionRequest& request) const {
+  EnsureActiveProfileLoaded(&request);
   MaybeProcessPartialRevertEntry(request);
 }
 
