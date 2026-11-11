@@ -62,9 +62,11 @@ void AddCandidate(absl::string_view key, absl::string_view value,
   candidate->wcost = cost;
 }
 
-class GruRewriterTest : public ::testing::Test {
+class GruRewriterTest : public mozc::testing::TestWithTempUserProfile {
  protected:
   void SetUp() override {
+    TestWithTempUserProfile::SetUp();
+    absl::SetFlag(&FLAGS_gru_config_path, "");
     const std::string test_cfg = config::GruConfigManager::ResolveConfigFilePath(
         "", /*allow_in_test=*/true);
     if (!test_cfg.empty() && std::filesystem::exists(test_cfg)) {
@@ -74,6 +76,12 @@ class GruRewriterTest : public ::testing::Test {
     config::GruConfigManager::InvalidateConfigCache();
     absl::SetFlag(&FLAGS_enable_gru_rewriter, true);
     rewriter_ = std::make_unique<GruRewriter>();
+  }
+
+  void TearDown() override {
+    absl::SetFlag(&FLAGS_gru_config_path, "");
+    config::GruConfigManager::InvalidateConfigCache();
+    TestWithTempUserProfile::TearDown();
   }
 
   std::unique_ptr<GruRewriter> rewriter_;

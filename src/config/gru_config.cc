@@ -401,19 +401,30 @@ std::string GruConfigManager::ResolveConfigFilePath(
   if (IsInTestEnvironment()) {
     const std::string test_profile_dir = SystemUtil::GetUserProfileDirectory();
     if (!test_profile_dir.empty()) {
-      const std::string test_cfg =
-          FileUtil::JoinPath(test_profile_dir, "gru_config.ini");
-      if (allow_in_test || std::filesystem::exists(test_cfg)) {
-        return test_cfg;
+      std::error_code ec;
+      bool dir_usable = std::filesystem::exists(test_profile_dir, ec);
+      if (!dir_usable) {
+        dir_usable = std::filesystem::create_directories(test_profile_dir, ec);
+      }
+      if (dir_usable) {
+        const std::string test_cfg =
+            FileUtil::JoinPath(test_profile_dir, "gru_config.ini");
+        if (allow_in_test || std::filesystem::exists(test_cfg)) {
+          return test_cfg;
+        }
+      }
+    }
+    if (const char* test_tmpdir = std::getenv("TEST_TMPDIR")) {
+      if (test_tmpdir[0] != '\0') {
+        const std::string test_cfg =
+            FileUtil::JoinPath(test_tmpdir, "gru_config.ini");
+        if (allow_in_test || std::filesystem::exists(test_cfg)) {
+          return test_cfg;
+        }
       }
     }
     if (!allow_in_test) {
       return "";
-    }
-    if (const char* test_tmpdir = std::getenv("TEST_TMPDIR")) {
-      if (test_tmpdir[0] != '\0') {
-        return FileUtil::JoinPath(test_tmpdir, "gru_config.ini");
-      }
     }
     return "";
   }
@@ -438,9 +449,19 @@ std::string GruConfigManager::ResolveUserModelFilePath(
   if (!user_specified.empty()) {
     return ExpandTilde(user_specified);
   }
-  if (const char* test_tmpdir = std::getenv("TEST_TMPDIR")) {
-    if (test_tmpdir[0] != '\0') {
-      return FileUtil::JoinPath(test_tmpdir, "grumodel_user.bin");
+  if (IsInTestEnvironment()) {
+    const std::string test_profile_dir = SystemUtil::GetUserProfileDirectory();
+    if (!test_profile_dir.empty()) {
+      std::error_code ec;
+      if (std::filesystem::exists(test_profile_dir, ec) ||
+          std::filesystem::create_directories(test_profile_dir, ec)) {
+        return FileUtil::JoinPath(test_profile_dir, "grumodel_user.bin");
+      }
+    }
+    if (const char* test_tmpdir = std::getenv("TEST_TMPDIR")) {
+      if (test_tmpdir[0] != '\0') {
+        return FileUtil::JoinPath(test_tmpdir, "grumodel_user.bin");
+      }
     }
   }
   const auto dirs = GetUserProfileCandidateDirs();
@@ -468,9 +489,19 @@ std::string GruConfigManager::ResolveProfileUserModelFilePath(
                                      ? "grumodel_user.bin"
                                      : ("grumodel_user_" + prof + ".bin");
     MigrateLegacyFilesOnce();
-    if (const char* test_tmpdir = std::getenv("TEST_TMPDIR")) {
-      if (test_tmpdir[0] != '\0') {
-        return FileUtil::JoinPath(test_tmpdir, filename);
+    if (IsInTestEnvironment()) {
+      const std::string test_profile_dir = SystemUtil::GetUserProfileDirectory();
+      if (!test_profile_dir.empty()) {
+        std::error_code ec;
+        if (std::filesystem::exists(test_profile_dir, ec) ||
+            std::filesystem::create_directories(test_profile_dir, ec)) {
+          return FileUtil::JoinPath(test_profile_dir, filename);
+        }
+      }
+      if (const char* test_tmpdir = std::getenv("TEST_TMPDIR")) {
+        if (test_tmpdir[0] != '\0') {
+          return FileUtil::JoinPath(test_tmpdir, filename);
+        }
       }
     }
     const auto dirs = GetUserProfileCandidateDirs();

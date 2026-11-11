@@ -586,6 +586,10 @@ void GruRewriter::Finish(const ConversionRequest& request,
           const std::string new_profile =
               val.substr(kProfPrefix.size(), val.size() - kProfPrefix.size() - 1);
           absl::MutexLock l(mutex_);
+          if (config_file_path_.empty()) {
+            config_file_path_ = config::GruConfigManager::ResolveConfigFilePath(
+                "", /*allow_in_test=*/true);
+          }
           GruPenaltyConfig root_config =
               config::GruConfigManager::LoadConfig(config_file_path_);
           root_config.current_profile = new_profile;
@@ -606,6 +610,10 @@ void GruRewriter::Finish(const ConversionRequest& request,
             if (prof_end != std::string::npos) {
               std::string target_profile = val.substr(prof_start, prof_end - prof_start);
               absl::MutexLock l(mutex_);
+              if (config_file_path_.empty()) {
+                config_file_path_ = config::GruConfigManager::ResolveConfigFilePath(
+                    "", /*allow_in_test=*/true);
+              }
               GruPenaltyConfig root_config =
                   config::GruConfigManager::LoadConfig(config_file_path_);
               config::GruConfigManager::AddOrUpdateAppProfileMapping(&root_config, app_name, target_profile);
@@ -619,6 +627,10 @@ void GruRewriter::Finish(const ConversionRequest& request,
         }
         if (val == "MoGRU: インスタント速習モード ON") {
           absl::MutexLock l(mutex_);
+          if (config_file_path_.empty()) {
+            config_file_path_ = config::GruConfigManager::ResolveConfigFilePath(
+                "", /*allow_in_test=*/true);
+          }
           GruPenaltyConfig root_config =
               config::GruConfigManager::LoadConfig(config_file_path_);
           root_config.enable_instant_mode = true;
@@ -628,6 +640,10 @@ void GruRewriter::Finish(const ConversionRequest& request,
         }
         if (val == "MoGRU: インスタント速習モード OFF") {
           absl::MutexLock l(mutex_);
+          if (config_file_path_.empty()) {
+            config_file_path_ = config::GruConfigManager::ResolveConfigFilePath(
+                "", /*allow_in_test=*/true);
+          }
           GruPenaltyConfig root_config =
               config::GruConfigManager::LoadConfig(config_file_path_);
           root_config.enable_instant_mode = false;
