@@ -2214,6 +2214,32 @@
                   </property>
                  </widget>
                 </item>
+                <item row="4" column="0" colspan="2">
+                 <widget class="QLabel" name="userEnglishWordsLabel">
+                  <property name="text">
+                   <string>Custom English Words (one per line or comma-separated):</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="5" column="0" colspan="2">
+                 <widget class="QPlainTextEdit" name="userEnglishWordsPlainTextEdit">
+                  <property name="minimumSize">
+                   <size>
+                    <width>0</width>
+                    <height>80</height>
+                   </size>
+                  </property>
+                  <property name="maximumSize">
+                   <size>
+                    <width>16777215</width>
+                    <height>120</height>
+                   </size>
+                  </property>
+                  <property name="placeholderText">
+                   <string>e.g. kubernetes, terraform, rebase</string>
+                  </property>
+                 </widget>
+                </item>
                </layout>
               </widget>
              </item>

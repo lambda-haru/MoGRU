@@ -61,8 +61,12 @@ class EnglishDictionary {
   // Loads words from a file path.
   bool LoadFromFile(absl::string_view filepath);
 
-  // Adds a single English word. Automatically converted to lower case.
+  // Adds a single English word. Automatically converted to lower case in trie,
+  // while storing original casing as value.
   void AddWord(absl::string_view word);
+
+  // Clears all entries from the dictionary.
+  void Clear();
 
   // Returns true if the dictionary has no words.
   bool empty() const { return word_count_ == 0; }
@@ -75,9 +79,11 @@ class EnglishDictionary {
 
   // Finds the longest matching English word prefix in `text`.
   // Returns the length of the matched prefix.
+  // If `matched_original_word` is non-null, sets it to the original word value stored in the trie.
   // If no word matches, or the matched length is less than `min_len`, returns 0.
   // Example: text="mergesuru", min_len=3 -> returns 5 ("merge").
-  size_t LongestPrefixMatch(absl::string_view text, size_t min_len = 1) const;
+  size_t LongestPrefixMatch(absl::string_view text, size_t min_len = 1,
+                            std::string* matched_original_word = nullptr) const;
 
   // Returns up to `limit` words that start with `prefix`.
   std::vector<std::string> PredictWords(absl::string_view prefix,

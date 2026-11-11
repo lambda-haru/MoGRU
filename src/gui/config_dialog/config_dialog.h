@@ -100,7 +100,7 @@ class ConfigDialog : public QDialog, private Ui::ConfigDialog {
   void SetupMogruUi();
   void LoadGruConfigToUi(const GruPenaltyConfig& gru_config);
   void PopulateWidgetsFromProfile(const GruPenaltyConfig& p);
-  void SaveWidgetsToProfile(GruPenaltyConfig* p);
+  void SaveWidgetsToProfile(GruPenaltyConfig* p) const;
   bool SaveGruConfigFromUi();
   GruPenaltyConfig CollectGruConfigFromUi() const;
   bool Update();

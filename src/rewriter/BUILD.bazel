@@ -1841,8 +1841,10 @@ mozc_cc_library(
         "//dictionary:english_dictionary",
         "//dictionary:pos_matcher",
         "//request:conversion_request",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
     ],
     alwayslink = 1,
 )

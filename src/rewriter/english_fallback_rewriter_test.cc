@@ -714,5 +714,131 @@ TEST_F(EnglishFallbackRewriterTest,
   EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "らんch");
 }
 
+TEST_F(EnglishFallbackRewriterTest, UserConfigEnglishWordsFallback) {
+  const std::string config_path =
+      config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+  GruPenaltyConfig cfg;
+  cfg.enable_english_fallback = true;
+  cfg.user_english_words = {"Kubernetes", "terraform"};
+  config::GruConfigManager::SaveConfig(cfg, config_path);
+
+  // Injected dictionary has NO words at all.
+  dictionary::EnglishDictionary empty_dict;
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(empty_dict));
+
+  composer::Composer composer = CreateComposer("kuberneteswo");
+  // "kuberneteswo" in preedit: "くべｒねてｓを"
+  Segments segments;
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("くべｒねてｓ");
+  auto* c0 = seg0->add_candidate();
+  c0->key = "くべｒねてｓ";
+  c0->value = "くべrねてs";
+  c0->cost = 25000;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("を");
+  auto* c1 = seg1->add_candidate();
+  c1->key = "を";
+  c1->value = "を";
+  c1->cost = 2000;
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+
+  EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+  ASSERT_EQ(segments.conversion_segments_size(), 2);
+
+  const Segment& merged_seg = segments.conversion_segment(0);
+  EXPECT_EQ(merged_seg.key(), "くべｒねてｓ");
+  ASSERT_GE(merged_seg.candidates_size(), 2);
+  // User typed lowercase -> raw is "kubernetes"
+  EXPECT_EQ(merged_seg.candidate(0).value, "kubernetes");
+  // Original casing from user_english_words is "Kubernetes"
+  EXPECT_EQ(merged_seg.candidate(1).value, "Kubernetes");
+}
+
+TEST_F(EnglishFallbackRewriterTest, UserEnglishWordsReload) {
+  const std::string config_path =
+      config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+  GruPenaltyConfig cfg;
+  cfg.enable_english_fallback = true;
+  cfg.user_english_words = {"rebase"};
+  config::GruConfigManager::SaveConfig(cfg, config_path);
+
+  dictionary::EnglishDictionary empty_dict;
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(empty_dict));
+
+  // 1. "rebase" should be detected
+  {
+    composer::Composer composer = CreateComposer("rebase");
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("ればせ");
+    auto* c = seg->add_candidate();
+    c->key = "ればせ";
+    c->value = "ればせ";
+    c->cost = 25000;
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+
+    EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "rebase");
+  }
+
+  // 2. "cherrypick" is NOT yet registered
+  {
+    composer::Composer composer = CreateComposer("cherrypick");
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("ちぇｒｒｙぴｃｋ");
+    auto* c = seg->add_candidate();
+    c->key = "ちぇｒｒｙぴｃｋ";
+    c->value = "ちぇrryぴck";
+    c->cost = 25000;
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+
+    EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+  }
+
+  // 3. Update config with "cherrypick" and reload
+  cfg.user_english_words.push_back("cherrypick");
+  config::GruConfigManager::SaveConfig(cfg, config_path);
+  EXPECT_TRUE(rewriter.Reload());
+
+  // 4. Now "cherrypick" should be detected
+  {
+    composer::Composer composer = CreateComposer("cherrypick");
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("ちぇｒｒｙぴｃｋ");
+    auto* c = seg->add_candidate();
+    c->key = "ちぇｒｒｙぴｃｋ";
+    c->value = "ちぇrryぴck";
+    c->cost = 25000;
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+
+    EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "cherrypick");
+  }
+}
+
 }  // namespace
 }  // namespace mozc

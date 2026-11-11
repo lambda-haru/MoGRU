@@ -73,6 +73,7 @@ struct GruPenaltyConfig {
   double english_fallback_cost_threshold = 15000.0;
   int32_t english_fallback_min_word_length = 3;
   bool enable_live_conversion_english_fallback = true;
+  std::vector<std::string> user_english_words;
   bool enable_conversion_stats = true;
   std::string conversion_stats_path = "";
   bool enable_conversion_history_log = false;

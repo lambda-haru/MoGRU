@@ -33,6 +33,7 @@
 #include <QFileDialog>
 #include <QLocale>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <algorithm>
 #include <cstdint>
 #include <istream>
@@ -44,6 +45,9 @@
 
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/strings/ascii.h"
+#include "absl/strings/str_join.h"
+#include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "base/config_file_stream.h"
 #include "base/file_util.h"
@@ -279,6 +283,8 @@ ConfigDialog::ConfigDialog()
   Connect(findChildren<QDoubleSpinBox*>(), SIGNAL(valueChanged(double)), this,
           SLOT(EnableApplyButton()));
   Connect(findChildren<QLineEdit*>(), SIGNAL(textEdited(QString)), this,
+          SLOT(EnableApplyButton()));
+  Connect(findChildren<QPlainTextEdit*>(), SIGNAL(textChanged()), this,
           SLOT(EnableApplyButton()));
   // 'Apply' button is disabled on launching.
   configDialogButtonBox->button(QDialogButtonBox::Apply)->setEnabled(false);
@@ -953,6 +959,8 @@ void ConfigDialog::SetupMogruUi() {
         QString::fromUtf8("フォールバック発動コスト閾値 (english_fallback_cost_threshold):"));
     englishFallbackMinWordLengthLabel->setText(
         QString::fromUtf8("対象最小英単語長 (english_fallback_min_word_length):"));
+    userEnglishWordsLabel->setText(
+        QString::fromUtf8("ユーザー追加英単語リスト (1行に1単語、またはカンマ区切り):"));
 
     gruPenaltyGroupBox->setTitle(
         QString::fromUtf8("文字種ペナルティ設定 (gru_config.ini)"));
@@ -1053,6 +1061,7 @@ void ConfigDialog::SetupMogruUi() {
                      enableLiveConversionEnglishFallbackCheckBox->setEnabled(checked);
                      englishFallbackCostThresholdSpinBox->setEnabled(checked);
                      englishFallbackMinWordLengthSpinBox->setEnabled(checked);
+                     userEnglishWordsPlainTextEdit->setEnabled(checked);
                    });
 
   QObject::connect(refreshConversionStatsButton, &QPushButton::clicked,
@@ -1086,7 +1095,7 @@ void ConfigDialog::OnGruProfileChanged(int index) {
   EnableApplyButton();
 }
 
-void ConfigDialog::SaveWidgetsToProfile(GruPenaltyConfig* p) {
+void ConfigDialog::SaveWidgetsToProfile(GruPenaltyConfig* p) const {
   if (p == nullptr) return;
   p->gru_score_weight = gruScoreWeightSpinBox->value();
   p->enable_resegmentation = enableGruResegmentationCheckBox->isChecked();
@@ -1106,6 +1115,16 @@ void ConfigDialog::SaveWidgetsToProfile(GruPenaltyConfig* p) {
   p->enable_instant_mode = enableInstantModeCheckBox->isChecked();
   p->instant_learning_rate = instantLearningRateSpinBox->value();
   p->instant_max_weight_delta = instantMaxWeightDeltaSpinBox->value();
+
+  p->user_english_words.clear();
+  const std::string words_str =
+      userEnglishWordsPlainTextEdit->toPlainText().toStdString();
+  for (absl::string_view w : absl::StrSplit(words_str, absl::ByAnyChar(",\r\n;"))) {
+    absl::string_view trimmed = absl::StripAsciiWhitespace(w);
+    if (!trimmed.empty()) {
+      p->user_english_words.push_back(std::string(trimmed));
+    }
+  }
 }
 
 void ConfigDialog::PopulateWidgetsFromProfile(const GruPenaltyConfig& p) {
@@ -1119,6 +1138,7 @@ void ConfigDialog::PopulateWidgetsFromProfile(const GruPenaltyConfig& p) {
   gruEmojiPenaltySpinBox->blockSignals(true);
   enableEnglishFallbackCheckBox->blockSignals(true);
   englishFallbackCostThresholdSpinBox->blockSignals(true);
+  userEnglishWordsPlainTextEdit->blockSignals(true);
   enableGruOnlineLearningCheckBox->blockSignals(true);
   gruOnlineLearningModeComboBox->blockSignals(true);
   gruOnlineLearningRateSpinBox->blockSignals(true);
@@ -1141,6 +1161,11 @@ void ConfigDialog::PopulateWidgetsFromProfile(const GruPenaltyConfig& p) {
   enableLiveConversionEnglishFallbackCheckBox->setEnabled(p.enable_english_fallback);
   englishFallbackCostThresholdSpinBox->setEnabled(p.enable_english_fallback);
   englishFallbackMinWordLengthSpinBox->setEnabled(p.enable_english_fallback);
+  userEnglishWordsPlainTextEdit->setEnabled(p.enable_english_fallback);
+
+  const std::string words_joined = absl::StrJoin(p.user_english_words, "\n");
+  userEnglishWordsPlainTextEdit->setPlainText(
+      QString::fromUtf8(words_joined.c_str()));
 
   enableGruOnlineLearningCheckBox->setChecked(p.enable_online_learning);
   const int mode_index =
@@ -1177,6 +1202,7 @@ void ConfigDialog::PopulateWidgetsFromProfile(const GruPenaltyConfig& p) {
   gruEmojiPenaltySpinBox->blockSignals(false);
   enableEnglishFallbackCheckBox->blockSignals(false);
   englishFallbackCostThresholdSpinBox->blockSignals(false);
+  userEnglishWordsPlainTextEdit->blockSignals(false);
   enableGruOnlineLearningCheckBox->blockSignals(false);
   gruOnlineLearningModeComboBox->blockSignals(false);
   gruOnlineLearningRateSpinBox->blockSignals(false);
@@ -1352,25 +1378,7 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
   auto wp = working_profiles_;
   auto it_active = wp.find(current_dialog_profile_);
   if (it_active != wp.end()) {
-    GruPenaltyConfig& active_wp = it_active->second;
-    active_wp.gru_score_weight = gruScoreWeightSpinBox->value();
-    active_wp.enable_resegmentation = enableGruResegmentationCheckBox->isChecked();
-    active_wp.resegment_threshold = gruResegmentThresholdSpinBox->value();
-    active_wp.katakana_multiplier = gruKatakanaMultiplierSpinBox->value();
-    active_wp.hiragana_multiplier = gruHiraganaMultiplierSpinBox->value();
-    active_wp.hiragana_length_power = gruHiraganaLengthPowerSpinBox->value();
-    active_wp.alphabet_multiplier = gruAlphabetMultiplierSpinBox->value();
-    active_wp.emoji_penalty = gruEmojiPenaltySpinBox->value();
-    active_wp.enable_english_fallback = enableEnglishFallbackCheckBox->isChecked();
-    active_wp.english_fallback_cost_threshold = englishFallbackCostThresholdSpinBox->value();
-    active_wp.enable_online_learning = enableGruOnlineLearningCheckBox->isChecked();
-    active_wp.online_learning_mode =
-        (gruOnlineLearningModeComboBox->currentIndex() == 1) ? "full" : "output_only";
-    active_wp.online_learning_rate = gruOnlineLearningRateSpinBox->value();
-    active_wp.online_learning_weight_decay = gruOnlineLearningWeightDecaySpinBox->value();
-    active_wp.enable_instant_mode = enableInstantModeCheckBox->isChecked();
-    active_wp.instant_learning_rate = instantLearningRateSpinBox->value();
-    active_wp.instant_max_weight_delta = instantMaxWeightDeltaSpinBox->value();
+    SaveWidgetsToProfile(&it_active->second);
   }
 
   // If default was modified, update base fields of cfg
@@ -1387,6 +1395,7 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
     cfg.emoji_penalty = def.emoji_penalty;
     cfg.enable_english_fallback = def.enable_english_fallback;
     cfg.english_fallback_cost_threshold = def.english_fallback_cost_threshold;
+    cfg.user_english_words = def.user_english_words;
     cfg.enable_online_learning = def.enable_online_learning;
     cfg.online_learning_mode = def.online_learning_mode;
     cfg.online_learning_rate = def.online_learning_rate;

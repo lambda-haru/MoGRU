@@ -107,16 +107,16 @@ std::string ResolveDictionaryPath() {
 
 }  // namespace
 
-EnglishFallbackRewriter::EnglishFallbackRewriter(
-    const dictionary::PosMatcher& pos_matcher)
-    : unknown_id_(pos_matcher.GetUnknownId()) {
+void EnglishFallbackRewriter::InitBaseDictionary() {
+  absl::MutexLock lock(mutex_);
+  base_dictionary_.Clear();
   const std::string path = ResolveDictionaryPath();
   bool loaded = false;
   if (!path.empty()) {
-    if (!dictionary_.LoadFromFile(path)) {
+    if (!base_dictionary_.LoadFromFile(path)) {
       LOG(WARNING) << "Failed to load English dictionary from: " << path;
     } else {
-      VLOG(1) << "Loaded " << dictionary_.size()
+      VLOG(1) << "Loaded " << base_dictionary_.size()
               << " English words from: " << path;
       loaded = true;
     }
@@ -124,8 +124,8 @@ EnglishFallbackRewriter::EnglishFallbackRewriter(
 
   // Fallback to embedded dictionary data if external file is absent or failed to load.
   if (!loaded) {
-    if (dictionary_.LoadFromString(kEmbeddedEnglishDictionaryData)) {
-      VLOG(1) << "Loaded " << dictionary_.size()
+    if (base_dictionary_.LoadFromString(kEmbeddedEnglishDictionaryData)) {
+      VLOG(1) << "Loaded " << base_dictionary_.size()
               << " English words from embedded dictionary.";
     } else {
       LOG(ERROR) << "Failed to load embedded English dictionary data.";
@@ -133,11 +133,72 @@ EnglishFallbackRewriter::EnglishFallbackRewriter(
   }
 }
 
+void EnglishFallbackRewriter::MaybeUpdateUserDictionary(
+    const GruPenaltyConfig& config) const {
+  absl::MutexLock lock(mutex_);
+  std::string file_path = user_dict_file_path_;
+  if (file_path.empty()) {
+    file_path = GruConfigManager::GetDefaultDataFilePath("user_english_words.txt");
+    user_dict_file_path_ = file_path;
+  }
+
+  int64_t file_mtime = -1;
+  if (!file_path.empty() && std::filesystem::exists(file_path)) {
+    file_mtime = GruConfigManager::GetFileMtime(file_path);
+  }
+
+  if (loaded_user_words_ == config.user_english_words &&
+      last_user_dict_file_mtime_ == file_mtime) {
+    return;
+  }
+
+  dictionary::EnglishDictionary new_user_dict;
+  for (const auto& word : config.user_english_words) {
+    new_user_dict.AddWord(word);
+  }
+
+  if (file_mtime != -1 && !file_path.empty()) {
+    new_user_dict.LoadFromFile(file_path);
+  }
+
+  user_dictionary_ = std::move(new_user_dict);
+  loaded_user_words_ = config.user_english_words;
+  last_user_dict_file_mtime_ = file_mtime;
+  VLOG(1) << "Loaded " << user_dictionary_.size() << " user English words.";
+}
+
+bool EnglishFallbackRewriter::Reload() {
+  if (!is_injected_dictionary_) {
+    InitBaseDictionary();
+  }
+  {
+    absl::MutexLock lock(mutex_);
+    loaded_user_words_.clear();
+    last_user_dict_file_mtime_ = -1;
+  }
+  const auto config = GruConfigManager::LoadConfig();
+  MaybeUpdateUserDictionary(config);
+  return true;
+}
+
+EnglishFallbackRewriter::EnglishFallbackRewriter(
+    const dictionary::PosMatcher& pos_matcher)
+    : unknown_id_(pos_matcher.GetUnknownId()) {
+  InitBaseDictionary();
+  MaybeUpdateUserDictionary(GruConfigManager::LoadConfig());
+}
+
 EnglishFallbackRewriter::EnglishFallbackRewriter(
     const dictionary::PosMatcher& pos_matcher,
     dictionary::EnglishDictionary dictionary)
     : unknown_id_(pos_matcher.GetUnknownId()),
-      dictionary_(std::move(dictionary)) {}
+      is_injected_dictionary_(true) {
+  {
+    absl::MutexLock lock(mutex_);
+    base_dictionary_ = std::move(dictionary);
+  }
+  MaybeUpdateUserDictionary(GruConfigManager::LoadConfig());
+}
 
 int EnglishFallbackRewriter::capability(const ConversionRequest& request) const {
   if (request.config().preedit_method() == config::Config::KANA) {
@@ -147,11 +208,30 @@ int EnglishFallbackRewriter::capability(const ConversionRequest& request) const 
 }
 
 void EnglishFallbackRewriter::AddEnglishCandidates(
-    absl::string_view word, absl::string_view key, Segment* segment) const {
+    absl::string_view word, absl::string_view original_word,
+    absl::string_view key, Segment* segment) const {
   const std::string raw = std::string(word);
   const std::string lower = absl::AsciiStrToLower(word);
+  const std::string orig = std::string(original_word);
 
-  auto add_cand = [&](const std::string& val, int32_t cost) {
+  std::vector<std::string> candidates;
+  auto add_if_new = [&](const std::string& val) {
+    if (val.empty()) return;
+    if (std::find(candidates.begin(), candidates.end(), val) == candidates.end()) {
+      candidates.push_back(val);
+    }
+  };
+
+  add_if_new(raw);
+  if (!orig.empty() && orig != raw) {
+    add_if_new(orig);
+  }
+  if (!lower.empty() && lower != raw && lower != orig) {
+    add_if_new(lower);
+  }
+
+  int32_t cost = 6000;
+  for (const auto& val : candidates) {
     converter::Candidate* cand = segment->add_candidate();
     cand->key = std::string(key);
     cand->content_key = std::string(key);
@@ -164,11 +244,7 @@ void EnglishFallbackRewriter::AddEnglishCandidates(
     cand->rid = unknown_id_;
     cand->converted_segment_count = 1;
     cand->attributes = converter::Attribute::NO_VARIANTS_EXPANSION;
-  };
-
-  add_cand(raw, 6000);
-  if (raw != lower) {
-    add_cand(lower, 6100);
+    cost += 100;
   }
 }
 
@@ -199,8 +275,11 @@ bool EnglishFallbackRewriter::ShouldTriggerFallback(
   if (request.composer().GetLength() == 0) {
     return false;
   }
-  if (dictionary_.empty()) {
-    return false;
+  {
+    absl::MutexLock lock(mutex_);
+    if (base_dictionary_.empty() && user_dictionary_.empty()) {
+      return false;
+    }
   }
 
   for (size_t i = 0; i < segments.conversion_segments_size(); ++i) {
@@ -217,7 +296,8 @@ bool EnglishFallbackRewriter::ShouldTriggerFallback(
 bool EnglishFallbackRewriter::MatchWordAtOffset(
     const composer::ComposerData& composer, size_t offset,
     size_t total_composed_len, size_t min_word_length,
-    std::string* matched_word, size_t* matched_preedit_chars) const {
+    std::string* matched_word, std::string* matched_original_word,
+    size_t* matched_preedit_chars) const {
   if (offset >= total_composed_len) {
     return false;
   }
@@ -225,8 +305,24 @@ bool EnglishFallbackRewriter::MatchWordAtOffset(
   const std::string remaining_raw =
       composer.GetRawSubString(offset, remaining_preedit_len);
 
-  const size_t matched_raw_len =
-      dictionary_.LongestPrefixMatch(remaining_raw, min_word_length);
+  size_t matched_raw_len = 0;
+  std::string orig_word;
+  {
+    absl::MutexLock lock(mutex_);
+    std::string user_orig;
+    const size_t user_len = user_dictionary_.LongestPrefixMatch(
+        remaining_raw, min_word_length, &user_orig);
+    std::string base_orig;
+    const size_t base_len = base_dictionary_.LongestPrefixMatch(
+        remaining_raw, min_word_length, &base_orig);
+    if (user_len >= base_len && user_len > 0) {
+      matched_raw_len = user_len;
+      orig_word = user_orig;
+    } else if (base_len > 0) {
+      matched_raw_len = base_len;
+      orig_word = base_orig;
+    }
+  }
   if (matched_raw_len == 0) {
     return false;
   }
@@ -239,6 +335,9 @@ bool EnglishFallbackRewriter::MatchWordAtOffset(
     if (raw_sub.length() == matched_raw_len) {
       if (raw_sub == word) {
         *matched_word = word;
+        if (matched_original_word != nullptr) {
+          *matched_original_word = orig_word;
+        }
         *matched_preedit_chars = p;
         return true;
       }
@@ -259,6 +358,7 @@ EnglishFallbackRewriter::CheckResizeSegmentsRequest(
   }
 
   const auto config = GruConfigManager::LoadConfig();
+  MaybeUpdateUserDictionary(config);
   if (!ShouldTriggerFallback(request, segments, config)) {
     return std::nullopt;
   }
@@ -285,10 +385,11 @@ EnglishFallbackRewriter::CheckResizeSegmentsRequest(
           continue;
         }
         std::string word;
+        std::string orig_word;
         size_t word_preedit_chars = 0;
         if (MatchWordAtOffset(composer, p, total_composed_len,
                               config.english_fallback_min_word_length, &word,
-                              &word_preedit_chars)) {
+                              &orig_word, &word_preedit_chars)) {
           if (p != current_preedit_offset ||
               word_preedit_chars != cur_seg_len) {
             skip_until_preedit_offset =
@@ -310,10 +411,12 @@ EnglishFallbackRewriter::CheckResizeSegmentsRequest(
     }
 
     std::string matched_word;
+    std::string matched_original_word;
     size_t matched_preedit_chars = 0;
     if (!MatchWordAtOffset(composer, current_preedit_offset, total_composed_len,
                            config.english_fallback_min_word_length,
-                           &matched_word, &matched_preedit_chars)) {
+                           &matched_word, &matched_original_word,
+                           &matched_preedit_chars)) {
       current_preedit_offset += cur_seg_len;
       current_seg_idx++;
       continue;
@@ -373,6 +476,7 @@ EnglishFallbackRewriter::CheckResizeSegmentsRequest(
 bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
                                       Segments* segments) const {
   const auto config = GruConfigManager::LoadConfig();
+  MaybeUpdateUserDictionary(config);
   if (!ShouldTriggerFallback(request, *segments, config)) {
     return false;
   }
@@ -406,10 +510,11 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
           continue;
         }
         std::string word;
+        std::string orig_word;
         size_t word_preedit_chars = 0;
         if (MatchWordAtOffset(composer, p, total_composed_len,
                               config.english_fallback_min_word_length, &word,
-                              &word_preedit_chars)) {
+                              &orig_word, &word_preedit_chars)) {
           if (p == current_preedit_offset &&
               word_preedit_chars == cur_seg_len &&
               cur_seg.segment_type() == Segment::FIXED_BOUNDARY) {
@@ -434,10 +539,12 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
     }
 
     std::string matched_word;
+    std::string matched_original_word;
     size_t matched_preedit_chars = 0;
     if (!MatchWordAtOffset(composer, current_preedit_offset, total_composed_len,
                            config.english_fallback_min_word_length,
-                           &matched_word, &matched_preedit_chars)) {
+                           &matched_word, &matched_original_word,
+                           &matched_preedit_chars)) {
       current_preedit_offset += cur_seg_len;
       current_seg_idx++;
       continue;
@@ -495,7 +602,7 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
           Segment* seg = segments->mutable_conversion_segment(current_seg_idx);
           seg->set_key(merged_key);
           seg->clear_candidates();
-          AddEnglishCandidates(matched_word, merged_key, seg);
+          AddEnglishCandidates(matched_word, matched_original_word, merged_key, seg);
 
           if (covered_segments > 1) {
             const size_t raw_idx =
@@ -536,7 +643,7 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
                 segments->mutable_conversion_segment(current_seg_idx);
             seg->set_key(merged_key);
             seg->clear_candidates();
-            AddEnglishCandidates(matched_word, merged_key, seg);
+            AddEnglishCandidates(matched_word, matched_original_word, merged_key, seg);
 
             Segment* extra_seg = segments->insert_segment(raw_start_idx + 1);
             extra_seg->set_key(extra_key);
@@ -557,7 +664,7 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
                 segments->mutable_conversion_segment(current_seg_idx);
             seg->set_key(merged_key);
             seg->clear_candidates();
-            AddEnglishCandidates(matched_word, merged_key, seg);
+            AddEnglishCandidates(matched_word, matched_original_word, merged_key, seg);
 
             if (covered_segments > 2) {
               segments->erase_segments(raw_start_idx + 1, covered_segments - 2);

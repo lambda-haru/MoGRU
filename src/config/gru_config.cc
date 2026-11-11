@@ -778,6 +778,9 @@ GruPenaltyConfig GruConfigManager::GetEffectiveProfileConfig(
     eff.online_learning_weight_decay = p.online_learning_weight_decay;
     eff.enable_english_fallback = p.enable_english_fallback;
     eff.english_fallback_cost_threshold = p.english_fallback_cost_threshold;
+    if (!p.user_english_words.empty()) {
+      eff.user_english_words = p.user_english_words;
+    }
     eff.enable_instant_mode = p.enable_instant_mode;
     eff.instant_learning_rate = p.instant_learning_rate;
     eff.instant_max_weight_delta = p.instant_max_weight_delta;
@@ -800,6 +803,9 @@ GruPenaltyConfig GruConfigManager::GetEffectiveProfileConfig(
     eff.online_learning_weight_decay = p.online_learning_weight_decay;
     eff.enable_english_fallback = p.enable_english_fallback;
     eff.english_fallback_cost_threshold = p.english_fallback_cost_threshold;
+    if (!p.user_english_words.empty()) {
+      eff.user_english_words = p.user_english_words;
+    }
     eff.enable_instant_mode = p.enable_instant_mode;
     eff.instant_learning_rate = p.instant_learning_rate;
     eff.instant_max_weight_delta = p.instant_max_weight_delta;
@@ -1056,6 +1062,10 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       "# 【ライブ変換時の英単語自動フォールバックの有効化】 (初期値: true)\n"
       "enable_live_conversion_english_fallback = %s\n"
       "\n"
+      "# 【ユーザー追加英単語リスト】 (カンマ区切り)\n"
+      "# - 英語フォールバック対象として追加登録する英単語（例: kubernetes, terraform, rebase）\n"
+      "user_english_words = %s\n"
+      "\n"
       "# 【変換正確率統計の記録の有効化】 (初期値: true)\n"
       "# - ライブ変換およびスペースキー変換の正確率を記録して統計ファイルに保存します。\n"
       "enable_conversion_stats = %s\n"
@@ -1115,6 +1125,7 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       config.english_fallback_cost_threshold,
       config.english_fallback_min_word_length,
       config.enable_live_conversion_english_fallback ? "true" : "false",
+      absl::StrJoin(config.user_english_words, ", ").c_str(),
       config.enable_conversion_stats ? "true" : "false",
       config.conversion_stats_path,
       config.enable_conversion_history_log ? "true" : "false",
@@ -1174,6 +1185,10 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
     }
     if (p.english_fallback_cost_threshold != config.english_fallback_cost_threshold) {
       result += absl::StrFormat("english_fallback_cost_threshold = %.1f\n", p.english_fallback_cost_threshold);
+    }
+    if (p.user_english_words != config.user_english_words) {
+      result += absl::StrFormat("user_english_words = %s\n",
+                                absl::StrJoin(p.user_english_words, ", "));
     }
     if (p.enable_instant_mode != config.enable_instant_mode) {
       result += absl::StrFormat("enable_instant_mode = %s\n", p.enable_instant_mode ? "true" : "false");
@@ -1364,6 +1379,12 @@ void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
         "\n# 【ライブ変換時の英単語自動フォールバックの有効化】 (初期値: true)\n"
         "enable_live_conversion_english_fallback = true\n";
   }
+  if (content.find("user_english_words") == std::string::npos) {
+    append_content +=
+        "\n# 【ユーザー追加英単語リスト】 (カンマ区切り)\n"
+        "# - 英語フォールバック対象として追加登録する英単語（例: kubernetes, terraform, rebase）\n"
+        "user_english_words = \n";
+  }
   if (content.find("enable_conversion_stats") == std::string::npos) {
     append_content +=
         "\n# 【変換正確率統計の記録の有効化】 (初期値: true)\n"
@@ -1541,6 +1562,16 @@ void ApplyConfigKeyValue(GruPenaltyConfig* config,
   if (key == "enable_live_conversion_english_fallback") {
     bool b = true;
     if (absl::SimpleAtob(val, &b)) config->enable_live_conversion_english_fallback = b;
+    return;
+  }
+  if (key == "user_english_words") {
+    config->user_english_words.clear();
+    for (absl::string_view w : absl::StrSplit(val, absl::ByAnyChar(",\r\n;"))) {
+      absl::string_view trimmed = absl::StripAsciiWhitespace(w);
+      if (!trimmed.empty()) {
+        config->user_english_words.push_back(std::string(trimmed));
+      }
+    }
     return;
   }
   if (key == "enable_conversion_stats") {
@@ -1817,6 +1848,15 @@ void GruConfigManager::ApplyEnvOverrides(GruPenaltyConfig* config) {
   if (const char* e = std::getenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_ENGLISH_FALLBACK")) {
     bool b = true;
     if (absl::SimpleAtob(e, &b)) config->enable_live_conversion_english_fallback = b;
+  }
+  if (const char* e = std::getenv("MOZC_GRU_USER_ENGLISH_WORDS")) {
+    config->user_english_words.clear();
+    for (absl::string_view w : absl::StrSplit(e, absl::ByAnyChar(",\r\n;"))) {
+      absl::string_view trimmed = absl::StripAsciiWhitespace(w);
+      if (!trimmed.empty()) {
+        config->user_english_words.push_back(std::string(trimmed));
+      }
+    }
   }
   if (const char* e = std::getenv("MOZC_GRU_ENABLE_CONVERSION_STATS")) {
     bool b = true;

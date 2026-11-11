@@ -67,6 +67,29 @@ TEST(EnglishDictionaryTest, BasicAddAndLookup) {
   // min_len threshold
   EXPECT_EQ(dict.LongestPrefixMatch("mergesuru", 6), 0);  // "merge" is len 5 < 6
   EXPECT_EQ(dict.LongestPrefixMatch("mergesuru", 5), 5);
+
+  // Clear
+  dict.Clear();
+  EXPECT_TRUE(dict.empty());
+  EXPECT_EQ(dict.size(), 0);
+  EXPECT_FALSE(dict.HasWord("merge"));
+}
+
+TEST(EnglishDictionaryTest, OriginalCasingPreserved) {
+  EnglishDictionary dict;
+  dict.AddWord("Kubernetes");
+  dict.AddWord("TypeScript");
+
+  EXPECT_EQ(dict.size(), 2);
+  EXPECT_TRUE(dict.HasWord("kubernetes"));
+  EXPECT_TRUE(dict.HasWord("typescript"));
+
+  std::string orig;
+  EXPECT_EQ(dict.LongestPrefixMatch("kubernetesdeploy", 3, &orig), 10);
+  EXPECT_EQ(orig, "Kubernetes");
+
+  EXPECT_EQ(dict.LongestPrefixMatch("typescriptcompile", 3, &orig), 10);
+  EXPECT_EQ(orig, "TypeScript");
 }
 
 TEST(EnglishDictionaryTest, StreamLoad) {

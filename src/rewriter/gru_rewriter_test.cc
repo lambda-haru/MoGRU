@@ -1167,6 +1167,7 @@ TEST_F(GruRewriterTest, GruConfigManagerSaveAndLoadAllSettingsRoundTrip) {
   saved.online_learning_rate = 0.0125;
   saved.online_learning_weight_decay = 0.0025;
   saved.online_learning_save_interval = 12;
+  saved.user_english_words = {"kubernetes", "terraform", "rebase"};
 
   ASSERT_TRUE(config::GruConfigManager::SaveConfig(saved, test_config));
   const GruPenaltyConfig loaded =
@@ -1197,6 +1198,7 @@ TEST_F(GruRewriterTest, GruConfigManagerSaveAndLoadAllSettingsRoundTrip) {
   EXPECT_NEAR(loaded.online_learning_rate, 0.0125, 1e-6);
   EXPECT_NEAR(loaded.online_learning_weight_decay, 0.0025, 1e-6);
   EXPECT_EQ(loaded.online_learning_save_interval, 12);
+  EXPECT_EQ(loaded.user_english_words, saved.user_english_words);
 
   EXPECT_FALSE(
       config::GruConfigManager::IsLiveConversionEnabled(true, test_config));

@@ -34,8 +34,11 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
+#include "absl/base/thread_annotations.h"
 #include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
 #include "composer/composer.h"
 #include "config/gru_config.h"
 #include "converter/segments.h"
@@ -68,7 +71,12 @@ class EnglishFallbackRewriter : public RewriterInterface {
   bool Rewrite(const ConversionRequest& request,
                Segments* segments) const override;
 
+  bool Reload() override;
+
  private:
+  void InitBaseDictionary();
+  void MaybeUpdateUserDictionary(const GruPenaltyConfig& config) const;
+
   bool ShouldTriggerFallback(const ConversionRequest& request,
                              const Segments& segments,
                              const GruPenaltyConfig& config) const;
@@ -76,13 +84,23 @@ class EnglishFallbackRewriter : public RewriterInterface {
   bool MatchWordAtOffset(const composer::ComposerData& composer, size_t offset,
                          size_t total_composed_len, size_t min_word_length,
                          std::string* matched_word,
+                         std::string* matched_original_word,
                          size_t* matched_preedit_chars) const;
 
-  void AddEnglishCandidates(absl::string_view word, absl::string_view key,
+  void AddEnglishCandidates(absl::string_view word,
+                            absl::string_view original_word,
+                            absl::string_view key,
                             Segment* segment) const;
 
   uint16_t unknown_id_ = 0;
-  dictionary::EnglishDictionary dictionary_;
+  bool is_injected_dictionary_ = false;
+
+  mutable absl::Mutex mutex_;
+  dictionary::EnglishDictionary base_dictionary_ ABSL_GUARDED_BY(mutex_);
+  mutable dictionary::EnglishDictionary user_dictionary_ ABSL_GUARDED_BY(mutex_);
+  mutable std::vector<std::string> loaded_user_words_ ABSL_GUARDED_BY(mutex_);
+  mutable int64_t last_user_dict_file_mtime_ ABSL_GUARDED_BY(mutex_) = -1;
+  mutable std::string user_dict_file_path_ ABSL_GUARDED_BY(mutex_);
 };
 
 }  // namespace mozc

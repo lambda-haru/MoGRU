@@ -45,20 +45,25 @@
 namespace mozc::dictionary {
 
 void EnglishDictionary::AddWord(absl::string_view word) {
-  std::string lower = std::string(absl::StripAsciiWhitespace(word));
-  if (lower.empty()) {
+  std::string original = std::string(absl::StripAsciiWhitespace(word));
+  if (original.empty()) {
     return;
   }
   // Verify that all characters are alphabetical or valid punctuation (hyphen/apostrophe).
-  for (char c : lower) {
+  for (char c : original) {
     if (!std::isalpha(static_cast<unsigned char>(c)) && c != '-' && c != '\'') {
       return;
     }
   }
+  std::string lower = original;
   Util::LowerString(&lower);
-  std::string value = lower;
-  trie_.AddEntry(lower, std::move(value));
+  trie_.AddEntry(lower, std::move(original));
   ++word_count_;
+}
+
+void EnglishDictionary::Clear() {
+  trie_ = mozc::Trie<std::string>();
+  word_count_ = 0;
 }
 
 bool EnglishDictionary::LoadFromStream(std::istream &is) {
@@ -102,8 +107,9 @@ bool EnglishDictionary::HasWord(absl::string_view word) const {
   return trie_.LookUp(lower, &dummy);
 }
 
-size_t EnglishDictionary::LongestPrefixMatch(absl::string_view text,
-                                            size_t min_len) const {
+size_t EnglishDictionary::LongestPrefixMatch(
+    absl::string_view text, size_t min_len,
+    std::string* matched_original_word) const {
   if (text.size() < min_len) {
     return 0;
   }
@@ -113,6 +119,9 @@ size_t EnglishDictionary::LongestPrefixMatch(absl::string_view text,
   size_t matched_len = 0;
   if (trie_.LongestMatch(lower, &matched_value, &matched_len)) {
     if (matched_len >= min_len) {
+      if (matched_original_word != nullptr) {
+        *matched_original_word = matched_value;
+      }
       return matched_len;
     }
   }
