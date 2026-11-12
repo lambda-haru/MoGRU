@@ -32,6 +32,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -90,6 +91,9 @@ struct GruPenaltyConfig {
 
   // Profile overrides: profile_name -> profile_specific_config
   std::map<std::string, GruPenaltyConfig> profiles;
+
+  // Profiles explicitly deleted by the user (prevents built-in presets from re-appearing)
+  std::set<std::string> deleted_profiles;
 };
 
 using GruConfig = GruPenaltyConfig;
@@ -147,6 +151,28 @@ class GruConfigManager {
   // Returns built-in default profile configs for presets (business, coding, casual, creative, instant).
   static std::map<std::string, GruPenaltyConfig> GetBuiltinDefaultProfiles(
       const GruPenaltyConfig& base_config = GruPenaltyConfig());
+
+  // Returns an ordered list of available profile names ("default" first, followed by
+  // active built-in presets and user-defined profiles, excluding deleted_profiles).
+  static std::vector<std::string> GetAvailableProfiles(
+      const GruPenaltyConfig& config);
+
+  // Adds a profile (or restores a deleted preset) to `config->profiles`.
+  // Returns false if `profile_name` is empty or resolves to "default".
+  static bool AddProfile(
+      GruPenaltyConfig* config,
+      absl::string_view profile_name,
+      const GruPenaltyConfig* base_profile = nullptr);
+
+  // Deletes a profile (anything other than "default") from `config`, recording it
+  // in `config->deleted_profiles`, resetting `current_profile` to "default" if needed,
+  // cleaning up `app_profile_map` entries pointing to it, and optionally removing
+  // its dedicated user model / history DB files.
+  // Returns false if `profile_name` is empty or resolves to "default".
+  static bool DeleteProfile(
+      GruPenaltyConfig* config,
+      absl::string_view profile_name,
+      bool remove_data_files = false);
 
   // Resolves effective configuration for a given profile by applying profile overrides on top of base_config.
   static GruPenaltyConfig GetEffectiveProfileConfig(

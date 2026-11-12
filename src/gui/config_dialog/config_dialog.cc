@@ -31,6 +31,8 @@
 #include "gui/config_dialog/config_dialog.h"
 
 #include <QFileDialog>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QLocale>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -979,6 +981,8 @@ void ConfigDialog::SetupMogruUi() {
         QString::fromUtf8("コンテキストプロファイル (文脈切り替え)"));
     gruProfileLabel->setText(
         QString::fromUtf8("アクティブプロファイル (current_profile):"));
+    addGruProfileButton->setText(QString::fromUtf8("追加..."));
+    deleteGruProfileButton->setText(QString::fromUtf8("削除"));
     enableAppProfileSwitchingCheckBox->setText(
         QString::fromUtf8("アクティブなアプリケーションに応じたプロファイル自動切り替え"));
     appProfileMapLabel->setText(
@@ -1045,6 +1049,11 @@ void ConfigDialog::SetupMogruUi() {
                    QOverload<int>::of(&QComboBox::currentIndexChanged),
                    this, &ConfigDialog::OnGruProfileChanged);
 
+  QObject::connect(addGruProfileButton, &QPushButton::clicked,
+                   this, &ConfigDialog::AddGruProfile);
+  QObject::connect(deleteGruProfileButton, &QPushButton::clicked,
+                   this, &ConfigDialog::DeleteGruProfile);
+
   QObject::connect(enableAppProfileSwitchingCheckBox, &QCheckBox::toggled,
                    [this](bool checked) {
                      appProfileMapLineEdit->setEnabled(checked);
@@ -1076,6 +1085,7 @@ void ConfigDialog::OnGruProfileChanged(int index) {
   if (index < 0) return;
   const std::string new_profile =
       gruProfileComboBox->itemData(index).toString().toStdString();
+  deleteGruProfileButton->setEnabled(new_profile != "default");
   if (new_profile == current_dialog_profile_) {
     return;
   }
@@ -1092,6 +1102,151 @@ void ConfigDialog::OnGruProfileChanged(int index) {
 
   current_dialog_profile_ = new_profile;
   PopulateWidgetsFromProfile(working_profiles_[new_profile]);
+  EnableApplyButton();
+}
+
+void ConfigDialog::AddGruProfile() {
+  const bool is_ja = (QLocale::system().language() == QLocale::Japanese);
+  bool ok = false;
+  const QString title =
+      is_ja ? QString::fromUtf8("プロファイルの追加")
+            : QString::fromUtf8("Add Profile");
+  const QString label =
+      is_ja ? QString::fromUtf8(
+                  "新しいプロファイル名を入力してください (半角英数字・_・-):\n"
+                  "※現在表示中のプロファイルの設定値を初期値として引き継ぎます。")
+            : QString::fromUtf8(
+                  "Enter new profile name (alphanumeric, '_', '-'):\n"
+                  "* Initial settings will be copied from the currently displayed profile.");
+  const QString input = QInputDialog::getText(
+      this, title, label, QLineEdit::Normal, QString(), &ok);
+  if (!ok || input.trimmed().isEmpty()) {
+    return;
+  }
+
+  const std::string raw_name = input.trimmed().toStdString();
+  const std::string sanitized =
+      config::GruConfigManager::SanitizeProfileName(raw_name);
+  if (sanitized.empty() || sanitized == "default") {
+    const QString warn_msg =
+        is_ja ? QString::fromUtf8(
+                    "無効なプロファイル名です。半角英数字（default 以外）を指定してください。")
+              : QString::fromUtf8(
+                    "Invalid profile name. Please specify an alphanumeric name other than 'default'.");
+    QMessageBox::warning(this, title, warn_msg);
+    return;
+  }
+
+  if (working_profiles_.find(sanitized) != working_profiles_.end()) {
+    const QString warn_msg =
+        is_ja ? QString::fromUtf8("プロファイル「%1」は既に存在します。")
+                    .arg(QString::fromUtf8(sanitized.c_str()))
+              : QString::fromUtf8("Profile '%1' already exists.")
+                    .arg(QString::fromUtf8(sanitized.c_str()));
+    QMessageBox::warning(this, title, warn_msg);
+    return;
+  }
+
+  // Save current widgets to the current profile first
+  SaveWidgetsToProfile(&working_profiles_[current_dialog_profile_]);
+
+  // Initialize new profile from the currently displayed profile's settings
+  GruPenaltyConfig new_cfg = working_profiles_[current_dialog_profile_];
+  new_cfg.current_profile = sanitized;
+  working_profiles_[sanitized] = new_cfg;
+  working_deleted_profiles_.erase(sanitized);
+
+  auto format_profile_label = [is_ja](const std::string& prof_name) -> QString {
+    if (prof_name == "default") {
+      return is_ja ? QString::fromUtf8("標準 (default)")
+                   : QString::fromUtf8("Default (default)");
+    } else if (prof_name == "business") {
+      return is_ja ? QString::fromUtf8("ビジネス (business)")
+                   : QString::fromUtf8("Business (business)");
+    } else if (prof_name == "coding") {
+      return is_ja ? QString::fromUtf8("コーディング (coding)")
+                   : QString::fromUtf8("Coding (coding)");
+    } else if (prof_name == "casual") {
+      return is_ja ? QString::fromUtf8("日常・SNS (casual)")
+                   : QString::fromUtf8("Casual / SNS (casual)");
+    } else if (prof_name == "creative") {
+      return is_ja ? QString::fromUtf8("創作・文芸 (creative)")
+                   : QString::fromUtf8("Creative (creative)");
+    } else if (prof_name == "instant") {
+      return is_ja ? QString::fromUtf8("インスタント (instant)")
+                   : QString::fromUtf8("Instant (instant)");
+    }
+    return QString::fromUtf8(prof_name.c_str());
+  };
+
+  gruProfileComboBox->blockSignals(true);
+  gruProfileComboBox->addItem(format_profile_label(sanitized),
+                              QString::fromUtf8(sanitized.c_str()));
+  const int new_idx = gruProfileComboBox->count() - 1;
+  gruProfileComboBox->setCurrentIndex(new_idx);
+  gruProfileComboBox->blockSignals(false);
+
+  current_dialog_profile_ = sanitized;
+  deleteGruProfileButton->setEnabled(true);
+  PopulateWidgetsFromProfile(working_profiles_[sanitized]);
+  EnableApplyButton();
+}
+
+void ConfigDialog::DeleteGruProfile() {
+  const int prof_idx = gruProfileComboBox->currentIndex();
+  if (prof_idx < 0) return;
+  const std::string target_prof =
+      gruProfileComboBox->itemData(prof_idx).toString().toStdString();
+  if (target_prof.empty() || target_prof == "default") {
+    return;
+  }
+
+  const bool is_ja = (QLocale::system().language() == QLocale::Japanese);
+  const QString prompt =
+      is_ja ? QString::fromUtf8(
+                  "プロファイル「%1」を削除しますか？\n"
+                  "（このプロファイル専用の学習データ・履歴ファイルも削除されます）")
+                  .arg(QString::fromUtf8(target_prof.c_str()))
+            : QString::fromUtf8(
+                  "Do you want to delete profile '%1'?\n"
+                  "(Dedicated personalized user model and history files for this profile will also be deleted.)")
+                  .arg(QString::fromUtf8(target_prof.c_str()));
+  if (QMessageBox::Ok !=
+      QMessageBox::question(this, windowTitle(), prompt,
+                            QMessageBox::Ok | QMessageBox::Cancel,
+                            QMessageBox::Cancel)) {
+    return;
+  }
+
+  // Delete dedicated data files and clean up app_profile_map using GruConfigManager::DeleteProfile
+  GruPenaltyConfig temp_cfg = cached_gru_config_;
+  temp_cfg.gru_user_model_path =
+      gruUserModelPathLineEdit->text().trimmed().toStdString();
+  temp_cfg.app_profile_map =
+      appProfileMapLineEdit->text().trimmed().toStdString();
+  config::GruConfigManager::DeleteProfile(&temp_cfg, target_prof,
+                                          /*remove_data_files=*/true);
+  appProfileMapLineEdit->setText(
+      QString::fromUtf8(temp_cfg.app_profile_map.c_str()));
+
+  working_profiles_.erase(target_prof);
+  working_deleted_profiles_.insert(target_prof);
+
+  gruProfileComboBox->blockSignals(true);
+  gruProfileComboBox->removeItem(prof_idx);
+  int default_idx = 0;
+  for (int i = 0; i < gruProfileComboBox->count(); ++i) {
+    if (gruProfileComboBox->itemData(i).toString().toStdString() == "default") {
+      default_idx = i;
+      break;
+    }
+  }
+  gruProfileComboBox->setCurrentIndex(default_idx);
+  gruProfileComboBox->blockSignals(false);
+
+  current_dialog_profile_ = "default";
+  deleteGruProfileButton->setEnabled(false);
+  PopulateWidgetsFromProfile(working_profiles_["default"]);
   EnableApplyButton();
 }
 
@@ -1215,37 +1370,31 @@ void ConfigDialog::PopulateWidgetsFromProfile(const GruPenaltyConfig& p) {
 void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
   cached_gru_config_ = gru_config;
   working_profiles_.clear();
+  working_deleted_profiles_ = gru_config.deleted_profiles;
 
   // 1. Initialize default profile working copy from base config
   working_profiles_["default"] = gru_config;
   working_profiles_["default"].current_profile = "default";
 
-  // 2. Initialize builtin profiles and custom profiles
-  const auto builtin = config::GruConfigManager::GetBuiltinDefaultProfiles(gru_config);
+  // 2. Initialize available profiles (builtin presets not deleted + custom profiles)
+  const std::vector<std::string> avail_profiles =
+      config::GruConfigManager::GetAvailableProfiles(gru_config);
   std::set<std::string> known_profiles;
-  known_profiles.insert("default");
-  for (const auto& kv : builtin) {
-    known_profiles.insert(kv.first);
-    working_profiles_[kv.first] =
-        config::GruConfigManager::GetEffectiveProfileConfig(gru_config, kv.first);
-  }
-  for (const auto& kv : gru_config.profiles) {
-    known_profiles.insert(kv.first);
-    working_profiles_[kv.first] =
-        config::GruConfigManager::GetEffectiveProfileConfig(gru_config, kv.first);
-  }
-  if (!gru_config.current_profile.empty()) {
-    known_profiles.insert(gru_config.current_profile);
-    if (working_profiles_.find(gru_config.current_profile) == working_profiles_.end()) {
-      working_profiles_[gru_config.current_profile] =
-          config::GruConfigManager::GetEffectiveProfileConfig(
-              gru_config, gru_config.current_profile);
+  for (const auto& prof_name : avail_profiles) {
+    known_profiles.insert(prof_name);
+    if (prof_name != "default") {
+      working_profiles_[prof_name] =
+          config::GruConfigManager::GetEffectiveProfileConfig(gru_config, prof_name);
     }
   }
 
-  const std::string active_prof =
+  std::string active_prof =
       gru_config.current_profile.empty() ? "default" : gru_config.current_profile;
+  if (known_profiles.find(active_prof) == known_profiles.end()) {
+    active_prof = "default";
+  }
   current_dialog_profile_ = active_prof;
+  deleteGruProfileButton->setEnabled(active_prof != "default");
 
   gruProfileComboBox->blockSignals(true);
   gruProfileComboBox->clear();
@@ -1405,7 +1554,9 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
     cfg.instant_max_weight_delta = def.instant_max_weight_delta;
   }
 
-  // Update cfg.profiles with non-default profiles
+  // Update cfg.profiles with non-default profiles and record deleted profiles
+  cfg.profiles.clear();
+  cfg.deleted_profiles = working_deleted_profiles_;
   for (const auto& kv : wp) {
     if (kv.first == "default") continue;
     cfg.profiles[kv.first] = kv.second;

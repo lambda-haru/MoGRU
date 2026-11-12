@@ -37,6 +37,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 
 #include "client/client_interface.h"
@@ -84,6 +85,8 @@ class ConfigDialog : public QDialog, private Ui::ConfigDialog {
   virtual void RefreshConversionStatsUi();
   virtual void ResetConversionStats();
   virtual void OnGruProfileChanged(int index);
+  virtual void AddGruProfile();
+  virtual void DeleteGruProfile();
 
  protected:
   bool eventFilter(QObject* obj, QEvent* event) override;
@@ -123,6 +126,7 @@ class ConfigDialog : public QDialog, private Ui::ConfigDialog {
   GruPenaltyConfig cached_gru_config_;
   std::string current_dialog_profile_ = "default";
   std::map<std::string, GruPenaltyConfig> working_profiles_;
+  std::set<std::string> working_deleted_profiles_;
 };
 
 }  // namespace gui

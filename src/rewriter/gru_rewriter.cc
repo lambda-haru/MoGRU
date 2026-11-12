@@ -875,12 +875,27 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
                   absl::StrFormat("アプリ「%s」使用時にプロファイル [%s] を自動適用",
                                   current_app, prof));
         }
-        add_cmd("MoGRU: プロファイル切替 [coding]", "プログラミング・技術向けに切替");
-        add_cmd("MoGRU: プロファイル切替 [business]", "公用文・ビジネス向けに切替");
-        add_cmd("MoGRU: プロファイル切替 [casual]", "日常会話・SNS向けに切替");
-        add_cmd("MoGRU: プロファイル切替 [creative]", "小説・創作向けに切替");
-        add_cmd("MoGRU: プロファイル切替 [instant]", "インスタント速習プロファイルに切替");
-        add_cmd("MoGRU: プロファイル切替 [default]", "標準プロファイルに切替");
+        std::vector<std::string> avail_profiles;
+        {
+          absl::MutexLock l(mutex_);
+          avail_profiles =
+              config::GruConfigManager::GetAvailableProfiles(root_penalty_config_);
+        }
+        auto profile_desc = [](const std::string& p) -> std::string {
+          if (p == "coding") return "プログラミング・技術向けに切替";
+          if (p == "business") return "公用文・ビジネス向けに切替";
+          if (p == "casual") return "日常会話・SNS向けに切替";
+          if (p == "creative") return "小説・創作向けに切替";
+          if (p == "instant") return "インスタント速習プロファイルに切替";
+          if (p == "default") return "標準プロファイルに切替";
+          return absl::StrFormat("カスタムプロファイル [%s] に切替", p);
+        };
+        for (const auto& p : avail_profiles) {
+          if (p == "default") continue;
+          add_cmd(absl::StrFormat("MoGRU: プロファイル切替 [%s]", p),
+                  profile_desc(p));
+        }
+        add_cmd("MoGRU: プロファイル切替 [default]", profile_desc("default"));
       }
       if (match_instant) {
         if (!penalty_config.enable_instant_mode) {

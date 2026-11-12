@@ -1634,6 +1634,62 @@ TEST_F(GruRewriterTest, AppAwareAutomaticProfileSwitching) {
   }
 }
 
+TEST_F(GruRewriterTest, CustomProfileAddAndDeleteRoundTripAndInlineCommands) {
+  const std::string config_path =
+      config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+  GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
+
+  // 1. "default" cannot be deleted
+  EXPECT_FALSE(config::GruConfigManager::DeleteProfile(&cfg, "default"));
+  EXPECT_FALSE(config::GruConfigManager::AddProfile(&cfg, "default"));
+  EXPECT_FALSE(config::GruConfigManager::AddProfile(&cfg, ""));
+
+  // 2. Add a custom profile "novel" (with default parameters) and delete builtin "business"
+  EXPECT_TRUE(config::GruConfigManager::AddProfile(&cfg, "novel"));
+  cfg.current_profile = "business";
+  cfg.app_profile_map = "code:coding,slack:business,writer:novel";
+  EXPECT_TRUE(config::GruConfigManager::DeleteProfile(&cfg, "business"));
+
+  // Deleting active profile resets current_profile to "default" and cleans app_profile_map
+  EXPECT_EQ(cfg.current_profile, "default");
+  EXPECT_EQ(cfg.app_profile_map, "code:coding,writer:novel");
+
+  ASSERT_TRUE(config::GruConfigManager::SaveConfig(cfg, config_path));
+  const GruPenaltyConfig loaded = config::GruConfigManager::LoadConfig(config_path);
+
+  // 3. Verify available profiles after reload: "novel" exists, "business" is gone
+  const std::vector<std::string> avail =
+      config::GruConfigManager::GetAvailableProfiles(loaded);
+  EXPECT_NE(std::find(avail.begin(), avail.end(), "default"), avail.end());
+  EXPECT_NE(std::find(avail.begin(), avail.end(), "novel"), avail.end());
+  EXPECT_EQ(std::find(avail.begin(), avail.end(), "business"), avail.end());
+  EXPECT_EQ(config::GruConfigManager::DetectProfileFromApplication("slack", loaded), "");
+  EXPECT_EQ(config::GruConfigManager::DetectProfileFromApplication("writer", loaded), "novel");
+
+  // 4. Verify inline command candidates reflect added "novel" and omit deleted "business"
+  rewriter_->Reload();
+  ConversionRequest request;
+  Segments segments;
+  Segment* seg = segments.add_segment();
+  seg->set_key("プロファイル");
+  AddCandidate("プロファイル", "プロファイル", 1000, seg);
+
+  EXPECT_TRUE(rewriter_->Rewrite(request, &segments));
+  bool found_novel_cmd = false;
+  bool found_business_cmd = false;
+  for (size_t i = 1; i < seg->candidates_size(); ++i) {
+    if (seg->candidate(i).value == "MoGRU: プロファイル切替 [novel]") {
+      found_novel_cmd = true;
+      EXPECT_EQ(seg->candidate(i).description, "カスタムプロファイル [novel] に切替");
+    }
+    if (seg->candidate(i).value == "MoGRU: プロファイル切替 [business]") {
+      found_business_cmd = true;
+    }
+  }
+  EXPECT_TRUE(found_novel_cmd);
+  EXPECT_FALSE(found_business_cmd);
+}
+
 }  // namespace
 }  // namespace mozc
 

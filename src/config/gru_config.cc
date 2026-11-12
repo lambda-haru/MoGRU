@@ -558,6 +558,13 @@ std::string GruConfigManager::ResolveProfileUserModelFilePath(
         break;
       }
     }
+    if (!stripped && !prof.empty()) {
+      const std::string custom_suffix = "_" + prof;
+      if (absl::EndsWith(stem, custom_suffix)) {
+        stem = stem.substr(0, stem.size() - custom_suffix.size());
+        stripped = true;
+      }
+    }
   }
 
   std::string new_basename;
@@ -724,7 +731,6 @@ std::map<std::string, GruPenaltyConfig> GruConfigManager::GetBuiltinDefaultProfi
   casual.hiragana_multiplier = 1.00;
   casual.online_learning_rate = 0.10000;
   map["casual"] = casual;
-  map["sns"] = casual;
 
   // 4. Creative profile: literary nuance, higher GRU score weight, responsive resegmentation
   GruPenaltyConfig creative = base_config;
@@ -747,10 +753,119 @@ std::map<std::string, GruPenaltyConfig> GruConfigManager::GetBuiltinDefaultProfi
   return map;
 }
 
+std::vector<std::string> GruConfigManager::GetAvailableProfiles(
+    const GruPenaltyConfig& config) {
+  std::vector<std::string> result;
+  std::set<std::string> seen;
+  auto add_prof = [&](const std::string& name) {
+    if (name.empty()) return;
+    if (name != "default" && config.deleted_profiles.count(name) > 0) return;
+    if (seen.insert(name).second) {
+      result.push_back(name);
+    }
+  };
+
+  add_prof("default");
+  for (const char* preset :
+       {"business", "coding", "casual", "creative", "instant"}) {
+    add_prof(preset);
+  }
+  for (const auto& kv : config.profiles) {
+    add_prof(kv.first);
+  }
+  if (!config.current_profile.empty()) {
+    add_prof(SanitizeProfileName(config.current_profile));
+  }
+  return result;
+}
+
+bool GruConfigManager::AddProfile(
+    GruPenaltyConfig* config,
+    absl::string_view profile_name,
+    const GruPenaltyConfig* base_profile) {
+  if (config == nullptr) return false;
+  const std::string prof = SanitizeProfileName(profile_name);
+  if (prof.empty() || prof == "default") {
+    return false;
+  }
+  config->deleted_profiles.erase(prof);
+  if (base_profile != nullptr) {
+    GruPenaltyConfig p = *base_profile;
+    p.current_profile = prof;
+    p.profiles.clear();
+    p.deleted_profiles.clear();
+    config->profiles[prof] = p;
+  } else {
+    const auto builtin = GetBuiltinDefaultProfiles(*config);
+    auto it_b = builtin.find(prof);
+    if (it_b != builtin.end()) {
+      config->profiles[prof] = it_b->second;
+    } else if (config->profiles.find(prof) == config->profiles.end()) {
+      GruPenaltyConfig p = *config;
+      p.current_profile = prof;
+      p.profiles.clear();
+      p.deleted_profiles.clear();
+      config->profiles[prof] = p;
+    }
+  }
+  return true;
+}
+
+bool GruConfigManager::DeleteProfile(
+    GruPenaltyConfig* config,
+    absl::string_view profile_name,
+    bool remove_data_files) {
+  if (config == nullptr) return false;
+  const std::string prof = SanitizeProfileName(profile_name);
+  if (prof.empty() || prof == "default") {
+    return false;
+  }
+  config->profiles.erase(prof);
+  config->deleted_profiles.insert(prof);
+  if (SanitizeProfileName(config->current_profile) == prof) {
+    config->current_profile = "default";
+  }
+
+  if (!config->app_profile_map.empty()) {
+    std::vector<absl::string_view> pairs =
+        absl::StrSplit(config->app_profile_map, ',', absl::SkipEmpty());
+    std::vector<std::string> remaining;
+    for (auto pair : pairs) {
+      std::pair<absl::string_view, absl::string_view> kv =
+          absl::StrSplit(pair, ':');
+      std::string key = std::string(absl::StripAsciiWhitespace(kv.first));
+      std::string val = std::string(absl::StripAsciiWhitespace(kv.second));
+      if (!key.empty() && !val.empty() && SanitizeProfileName(val) != prof) {
+        remaining.push_back(absl::StrCat(key, ":", val));
+      }
+    }
+    config->app_profile_map = absl::StrJoin(remaining, ",");
+  }
+
+  if (remove_data_files) {
+    std::error_code ec;
+    const std::string model_path =
+        ResolveProfileUserModelFilePath(prof, config->gru_user_model_path);
+    if (!model_path.empty()) {
+      std::filesystem::remove(model_path, ec);
+    }
+    for (const char* uri :
+         {"user://segment.db", "user://boundary.db", "user://.history.db"}) {
+      const std::string db_path = ResolveProfileHistoryFileName(uri, prof);
+      if (!db_path.empty()) {
+        std::filesystem::remove(db_path, ec);
+      }
+    }
+  }
+
+  return true;
+}
+
 GruPenaltyConfig GruConfigManager::GetEffectiveProfileConfig(
     const GruPenaltyConfig& root_config,
     const std::string& profile_name) {
-  if (profile_name.empty() || profile_name == "default") {
+  if (profile_name.empty() || profile_name == "default" ||
+      root_config.deleted_profiles.count(profile_name) > 0) {
     GruPenaltyConfig eff = root_config;
     eff.current_profile = "default";
     eff.gru_user_model_path = ResolveProfileUserModelFilePath("default", root_config.gru_user_model_path);
@@ -829,6 +944,9 @@ std::string GruConfigManager::DetectProfileFromApplication(
     std::string key = std::string(absl::StripAsciiWhitespace(kv.first));
     std::string val = std::string(absl::StripAsciiWhitespace(kv.second));
     if (!key.empty() && !val.empty()) {
+      if (config.deleted_profiles.count(val) > 0) {
+        continue;
+      }
       std::string lower_key = absl::AsciiStrToLower(key);
       if (lower_app.find(lower_key) != std::string::npos) {
         return val;
@@ -1136,13 +1254,25 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       config.instant_learning_rate,
       config.instant_max_weight_delta);
 
-  std::map<std::string, GruPenaltyConfig> effective_profiles =
-      GetBuiltinDefaultProfiles(config);
+  std::map<std::string, GruPenaltyConfig> effective_profiles;
+  for (const auto& kv : GetBuiltinDefaultProfiles(config)) {
+    if (config.deleted_profiles.count(kv.first) == 0) {
+      effective_profiles[kv.first] = kv.second;
+    }
+  }
   for (const auto& kv : config.profiles) {
-    effective_profiles[kv.first] = kv.second;
+    if (kv.first != "default" && config.deleted_profiles.count(kv.first) == 0) {
+      effective_profiles[kv.first] = kv.second;
+    }
   }
 
   std::string result = base_ini;
+  if (!config.deleted_profiles.empty()) {
+    result += absl::StrFormat(
+        "\n# 【削除された組み込みプロファイル一覧】\n"
+        "deleted_profiles = %s\n",
+        absl::StrJoin(config.deleted_profiles, ","));
+  }
   result +=
       "\n# ==============================================================================\n"
       "# プロファイル別オーバーライド設定\n"
@@ -1174,14 +1304,30 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
     if (p.alphabet_multiplier != config.alphabet_multiplier) {
       result += absl::StrFormat("alphabet_multiplier = %.2f\n", p.alphabet_multiplier);
     }
+    if (p.enable_resegmentation != config.enable_resegmentation) {
+      result += absl::StrFormat("enable_resegmentation = %s\n",
+                                p.enable_resegmentation ? "true" : "false");
+    }
     if (p.resegment_threshold != config.resegment_threshold) {
       result += absl::StrFormat("resegment_threshold = %.1f\n", p.resegment_threshold);
+    }
+    if (p.enable_online_learning != config.enable_online_learning) {
+      result += absl::StrFormat("enable_online_learning = %s\n",
+                                p.enable_online_learning ? "true" : "false");
+    }
+    if (p.online_learning_mode != config.online_learning_mode) {
+      result += absl::StrFormat("online_learning_mode = %s\n",
+                                p.online_learning_mode);
     }
     if (p.online_learning_rate != config.online_learning_rate) {
       result += absl::StrFormat("online_learning_rate = %.5f\n", p.online_learning_rate);
     }
     if (p.online_learning_weight_decay != config.online_learning_weight_decay) {
       result += absl::StrFormat("online_learning_weight_decay = %.5f\n", p.online_learning_weight_decay);
+    }
+    if (p.enable_english_fallback != config.enable_english_fallback) {
+      result += absl::StrFormat("enable_english_fallback = %s\n",
+                                p.enable_english_fallback ? "true" : "false");
     }
     if (p.english_fallback_cost_threshold != config.english_fallback_cost_threshold) {
       result += absl::StrFormat("english_fallback_cost_threshold = %.1f\n", p.english_fallback_cost_threshold);
@@ -1610,6 +1756,18 @@ void ApplyConfigKeyValue(GruPenaltyConfig* config,
     config->app_profile_map = std::string(val);
     return;
   }
+  if (key == "deleted_profiles") {
+    config->deleted_profiles.clear();
+    for (absl::string_view item : absl::StrSplit(val, ',', absl::SkipEmpty())) {
+      const std::string prof =
+          GruConfigManager::SanitizeProfileName(absl::StripAsciiWhitespace(item));
+      if (!prof.empty() && prof != "default") {
+        config->deleted_profiles.insert(prof);
+        config->profiles.erase(prof);
+      }
+    }
+    return;
+  }
   if (key == "enable_instant_mode") {
     bool b = false;
     if (absl::SimpleAtob(val, &b)) config->enable_instant_mode = b;
@@ -1684,13 +1842,25 @@ GruPenaltyConfig GruConfigManager::ParseConfigFile(
     if (sv.front() == '[' && sv.back() == ']') {
       std::string sec = std::string(absl::StripAsciiWhitespace(sv.substr(1, sv.size() - 2)));
       if (absl::StartsWith(sec, "profile.")) {
-        active_section = sec.substr(8);
+        active_section = GruConfigManager::SanitizeProfileName(sec.substr(8));
       } else if (absl::StartsWith(sec, "profile:")) {
-        active_section = sec.substr(8);
+        active_section = GruConfigManager::SanitizeProfileName(sec.substr(8));
       } else if (sec == "default" || sec == "main" || sec == "root") {
         active_section = "";
       } else {
-        active_section = sec;
+        active_section = GruConfigManager::SanitizeProfileName(sec);
+      }
+      if (active_section == "default") {
+        active_section = "";
+      }
+      if (!active_section.empty()) {
+        config.deleted_profiles.erase(active_section);
+        if (config.profiles.find(active_section) == config.profiles.end()) {
+          config.profiles[active_section] = config;
+          config.profiles[active_section].current_profile = active_section;
+          config.profiles[active_section].profiles.clear();
+          config.profiles[active_section].deleted_profiles.clear();
+        }
       }
       continue;
     }

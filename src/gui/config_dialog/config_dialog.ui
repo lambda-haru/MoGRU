@@ -1767,7 +1767,32 @@
                  </widget>
                 </item>
                 <item row="0" column="1">
-                 <widget class="QComboBox" name="gruProfileComboBox"/>
+                 <layout class="QHBoxLayout" name="gruProfileSelectLayout">
+                  <item>
+                   <widget class="QComboBox" name="gruProfileComboBox">
+                    <property name="sizePolicy">
+                     <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                      <horstretch>1</horstretch>
+                      <verstretch>0</verstretch>
+                     </sizepolicy>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="addGruProfileButton">
+                    <property name="text">
+                     <string>Add...</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="deleteGruProfileButton">
+                    <property name="text">
+                     <string>Delete</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
                 </item>
                 <item row="1" column="0" colspan="2">
                  <widget class="QCheckBox" name="enableAppProfileSwitchingCheckBox">
