@@ -41,6 +41,7 @@
 #include "absl/log/check.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
+#include "absl/types/span.h"
 #include "composer/char_chunk.h"
 #include "composer/composition_input.h"
 #include "composer/table.h"
@@ -202,6 +203,11 @@ class Composition final {
   std::shared_ptr<const Table> table_for_testing() const { return table_; }
   const CharChunkList& chunks() const { return chunks_; }
   Transliterators::Transliterator input_t12r() const { return input_t12r_; }
+
+  // Separates Romaji chunks that span any byte offset in `raw_boundaries`
+  // so that characters before the boundary are finalized before characters
+  // after it are inserted. Returns true if any chunk was modified.
+  bool SeparateChunksAtRawBoundaries(absl::Span<const size_t> raw_boundaries);
 
   friend bool operator==(const Composition& lhs, const Composition& rhs) {
     return std::tie(lhs.table_, lhs.chunks_, lhs.input_t12r_) ==

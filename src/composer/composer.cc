@@ -444,6 +444,36 @@ void GetTransliterations(const Composition& composition,
   GetSubTransliterations(composition, 0, composition.GetLength(), t13ns);
 }
 }  // namespace common
+
+std::vector<ChunkSpan> BuildChunkSpans(const Composition& composition) {
+  std::vector<ChunkSpan> spans;
+  const CharChunkList& chunks = composition.chunks();
+  spans.reserve(chunks.size());
+  size_t preedit_offset = 0;
+  size_t raw_offset = 0;
+  for (const CharChunk& chunk : chunks) {
+    const size_t preedit_len = chunk.GetLength(Transliterators::LOCAL);
+    const size_t raw_len = chunk.raw().size();
+    const Transliterators::Transliterator t12r =
+        chunk.GetTransliterator(Transliterators::LOCAL);
+    const bool is_romaji =
+        (chunk.attributes() & NO_TRANSLITERATION) == 0 &&
+        (t12r == Transliterators::HIRAGANA ||
+         t12r == Transliterators::FULL_KATAKANA ||
+         t12r == Transliterators::HALF_KATAKANA);
+    spans.push_back(ChunkSpan{
+        .preedit_start = preedit_offset,
+        .preedit_len = preedit_len,
+        .raw_start = raw_offset,
+        .raw_len = raw_len,
+        .raw = std::string(chunk.raw()),
+        .is_romaji = is_romaji,
+    });
+    preedit_offset += preedit_len;
+    raw_offset += raw_len;
+  }
+  return spans;
+}
 }  // namespace
 
 std::shared_ptr<const commands::Request> GetSharedDefaultRequest() {
@@ -1385,6 +1415,27 @@ bool Composer::TransformCharactersForNumbers(std::string* query) {
 }
 
 void Composer::SetNewInput() { is_new_input_ = true; }
+
+std::vector<ChunkSpan> ComposerData::GetChunkSpans() const {
+  return BuildChunkSpans(composition_);
+}
+
+std::vector<ChunkSpan> Composer::GetChunkSpans() const {
+  return BuildChunkSpans(composition_);
+}
+
+bool Composer::SeparateChunksAtRawBoundaries(
+    absl::Span<const size_t> raw_boundaries) {
+  const size_t old_length = composition_.GetLength();
+  if (!composition_.SeparateChunksAtRawBoundaries(raw_boundaries)) {
+    return false;
+  }
+  const size_t new_length = composition_.GetLength();
+  if (position_ >= old_length || position_ > new_length) {
+    position_ = new_length;
+  }
+  return true;
+}
 
 bool Composer::IsToggleable() const {
   // When |is_new_input_| is true, a new chunk is always created and, hence, key

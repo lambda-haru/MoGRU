@@ -1826,6 +1826,11 @@ mozc_cc_library(
         ":embedded_english_dictionary_data",
     ],
     hdrs = ["english_fallback_rewriter.h"],
+    visibility = [
+        "//engine:__pkg__",
+        "//rewriter:__pkg__",
+        "//session:__pkg__",
+    ],
     data = [
         "//data/english:google_10000_english",
     ],

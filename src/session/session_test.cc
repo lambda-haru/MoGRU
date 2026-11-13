@@ -10586,5 +10586,142 @@ TEST_F(SessionTest, MultiSegmentSubmitCandidate) {
   EXPECT_EQ(command.output().result().value(), "脱ぐ");
 }
 
+TEST_F(SessionTest, CrossBoundaryEnglishFallbackSyncAndCommitSegment) {
+  MockEngine engine;
+  std::shared_ptr<MockConverter> converter = CreateEngineConverterMock(&engine);
+  Session session(engine);
+  InitSessionToPrecomposition(&session);
+
+  commands::Command command;
+  InsertCharacterChars("wordapuri", &session, &command);
+  ASSERT_EQ(GetComposition(command), "をｒだぷり");
+
+  Segments high_cost_segments;
+  {
+    Segment* seg = high_cost_segments.add_segment();
+    seg->set_key("をrだぷり");
+    converter::Candidate* cand = seg->add_candidate();
+    cand->key = "をrだぷり";
+    cand->content_key = "をrだぷり";
+    cand->value = "をrだぷり";
+    cand->content_value = "をrだぷり";
+    cand->cost = 30000;
+    FillT13Ns(CreateConversionRequest(session), &high_cost_segments);
+  }
+
+  Segments separated_segments;
+  {
+    Segment* seg0 = separated_segments.add_segment();
+    seg0->set_key("をrd");
+    converter::Candidate* cand0 = seg0->add_candidate();
+    cand0->key = "をrd";
+    cand0->content_key = "をrd";
+    cand0->value = "word";
+    cand0->content_value = "word";
+    cand0->cost = 25000;
+
+    Segment* seg1 = separated_segments.add_segment();
+    seg1->set_key("あぷり");
+    converter::Candidate* cand1 = seg1->add_candidate();
+    cand1->key = "あぷり";
+    cand1->content_key = "あぷり";
+    cand1->value = "アプリ";
+    cand1->content_value = "アプリ";
+    cand1->cost = 3000;
+    FillT13Ns(CreateConversionRequest(session), &separated_segments);
+  }
+
+  {
+    ::testing::InSequence seq;
+    EXPECT_CALL(*converter, StartConversion(_, _))
+        .WillOnce([&](const ConversionRequest& req, Segments* segs) {
+          EXPECT_EQ(req.composer().GetQueryForConversion(), "をrだぷり");
+          *segs = high_cost_segments;
+          return true;
+        });
+    EXPECT_CALL(*converter, StartConversion(_, _))
+        .WillOnce([&](const ConversionRequest& req, Segments* segs) {
+          EXPECT_EQ(req.composer().GetQueryForConversion(), "をrdあぷり");
+          *segs = separated_segments;
+          return true;
+        });
+  }
+
+  command.Clear();
+  ASSERT_TRUE(session.Convert(&command));
+  ASSERT_TRUE(command.output().has_preedit());
+  ASSERT_EQ(command.output().preedit().segment_size(), 2);
+  EXPECT_EQ(command.output().preedit().segment(0).value(), "word");
+  EXPECT_EQ(command.output().preedit().segment(1).value(), "アプリ");
+  // Composer in Session's context must also be separated.
+  EXPECT_EQ(session.context().composer().GetQueryForConversion(), "をrdあぷり");
+
+  // Commit the first segment ("をrd" -> "word").
+  Segments committed_segments = separated_segments;
+  committed_segments.mutable_segment(0)->set_segment_type(Segment::SUBMITTED);
+  EXPECT_CALL(*converter, CommitSegments(_, _))
+      .WillOnce(DoAll(SetArgPointee<0>(committed_segments), Return(true)));
+
+  command.Clear();
+  ASSERT_TRUE(session.CommitSegment(&command));
+  ASSERT_TRUE(command.output().has_result());
+  EXPECT_EQ(command.output().result().value(), "word");
+  ASSERT_TRUE(command.output().has_preedit());
+  ASSERT_EQ(command.output().preedit().segment_size(), 1);
+  EXPECT_EQ(command.output().preedit().segment(0).value(), "アプリ");
+
+  // Cancel conversion on the remaining segment: Composer should cleanly show
+  // "あぷり" (NOT "だぷり").
+  command.Clear();
+  ASSERT_TRUE(session.ConvertCancel(&command));
+  ASSERT_TRUE(command.output().has_preedit());
+  EXPECT_EQ(command.output().preedit().segment_size(), 1);
+  EXPECT_EQ(command.output().preedit().segment(0).value(), "あぷり");
+}
+
+TEST_F(SessionTest, CrossBoundaryEnglishFallbackWithMockDataEngine) {
+  Session session(*mock_data_engine_);
+  InitSessionToPrecomposition(&session);
+
+  commands::Command command;
+  InsertCharacterChars("wordapuri", &session, &command);
+  ASSERT_EQ(GetComposition(command), "をｒだぷり");
+
+  command.Clear();
+  ASSERT_TRUE(session.Convert(&command));
+  ASSERT_TRUE(command.output().has_preedit());
+  ASSERT_GE(command.output().preedit().segment_size(), 2);
+  EXPECT_EQ(command.output().preedit().segment(0).value(), "word");
+  EXPECT_EQ(session.context().composer().GetQueryForConversion(), "をrdあぷり");
+
+  // Commit first segment ("word") and cancel the rest to ensure composer tracks
+  // "あぷり" cleanly.
+  command.Clear();
+  ASSERT_TRUE(session.CommitSegment(&command));
+  ASSERT_TRUE(command.output().has_result());
+  EXPECT_EQ(command.output().result().value(), "word");
+
+  command.Clear();
+  ASSERT_TRUE(session.ConvertCancel(&command));
+  ASSERT_TRUE(command.output().has_preedit());
+  EXPECT_EQ(command.output().preedit().segment(0).value(), "あぷり");
+
+  // Commit everything to clear state, then check normal Japanese words with
+  // dictionary-matching prefixes do NOT get falsely split.
+  command.Clear();
+  session.Commit(&command);
+
+  for (absl::string_view jp_input : {"mainichi", "tenki", "kita"}) {
+    InsertCharacterChars(jp_input, &session, &command);
+    const std::string expected_hiragana = GetComposition(command);
+    command.Clear();
+    ASSERT_TRUE(session.Convert(&command));
+    EXPECT_EQ(session.context().composer().GetQueryForConversion(),
+              expected_hiragana);
+    command.Clear();
+    session.Commit(&command);
+  }
+}
+
 }  // namespace session
 }  // namespace mozc

@@ -56,6 +56,15 @@ namespace composer {
 
 std::shared_ptr<const commands::Request> GetSharedDefaultRequest();
 
+struct ChunkSpan {
+  size_t preedit_start = 0;
+  size_t preedit_len = 0;
+  size_t raw_start = 0;
+  size_t raw_len = 0;
+  std::string raw;
+  bool is_romaji = false;
+};
+
 // ComposerData is a data structure that represents the current state of the
 // composer. It is used by Converter, Predictor and Rewriters as a const
 // object.
@@ -116,6 +125,10 @@ class ComposerData {
                               transliteration::Transliterations* t13ns) const;
 
   absl::string_view source_text() const { return source_text_; }
+
+  const Composition& composition() const { return composition_; }
+
+  std::vector<ChunkSpan> GetChunkSpans() const;
 
  private:
   // Composition copied from the Composer as a snapshot.
@@ -349,6 +362,14 @@ class Composer final {
   // By calling this method, next inserted character will introduce
   // new chunk if the character has NewChunk attribute.
   void SetNewInput();
+
+  // Separates Romaji chunks that span any raw byte offset in `raw_boundaries`.
+  // Returns true if any chunk was modified.
+  bool SeparateChunksAtRawBoundaries(absl::Span<const size_t> raw_boundaries);
+
+  const Composition& composition() const { return composition_; }
+
+  std::vector<ChunkSpan> GetChunkSpans() const;
 
   // Returns true when the current character at cursor position is toggleable.
   bool IsToggleable() const;

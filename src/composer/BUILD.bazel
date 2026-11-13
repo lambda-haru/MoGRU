@@ -355,6 +355,7 @@ mozc_cc_library(
         ":transliterators",
         "//base:util",
         "//base:vlog",
+        "//base/strings:unicode",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:btree",
         "@com_google_absl//absl/log",
@@ -362,6 +363,7 @@ mozc_cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
     ],
 )
 

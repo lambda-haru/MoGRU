@@ -5675,5 +5675,142 @@ TEST_F(EngineConverterTest, ConversionStatsLiveAndSpaceRecording) {
   std::filesystem::remove(tmp_stats_path);
 }
 
+TEST_F(EngineConverterTest, CrossBoundaryEnglishFallbackInConvert) {
+  auto mock_converter = std::make_shared<MockConverter>();
+  EngineConverter converter(mock_converter, request_, config_);
+
+  composer_->InsertCharacter("wordapuri");
+  ASSERT_EQ(composer_->GetQueryForConversion(), "をrだぷり");
+
+  Segments high_cost_segments;
+  {
+    Segment* seg = high_cost_segments.add_segment();
+    seg->set_key("をrだぷり");
+    converter::Candidate* cand = seg->add_candidate();
+    cand->key = "をrだぷり";
+    cand->content_key = "をrだぷり";
+    cand->value = "をrだぷり";
+    cand->content_value = "をrだぷり";
+    cand->cost = 30000;
+  }
+
+  Segments separated_segments;
+  {
+    Segment* seg0 = separated_segments.add_segment();
+    seg0->set_key("をrd");
+    converter::Candidate* cand0 = seg0->add_candidate();
+    cand0->key = "をrd";
+    cand0->content_key = "をrd";
+    cand0->value = "word";
+    cand0->content_value = "word";
+    cand0->cost = 25000;
+
+    Segment* seg1 = separated_segments.add_segment();
+    seg1->set_key("あぷり");
+    converter::Candidate* cand1 = seg1->add_candidate();
+    cand1->key = "あぷり";
+    cand1->content_key = "あぷり";
+    cand1->value = "アプリ";
+    cand1->content_value = "アプリ";
+    cand1->cost = 3000;
+  }
+
+  ::testing::InSequence seq;
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce([&](const ConversionRequest& req, Segments* segs) {
+        EXPECT_EQ(req.composer().GetQueryForConversion(), "をrだぷり");
+        *segs = high_cost_segments;
+        return true;
+      });
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce([&](const ConversionRequest& req, Segments* segs) {
+        EXPECT_EQ(req.composer().GetQueryForConversion(), "をrdあぷり");
+        *segs = separated_segments;
+        return true;
+      });
+
+  ASSERT_TRUE(converter.Convert(*composer_));
+  converter.SyncComposerAfterConversion(composer_.get());
+
+  EXPECT_EQ(composer_->GetQueryForConversion(), "をrdあぷり");
+
+  commands::Output output;
+  converter.FillOutput(*composer_, &output);
+  ASSERT_TRUE(output.has_preedit());
+  ASSERT_EQ(output.preedit().segment_size(), 2);
+  EXPECT_EQ(output.preedit().segment(0).value(), "word");
+  EXPECT_EQ(output.preedit().segment(1).value(), "アプリ");
+}
+
+TEST_F(EngineConverterTest, CrossBoundaryEnglishFallbackInLiveConversion) {
+  absl::SetFlag(&FLAGS_enable_live_conversion, true);
+
+  auto mock_converter = std::make_shared<MockConverter>();
+  EngineConverter converter(mock_converter, request_, config_);
+
+  composer_->InsertCharacter("wordapuri");
+  ASSERT_EQ(composer_->GetQueryForConversion(), "をrだぷり");
+
+  Segments high_cost_segments;
+  {
+    Segment* seg = high_cost_segments.add_segment();
+    seg->set_key("をrだぷり");
+    converter::Candidate* cand = seg->add_candidate();
+    cand->key = "をrだぷり";
+    cand->content_key = "をrだぷり";
+    cand->value = "をrだぷり";
+    cand->content_value = "をrだぷり";
+    cand->cost = 30000;
+  }
+
+  Segments separated_segments;
+  {
+    Segment* seg0 = separated_segments.add_segment();
+    seg0->set_key("をrd");
+    converter::Candidate* cand0 = seg0->add_candidate();
+    cand0->key = "をrd";
+    cand0->content_key = "をrd";
+    cand0->value = "word";
+    cand0->content_value = "word";
+    cand0->cost = 25000;
+
+    Segment* seg1 = separated_segments.add_segment();
+    seg1->set_key("あぷり");
+    converter::Candidate* cand1 = seg1->add_candidate();
+    cand1->key = "あぷり";
+    cand1->content_key = "あぷり";
+    cand1->value = "アプリ";
+    cand1->content_value = "アプリ";
+    cand1->cost = 3000;
+  }
+
+  ::testing::InSequence seq;
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce([&](const ConversionRequest& req, Segments* segs) {
+        EXPECT_EQ(req.composer().GetQueryForConversion(), "をrだぷり");
+        *segs = high_cost_segments;
+        return true;
+      });
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce([&](const ConversionRequest& req, Segments* segs) {
+        EXPECT_EQ(req.composer().GetQueryForConversion(), "をrdあぷり");
+        *segs = separated_segments;
+        return true;
+      });
+
+  ASSERT_TRUE(converter.Suggest(*composer_));
+  // Live conversion must not mutate the real Composer owned by Session.
+  EXPECT_EQ(composer_->GetQueryForConversion(), "をrだぷり");
+
+  commands::Output output;
+  converter.FillOutput(*composer_, &output);
+  ASSERT_TRUE(output.has_preedit());
+  ASSERT_EQ(output.preedit().segment_size(), 2);
+  EXPECT_EQ(output.preedit().segment(0).value(), "word");
+  EXPECT_EQ(output.preedit().segment(1).value(), "アプリ");
+
+  absl::SetFlag(&FLAGS_enable_live_conversion, false);
+}
+
 }  // namespace engine
 }  // namespace mozc

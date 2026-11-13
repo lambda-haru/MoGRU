@@ -726,8 +726,8 @@ TEST_F(EnglishFallbackRewriterTest, UserConfigEnglishWordsFallback) {
   dictionary::EnglishDictionary empty_dict;
   EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(empty_dict));
 
-  composer::Composer composer = CreateComposer("kuberneteswo");
-  // "kuberneteswo" in preedit: "くべｒねてｓを"
+  composer::Composer composer = CreateComposer("kubernetesga");
+  // "kubernetesga" in preedit: "くべｒねてｓが"
   Segments segments;
   Segment* seg0 = segments.add_segment();
   seg0->set_key("くべｒねてｓ");
@@ -737,10 +737,10 @@ TEST_F(EnglishFallbackRewriterTest, UserConfigEnglishWordsFallback) {
   c0->cost = 25000;
 
   Segment* seg1 = segments.add_segment();
-  seg1->set_key("を");
+  seg1->set_key("が");
   auto* c1 = seg1->add_candidate();
-  c1->key = "を";
-  c1->value = "を";
+  c1->key = "が";
+  c1->value = "が";
   c1->cost = 2000;
 
   const ConversionRequest request =
@@ -838,6 +838,169 @@ TEST_F(EnglishFallbackRewriterTest, UserEnglishWordsReload) {
     EXPECT_TRUE(rewriter.Rewrite(request, &segments));
     EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "cherrypick");
   }
+}
+
+TEST_F(EnglishFallbackRewriterTest, CrossBoundaryDoesNotCorruptMidChunkSplit) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("test");
+  dict.AddWord("git");
+  dict.AddWord("class");
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  for (const char* input : {"testwo", "gitwo", "classwo", "githa"}) {
+    composer::Composer composer = CreateComposer(input);
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    const std::string preedit = composer.GetQueryForConversion();
+    seg->set_key(preedit);
+    auto* c = seg->add_candidate();
+    c->key = preedit;
+    c->value = preedit;
+    c->cost = 25000;
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+
+    EXPECT_FALSE(rewriter.CheckResizeSegmentsRequest(request, segments).has_value())
+        << input;
+    EXPECT_FALSE(rewriter.Rewrite(request, &segments)) << input;
+  }
+}
+
+TEST_F(EnglishFallbackRewriterTest, FindCrossBoundarySplitOffsetsAllPatterns) {
+  const std::string config_path =
+      config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+  GruPenaltyConfig cfg;
+  cfg.enable_english_fallback = true;
+  cfg.user_english_words = {"docker", "git", "kubernetes"};
+  config::GruConfigManager::SaveConfig(cfg, config_path);
+
+  struct Case {
+    const char* raw_input;
+    size_t expected_offset;
+    const char* expected_english;
+    const char* expected_trailing_kana;
+  };
+  const Case cases[] = {
+      {"wordapuri", 4, "word", "あぷり"},
+      {"dockera", 6, "docker", "あ"},
+      {"englisha", 7, "english", "あ"},
+      {"gita", 3, "git", "あ"},
+      {"gitsu", 3, "git", "す"},
+      {"gitwo", 3, "git", "を"},
+      {"testwo", 4, "test", "を"},
+      {"classwo", 5, "class", "を"},
+      {"githa", 3, "git", "は"},
+      {"loginno", 5, "login", "の"},
+      {"linuxno", 5, "linux", "の"},
+      {"kuberneteswo", 10, "kubernetes", "を"},
+  };
+
+  EnglishFallbackRewriter rewriter(*pos_matcher_);
+
+  for (const auto& tc : cases) {
+    composer::Composer composer = CreateComposer(tc.raw_input);
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    const std::string key = composer.GetQueryForConversion();
+    seg->set_key(key);
+    auto* c = seg->add_candidate();
+    c->key = key;
+    c->value = key;
+    c->cost = 25000;
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+
+    const std::vector<size_t> offsets =
+        EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
+            request.composer(), segments, request);
+    ASSERT_EQ(offsets.size(), 1) << tc.raw_input;
+    EXPECT_EQ(offsets[0], tc.expected_offset) << tc.raw_input;
+
+    // Applying the separation and re-running rewriter yields clean English +
+    // intended trailing Japanese reading.
+    EXPECT_TRUE(composer.SeparateChunksAtRawBoundaries(offsets)) << tc.raw_input;
+    const std::string sep_key = composer.GetQueryForConversion();
+
+    Segments sep_segments;
+    Segment* sep_seg = sep_segments.add_segment();
+    sep_seg->set_key(sep_key);
+    auto* sc = sep_seg->add_candidate();
+    sc->key = sep_key;
+    sc->value = sep_key;
+    sc->cost = 25000;
+
+    const ConversionRequest sep_request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_TRUE(rewriter.Rewrite(sep_request, &sep_segments)) << tc.raw_input;
+    ASSERT_EQ(sep_segments.conversion_segments_size(), 2) << tc.raw_input;
+    EXPECT_EQ(sep_segments.conversion_segment(0).candidate(0).value,
+              tc.expected_english)
+        << tc.raw_input;
+    EXPECT_EQ(sep_segments.conversion_segment(1).key(),
+              tc.expected_trailing_kana)
+        << tc.raw_input;
+  }
+
+  GruPenaltyConfig clean_cfg;
+  clean_cfg.enable_english_fallback = true;
+  config::GruConfigManager::SaveConfig(clean_cfg, config_path);
+}
+
+TEST_F(EnglishFallbackRewriterTest,
+       FindCrossBoundarySplitOffsetsSkipsLowCostAndFixedSegments) {
+  for (const char* input : {"mainichi", "sinka", "matta", "kita", "tenki"}) {
+    composer::Composer composer = CreateComposer(input);
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    const std::string key = composer.GetQueryForConversion();
+    seg->set_key(key);
+    auto* c = seg->add_candidate();
+    c->key = key;
+    c->value = key;
+    c->cost = 5000;  // Below threshold (normal Japanese).
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_TRUE(EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
+                    request.composer(), segments, request)
+                    .empty())
+        << input;
+  }
+
+  // Respects user-fixed boundaries even on high-cost segments.
+  composer::Composer composer = CreateComposer("wordapuri");
+  Segments segments;
+  Segment* seg = segments.add_segment();
+  const std::string key = composer.GetQueryForConversion();
+  seg->set_key(key);
+  seg->set_segment_type(Segment::FIXED_BOUNDARY);
+  auto* c = seg->add_candidate();
+  c->key = key;
+  c->value = key;
+  c->cost = 25000;
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+  EXPECT_TRUE(EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
+                  request.composer(), segments, request)
+                  .empty());
 }
 
 }  // namespace

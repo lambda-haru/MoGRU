@@ -73,6 +73,15 @@ class EnglishFallbackRewriter : public RewriterInterface {
 
   bool Reload() override;
 
+  // Detects English words whose raw endings fall strictly inside Romaji
+  // CharChunks overlapping high-cost FREE conversion segments and returns the
+  // raw byte offsets where the Composer chunks should be separated.
+  // `base_preedit_offset` is the composer preedit offset corresponding to the
+  // start of `segments.conversion_segment(0)`.
+  static std::vector<size_t> FindCrossBoundarySplitOffsets(
+      const composer::ComposerData& composer, const Segments& segments,
+      const ConversionRequest& request, size_t base_preedit_offset = 0);
+
  private:
   void InitBaseDictionary();
   void MaybeUpdateUserDictionary(const GruPenaltyConfig& config) const;

@@ -537,6 +537,16 @@ void CharChunk::AddCompositionInput(CompositionInput* input) {
   AddInput(input->mutable_raw());
 }
 
+void CharChunk::FlushPending() {
+  if (!pending_.empty()) {
+    conversion_.append(pending_);
+    pending_.clear();
+    ambiguous_.clear();
+    local_length_cache_ = std::string::npos;
+  }
+  attributes_ |= END_CHUNK;
+}
+
 void CharChunk::SetTransliterator(
     const Transliterators::Transliterator transliterator) {
   if (transliterator == Transliterators::LOCAL) {

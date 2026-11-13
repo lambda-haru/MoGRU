@@ -258,6 +258,8 @@ class EngineConverter : public EngineConverterInterface {
   // Copies EngineConverter
   EngineConverter* Clone() const override;
 
+  void SyncComposerAfterConversion(composer::Composer* composer) override;
+
   void set_selection_shortcut(
       config::Config::SelectionShortcut selection_shortcut) override {
     selection_shortcut_ = selection_shortcut;
@@ -385,6 +387,25 @@ class EngineConverter : public EngineConverterInterface {
   void SetRequestType(ConversionRequest::RequestType request_type,
                       ConversionRequest::Options& options);
 
+  // Computes prediction key, active conversion key (after frozen prefix and
+  // excluded trailing hiragana), and tail from `composer`.
+  static bool BuildLiveConversionKeyAndTail(
+      const composer::Composer& composer, absl::string_view frozen_key,
+      int32_t excluded_hiragana_chars, std::string* out_pred_key,
+      std::string* out_active_key, std::string* out_tail);
+
+  // Re-runs StartConversion on a temporary chunk-separated Composer copy when
+  // high-cost cross-boundary English matches are detected. If `is_live` is
+  // true, updates `*out_pred_key`, `*out_tail`, and `out_active_key` (optional)
+  // for the separated composer.
+  bool TryCrossBoundaryEnglishFallback(
+      const composer::Composer& composer, const commands::Context& context,
+      const ConversionRequest& original_request,
+      const ConversionRequest::Options& base_options,
+      bool is_live, int32_t excluded_hiragana_chars,
+      std::string* out_pred_key, std::string* out_tail,
+      std::vector<size_t>* out_split_offsets);
+
   std::shared_ptr<const ConverterInterface> converter_;
 
   // Conversion stats used by converter_.
@@ -449,6 +470,10 @@ class EngineConverter : public EngineConverterInterface {
   // Conversion accuracy tracking state.
   bool live_conversion_presented_ = false;
   bool conversion_segment_resized_ = false;
+
+  // Raw byte offsets separated during the most recent Convert() call, pending
+  // synchronization into Session's mutable Composer.
+  std::vector<size_t> pending_separated_raw_offsets_;
 };
 
 }  // namespace engine

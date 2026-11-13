@@ -2404,6 +2404,8 @@ bool Session::Convert(commands::Command* command) {
     OutputComposition(command);
     return true;
   }
+  context_->mutable_converter()->SyncComposerAfterConversion(
+      context_->mutable_composer());
 
   SetSessionState(ImeContext::CONVERSION, context_.get());
   Output(command);
@@ -2422,6 +2424,8 @@ bool Session::ConvertWithoutHistory(commands::Command* command) {
     OutputComposition(command);
     return true;
   }
+  context_->mutable_converter()->SyncComposerAfterConversion(
+      context_->mutable_composer());
 
   SetSessionState(ImeContext::CONVERSION, context_.get());
   Output(command);

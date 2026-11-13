@@ -116,6 +116,9 @@ class CharChunk final {
   bool ShouldInsertNewChunk(const CompositionInput& input) const;
   void AddInput(std::string* input);
   void AddCompositionInput(CompositionInput* input);
+  // Finalizes any pending characters into conversion_ and marks END_CHUNK so
+  // subsequent inputs cannot combine with this chunk.
+  void FlushPending();
 
   void SetTransliterator(Transliterators::Transliterator transliterator);
 

@@ -287,6 +287,10 @@ class EngineConverterInterface {
       config::Config::SelectionShortcut selection_shortcut) = 0;
 
   virtual void set_use_cascading_window(bool use_cascading_window) = 0;
+
+  // Synchronizes `composer` with any cross-boundary English fallback chunk
+  // separations applied during the latest Convert() call.
+  virtual void SyncComposerAfterConversion(composer::Composer* composer) {}
 };
 
 }  // namespace engine

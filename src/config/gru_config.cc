@@ -2143,9 +2143,12 @@ bool GruConfigManager::IsLiveConversionEnabled(
   absl::MutexLock lock(*mutex);
   const std::string path =
       ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
-  if (path.empty()) {
+  if (path.empty() || IsInTestEnvironment()) {
     GruPenaltyConfig cfg;
     cfg.enable_live_conversion = flag_default;
+    if (!path.empty()) {
+      cfg = ParseConfigFile(path, cfg);
+    }
     ApplyEnvOverrides(&cfg);
     return cfg.enable_live_conversion;
   }
@@ -2269,9 +2272,12 @@ bool GruConfigManager::IsLiveConversionPrefixFreezingEnabled(
   absl::MutexLock lock(*mutex);
   const std::string path =
       ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
-  if (path.empty()) {
+  if (path.empty() || IsInTestEnvironment()) {
     GruPenaltyConfig cfg;
     cfg.enable_live_conversion_prefix_freezing = flag_default;
+    if (!path.empty()) {
+      cfg = ParseConfigFile(path, cfg);
+    }
     ApplyEnvOverrides(&cfg);
     return cfg.enable_live_conversion_prefix_freezing;
   }
@@ -2311,9 +2317,12 @@ bool GruConfigManager::IsLiveConversionAutoCommitEnabled(
   absl::MutexLock lock(*mutex);
   const std::string path =
       ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
-  if (path.empty()) {
+  if (path.empty() || IsInTestEnvironment()) {
     GruPenaltyConfig cfg;
     cfg.enable_live_conversion_auto_commit = flag_default;
+    if (!path.empty()) {
+      cfg = ParseConfigFile(path, cfg);
+    }
     ApplyEnvOverrides(&cfg);
     return cfg.enable_live_conversion_auto_commit;
   }
@@ -2353,9 +2362,12 @@ int32_t GruConfigManager::GetLiveConversionLengthThreshold(
   absl::MutexLock lock(*mutex);
   const std::string path =
       ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
-  if (path.empty()) {
+  if (path.empty() || IsInTestEnvironment()) {
     GruPenaltyConfig cfg;
     cfg.live_conversion_length_threshold = flag_default;
+    if (!path.empty()) {
+      cfg = ParseConfigFile(path, cfg);
+    }
     ApplyEnvOverrides(&cfg);
     return cfg.live_conversion_length_threshold;
   }
@@ -2395,9 +2407,12 @@ int32_t GruConfigManager::GetLiveConversionExcludedHiraganaCharacters(
   absl::MutexLock lock(*mutex);
   const std::string path =
       ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
-  if (path.empty()) {
+  if (path.empty() || IsInTestEnvironment()) {
     GruPenaltyConfig cfg;
     cfg.live_conversion_excluded_hiragana_characters = flag_default;
+    if (!path.empty()) {
+      cfg = ParseConfigFile(path, cfg);
+    }
     ApplyEnvOverrides(&cfg);
     return cfg.live_conversion_excluded_hiragana_characters;
   }
@@ -2437,9 +2452,12 @@ bool GruConfigManager::IsConversionStatsEnabled(
   absl::MutexLock lock(*mutex);
   const std::string path =
       ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
-  if (path.empty()) {
+  if (path.empty() || IsInTestEnvironment()) {
     GruPenaltyConfig cfg;
     cfg.enable_conversion_stats = flag_default;
+    if (!path.empty()) {
+      cfg = ParseConfigFile(path, cfg);
+    }
     ApplyEnvOverrides(&cfg);
     return cfg.enable_conversion_stats;
   }
@@ -2478,8 +2496,11 @@ std::string GruConfigManager::GetConversionStatsPath(
   absl::MutexLock lock(*mutex);
   const std::string path =
       ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
-  if (path.empty()) {
+  if (path.empty() || IsInTestEnvironment()) {
     GruPenaltyConfig cfg;
+    if (!path.empty()) {
+      cfg = ParseConfigFile(path, cfg);
+    }
     ApplyEnvOverrides(&cfg);
     return cfg.conversion_stats_path;
   }

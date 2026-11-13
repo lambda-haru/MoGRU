@@ -66,6 +66,7 @@
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 #include "request/conversion_request.h"
+#include "rewriter/english_fallback_rewriter.h"
 #include "transliteration/transliteration.h"
 
 ABSL_FLAG(bool, enable_live_conversion, false,
@@ -174,12 +175,14 @@ bool EngineConverter::Convert(const composer::Composer& composer,
   live_conversion_frozen_segments_.clear();
   live_conversion_frozen_key_.clear();
   auto_commit_pending_ = false;
+  pending_separated_raw_offsets_.clear();
 
   DCHECK(request_);
   DCHECK(config_);
   ConversionRequest::Options options;
   options.enable_user_history_for_conversion = preferences.use_history;
   SetRequestType(ConversionRequest::CONVERSION, options);
+  const ConversionRequest::Options base_options = options;
   const ConversionRequest conversion_request =
       ConversionRequestBuilder()
           .SetComposer(composer)
@@ -194,6 +197,12 @@ bool EngineConverter::Convert(const composer::Composer& composer,
     ResetState();
     return false;
   }
+
+  TryCrossBoundaryEnglishFallback(
+      composer, context, conversion_request, base_options,
+      /*is_live=*/false, /*excluded_hiragana_chars=*/0,
+      /*out_pred_key=*/nullptr, /*out_tail=*/nullptr,
+      &pending_separated_raw_offsets_);
 
   segment_index_ = 0;
   state_ = CONVERSION;
@@ -548,59 +557,25 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
       return false;
     }
 
-    const std::string pred_key = composer.GetQueryForPrediction();
-    if (pred_key.empty() ||
-        !Util::ContainsScriptType(pred_key, Util::HIRAGANA)) {
-      return false;
-    }
-
-    const std::string preedit = composer.GetStringForPreedit();
-    const size_t pred_chars = Util::CharsLen(pred_key);
-    const size_t preedit_chars = Util::CharsLen(preedit);
-    std::string tail;
-    if (preedit_chars > pred_chars) {
-      tail = std::string(
-          Util::Utf8SubString(preedit, pred_chars, preedit_chars - pred_chars));
-    }
-
-    std::string active_key = pred_key;
+    const int32_t excluded_hiragana_chars =
+        config::GruConfigManager::GetLiveConversionExcludedHiraganaCharacters(0);
     if (!live_conversion_frozen_segments_.empty()) {
-      if (pred_key.starts_with(live_conversion_frozen_key_)) {
-        active_key = pred_key.substr(live_conversion_frozen_key_.size());
-      } else {
-        // Backspaced or edited into frozen part -> unfreeze and re-convert all.
+      const std::string check_pred = composer.GetQueryForPrediction();
+      if (!check_pred.starts_with(live_conversion_frozen_key_)) {
         live_conversion_frozen_segments_.clear();
         live_conversion_frozen_key_.clear();
         auto_commit_pending_ = false;
-        active_key = pred_key;
       }
     }
-
-    const int32_t excluded_hiragana_chars =
-        config::GruConfigManager::GetLiveConversionExcludedHiraganaCharacters(0);
-    if (excluded_hiragana_chars > 0 && !active_key.empty()) {
-      const std::u32string u32 = Util::Utf8ToUtf32(active_key);
-      size_t trailing_hiragana_count = 0;
-      while (trailing_hiragana_count <
-                 static_cast<size_t>(excluded_hiragana_chars) &&
-             trailing_hiragana_count < u32.size()) {
-        const char32_t c = u32[u32.size() - 1 - trailing_hiragana_count];
-        if (Util::GetScriptType(c) != Util::HIRAGANA) {
-          break;
-        }
-        ++trailing_hiragana_count;
+    std::string pred_key;
+    std::string active_key;
+    std::string tail;
+    if (!BuildLiveConversionKeyAndTail(composer, live_conversion_frozen_key_,
+                                       excluded_hiragana_chars, &pred_key,
+                                       &active_key, &tail)) {
+      if (pred_key.empty()) {
+        return false;
       }
-      if (trailing_hiragana_count > 0) {
-        const size_t remaining_chars = u32.size() - trailing_hiragana_count;
-        const std::string excluded_hiragana = std::string(
-            Util::Utf8SubString(active_key, remaining_chars, trailing_hiragana_count));
-        active_key =
-            std::string(Util::Utf8SubString(active_key, 0, remaining_chars));
-        tail = absl::StrCat(excluded_hiragana, tail);
-      }
-    }
-
-    if (active_key.empty()) {
       segments_.clear_conversion_segments();
       segment_index_ = 0;
       state_ = SUGGESTION;
@@ -617,6 +592,7 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
     live_options.enable_user_history_for_conversion = preferences.use_history;
     live_options.composer_key_selection = ConversionRequest::PREDICTION_KEY;
     SetRequestType(ConversionRequest::CONVERSION, live_options);
+    const ConversionRequest::Options base_live_options = live_options;
     segments_.clear_conversion_segments();
 
     DCHECK(request_);
@@ -638,6 +614,11 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
       return false;
     }
 
+    const bool cross_boundary_separated = TryCrossBoundaryEnglishFallback(
+        composer, context, live_request, base_live_options,
+        /*is_live=*/true, excluded_hiragana_chars, &pred_key, &tail,
+        /*out_split_offsets=*/nullptr);
+
     const bool prefix_freezing_enabled =
         config::GruConfigManager::IsLiveConversionPrefixFreezingEnabled(true);
     const bool auto_commit_enabled =
@@ -645,7 +626,8 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
     const int32_t threshold =
         config::GruConfigManager::GetLiveConversionLengthThreshold(24);
 
-    if ((prefix_freezing_enabled || auto_commit_enabled) &&
+    if (!cross_boundary_separated &&
+        (prefix_freezing_enabled || auto_commit_enabled) &&
         Util::CharsLen(active_key) >= static_cast<size_t>(threshold) &&
         segments_.conversion_segments_size() >= 2) {
       const size_t k = CalculateFrontHalfSegmentsCount(segments_);
@@ -1142,6 +1124,7 @@ void EngineConverter::CommitPreedit(const composer::Composer& composer,
         live_options.enable_user_history_for_conversion =
             conversion_preferences_.use_history;
         SetRequestType(ConversionRequest::CONVERSION, live_options);
+        const ConversionRequest::Options base_live_options = live_options;
         segments_.clear_conversion_segments();
         const ConversionRequest live_request =
             ConversionRequestBuilder()
@@ -1154,7 +1137,17 @@ void EngineConverter::CommitPreedit(const composer::Composer& composer,
                 .Build();
         if (converter_->StartConversion(live_request, &segments_) &&
             segments_.conversion_segments_size() > 0) {
-          live_conversion_key_ = conv_key;
+          std::string sep_conv_key;
+          if (TryCrossBoundaryEnglishFallback(
+                  composer, context, live_request, base_live_options,
+                  /*is_live=*/false, /*excluded_hiragana_chars=*/0,
+                  &sep_conv_key, /*out_tail=*/nullptr,
+                  /*out_split_offsets=*/nullptr) &&
+              !sep_conv_key.empty()) {
+            live_conversion_key_ = std::move(sep_conv_key);
+          } else {
+            live_conversion_key_ = conv_key;
+          }
           live_conversion_tail_.clear();
           segment_index_ = 0;
           UpdateCandidateList();
@@ -1695,6 +1688,149 @@ void EngineConverter::ResetState() {
   auto_commit_pending_ = false;
   live_conversion_presented_ = false;
   conversion_segment_resized_ = false;
+  pending_separated_raw_offsets_.clear();
+}
+
+void EngineConverter::SyncComposerAfterConversion(
+    composer::Composer* composer) {
+  if (composer == nullptr || pending_separated_raw_offsets_.empty()) {
+    return;
+  }
+  composer->SeparateChunksAtRawBoundaries(pending_separated_raw_offsets_);
+  pending_separated_raw_offsets_.clear();
+}
+
+bool EngineConverter::BuildLiveConversionKeyAndTail(
+    const composer::Composer& composer, absl::string_view frozen_key,
+    int32_t excluded_hiragana_chars, std::string* out_pred_key,
+    std::string* out_active_key, std::string* out_tail) {
+  const std::string pred_key = composer.GetQueryForPrediction();
+  if (pred_key.empty() ||
+      !Util::ContainsScriptType(pred_key, Util::HIRAGANA)) {
+    out_pred_key->clear();
+    out_active_key->clear();
+    out_tail->clear();
+    return false;
+  }
+
+  const std::string preedit = composer.GetStringForPreedit();
+  const size_t pred_chars = Util::CharsLen(pred_key);
+  const size_t preedit_chars = Util::CharsLen(preedit);
+  std::string tail;
+  if (preedit_chars > pred_chars) {
+    tail = std::string(
+        Util::Utf8SubString(preedit, pred_chars, preedit_chars - pred_chars));
+  }
+
+  std::string active_key = pred_key;
+  if (!frozen_key.empty() && pred_key.starts_with(frozen_key)) {
+    active_key = pred_key.substr(frozen_key.size());
+  }
+
+  if (excluded_hiragana_chars > 0 && !active_key.empty()) {
+    const std::u32string u32 = Util::Utf8ToUtf32(active_key);
+    size_t trailing_hiragana_count = 0;
+    while (trailing_hiragana_count <
+               static_cast<size_t>(excluded_hiragana_chars) &&
+           trailing_hiragana_count < u32.size()) {
+      const char32_t c = u32[u32.size() - 1 - trailing_hiragana_count];
+      if (Util::GetScriptType(c) != Util::HIRAGANA) {
+        break;
+      }
+      ++trailing_hiragana_count;
+    }
+    if (trailing_hiragana_count > 0) {
+      const size_t remaining_chars = u32.size() - trailing_hiragana_count;
+      const std::string excluded_hiragana = std::string(Util::Utf8SubString(
+          active_key, remaining_chars, trailing_hiragana_count));
+      active_key =
+          std::string(Util::Utf8SubString(active_key, 0, remaining_chars));
+      tail = absl::StrCat(excluded_hiragana, tail);
+    }
+  }
+
+  *out_pred_key = pred_key;
+  *out_active_key = std::move(active_key);
+  *out_tail = std::move(tail);
+  return !out_active_key->empty();
+}
+
+bool EngineConverter::TryCrossBoundaryEnglishFallback(
+    const composer::Composer& composer, const commands::Context& context,
+    const ConversionRequest& original_request,
+    const ConversionRequest::Options& base_options,
+    bool is_live, int32_t excluded_hiragana_chars,
+    std::string* out_pred_key, std::string* out_tail,
+    std::vector<size_t>* out_split_offsets) {
+  const size_t base_preedit_offset =
+      is_live ? Util::CharsLen(live_conversion_frozen_key_) : 0;
+  std::vector<size_t> split_offsets =
+      EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
+          original_request.composer(), segments_, original_request,
+          base_preedit_offset);
+  if (split_offsets.empty()) {
+    return false;
+  }
+
+  composer::Composer separated_composer = composer;
+  if (!separated_composer.SeparateChunksAtRawBoundaries(split_offsets)) {
+    return false;
+  }
+
+  ConversionRequest::Options sep_options = base_options;
+  ConversionRequestBuilder builder;
+  builder.SetComposer(separated_composer)
+      .SetRequestView(*request_)
+      .SetContextView(context)
+      .SetConfigView(*config_)
+      .SetOptions(std::move(sep_options));
+
+  std::string sep_pred_key;
+  std::string sep_active_key;
+  std::string sep_tail;
+  if (is_live) {
+    if (!BuildLiveConversionKeyAndTail(separated_composer,
+                                       live_conversion_frozen_key_,
+                                       excluded_hiragana_chars, &sep_pred_key,
+                                       &sep_active_key, &sep_tail)) {
+      return false;
+    }
+    builder.SetKey(sep_active_key);
+  } else if (!live_conversion_frozen_key_.empty()) {
+    const std::string conv_key = separated_composer.GetQueryForConversion();
+    std::string active_conv_key = conv_key;
+    if (conv_key.starts_with(live_conversion_frozen_key_)) {
+      active_conv_key = conv_key.substr(live_conversion_frozen_key_.size());
+    }
+    if (active_conv_key.empty()) {
+      return false;
+    }
+    sep_pred_key = conv_key;
+    builder.SetKey(active_conv_key);
+  } else if (out_pred_key != nullptr) {
+    sep_pred_key = separated_composer.GetQueryForConversion();
+  }
+
+  const ConversionRequest sep_request = builder.Build();
+
+  Segments sep_segments = segments_;
+  sep_segments.clear_conversion_segments();
+  if (!converter_->StartConversion(sep_request, &sep_segments) ||
+      sep_segments.conversion_segments_size() == 0) {
+    return false;
+  }
+
+  segments_ = std::move(sep_segments);
+  if (out_pred_key != nullptr) {
+    *out_pred_key = std::move(sep_pred_key);
+  }
+  if (out_tail != nullptr) {
+    *out_tail = std::move(sep_tail);
+  }
+  if (out_split_offsets != nullptr) {
+    *out_split_offsets = std::move(split_offsets);
+  }
+  return true;
 }
 
 void EngineConverter::SegmentFocus() {

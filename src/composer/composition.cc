@@ -29,11 +29,13 @@
 
 #include "composer/composition.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/algorithm/container.h"
 #include "absl/container/btree_set.h"
@@ -42,6 +44,8 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
+#include "base/strings/unicode.h"
 #include "base/util.h"
 #include "base/vlog.h"
 #include "composer/char_chunk.h"
@@ -455,6 +459,124 @@ bool Composition::IsToggleable(size_t position) const {
     return false;
   }
   return it->pending().starts_with(table_->ParseSpecialKey("{?}"));
+}
+
+bool Composition::SeparateChunksAtRawBoundaries(
+    absl::Span<const size_t> raw_boundaries) {
+  if (raw_boundaries.empty() || chunks_.empty() || !table_) {
+    return false;
+  }
+
+  std::vector<size_t> boundaries(raw_boundaries.begin(), raw_boundaries.end());
+  std::sort(boundaries.begin(), boundaries.end());
+  boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                   boundaries.end());
+
+  size_t raw_offset = 0;
+  size_t check_idx = 0;
+  bool has_split = false;
+  for (const CharChunk& chunk : chunks_) {
+    const size_t chunk_len = chunk.raw().size();
+    const size_t chunk_start = raw_offset;
+    const size_t chunk_end = raw_offset + chunk_len;
+    raw_offset = chunk_end;
+    while (check_idx < boundaries.size() &&
+           boundaries[check_idx] <= chunk_start) {
+      ++check_idx;
+    }
+    if (check_idx < boundaries.size() && boundaries[check_idx] < chunk_end) {
+      const Transliterators::Transliterator t12r =
+          chunk.GetTransliterator(Transliterators::LOCAL);
+      if ((chunk.attributes() & NO_TRANSLITERATION) == 0 &&
+          (t12r == Transliterators::HIRAGANA ||
+           t12r == Transliterators::FULL_KATAKANA ||
+           t12r == Transliterators::HALF_KATAKANA)) {
+        has_split = true;
+        break;
+      }
+    }
+  }
+  if (!has_split) {
+    return false;
+  }
+
+  Composition new_comp(table_);
+  new_comp.SetInputMode(input_t12r_);
+
+  raw_offset = 0;
+  size_t b_idx = 0;
+  bool replay_subsequent = false;
+
+  for (const CharChunk& chunk : chunks_) {
+    const std::string chunk_raw(chunk.raw());
+    const size_t chunk_start = raw_offset;
+    const size_t chunk_end = raw_offset + chunk_raw.size();
+    raw_offset = chunk_end;
+
+    while (b_idx < boundaries.size() && boundaries[b_idx] < chunk_start) {
+      ++b_idx;
+    }
+    const bool has_boundary_inside =
+        (b_idx < boundaries.size() &&
+         ((boundaries[b_idx] > chunk_start && boundaries[b_idx] < chunk_end) ||
+          (replay_subsequent && boundaries[b_idx] == chunk_start)));
+
+    const Transliterators::Transliterator chunk_t12r =
+        chunk.GetTransliterator(Transliterators::LOCAL);
+    const bool is_romaji_chunk =
+        !chunk_raw.empty() &&
+        (chunk.attributes() & NO_TRANSLITERATION) == 0 &&
+        (chunk_t12r == Transliterators::HIRAGANA ||
+         chunk_t12r == Transliterators::FULL_KATAKANA ||
+         chunk_t12r == Transliterators::HALF_KATAKANA);
+
+    if ((!has_boundary_inside && !replay_subsequent) || !is_romaji_chunk) {
+      if (replay_subsequent && !new_comp.chunks_.empty()) {
+        new_comp.chunks_.back().FlushPending();
+      }
+      new_comp.chunks_.push_back(chunk);
+      replay_subsequent = false;
+      continue;
+    }
+
+    new_comp.SetInputMode(chunk_t12r);
+    bool split_happened_in_chunk = false;
+    bool need_new_input = false;
+    size_t pos = 0;
+    while (pos < chunk_raw.size()) {
+      while (b_idx < boundaries.size() &&
+             boundaries[b_idx] < chunk_start + pos) {
+        ++b_idx;
+      }
+      if (b_idx < boundaries.size() &&
+          boundaries[b_idx] == chunk_start + pos) {
+        if (!new_comp.chunks_.empty()) {
+          new_comp.chunks_.back().FlushPending();
+        }
+        need_new_input = true;
+        split_happened_in_chunk = true;
+        ++b_idx;
+      }
+
+      const size_t char_len = std::min<size_t>(
+          strings::OneCharLen(chunk_raw[pos]), chunk_raw.size() - pos);
+      CompositionInput input;
+      input.InitFromRaw(chunk_raw.substr(pos, char_len), need_new_input);
+      need_new_input = false;
+      new_comp.InsertInput(new_comp.GetLength(), std::move(input));
+      pos += char_len;
+    }
+
+    if (split_happened_in_chunk || replay_subsequent) {
+      replay_subsequent =
+          (!new_comp.chunks_.empty() && !new_comp.chunks_.back().IsFixed());
+    } else {
+      replay_subsequent = false;
+    }
+  }
+
+  chunks_ = std::move(new_comp.chunks_);
+  return true;
 }
 
 }  // namespace composer

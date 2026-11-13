@@ -43,6 +43,7 @@
 #include "absl/log/log.h"
 #include "absl/strings/ascii.h"
 #include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
 #include "base/file_util.h"
 #include "base/japanese_util.h"
 #include "base/util.h"
@@ -105,18 +106,15 @@ std::string ResolveDictionaryPath() {
   return "";
 }
 
-}  // namespace
-
-void EnglishFallbackRewriter::InitBaseDictionary() {
-  absl::MutexLock lock(mutex_);
-  base_dictionary_.Clear();
+void LoadBaseDictionary(dictionary::EnglishDictionary* base_dict) {
+  base_dict->Clear();
   const std::string path = ResolveDictionaryPath();
   bool loaded = false;
   if (!path.empty()) {
-    if (!base_dictionary_.LoadFromFile(path)) {
+    if (!base_dict->LoadFromFile(path)) {
       LOG(WARNING) << "Failed to load English dictionary from: " << path;
     } else {
-      VLOG(1) << "Loaded " << base_dictionary_.size()
+      VLOG(1) << "Loaded " << base_dict->size()
               << " English words from: " << path;
       loaded = true;
     }
@@ -124,8 +122,8 @@ void EnglishFallbackRewriter::InitBaseDictionary() {
 
   // Fallback to embedded dictionary data if external file is absent or failed to load.
   if (!loaded) {
-    if (base_dictionary_.LoadFromString(kEmbeddedEnglishDictionaryData)) {
-      VLOG(1) << "Loaded " << base_dictionary_.size()
+    if (base_dict->LoadFromString(kEmbeddedEnglishDictionaryData)) {
+      VLOG(1) << "Loaded " << base_dict->size()
               << " English words from embedded dictionary.";
     } else {
       LOG(ERROR) << "Failed to load embedded English dictionary data.";
@@ -133,22 +131,38 @@ void EnglishFallbackRewriter::InitBaseDictionary() {
   }
 }
 
-void EnglishFallbackRewriter::MaybeUpdateUserDictionary(
-    const GruPenaltyConfig& config) const {
-  absl::MutexLock lock(mutex_);
-  std::string file_path = user_dict_file_path_;
-  if (file_path.empty()) {
-    file_path = GruConfigManager::GetDefaultDataFilePath("user_english_words.txt");
-    user_dict_file_path_ = file_path;
+struct DictionaryState {
+  absl::Mutex mutex;
+  bool base_initialized = false;
+  dictionary::EnglishDictionary base_dict ABSL_GUARDED_BY(mutex);
+  dictionary::EnglishDictionary user_dict ABSL_GUARDED_BY(mutex);
+  std::vector<std::string> loaded_user_words ABSL_GUARDED_BY(mutex);
+  int64_t last_user_dict_mtime ABSL_GUARDED_BY(mutex) = -1;
+  std::string user_dict_file_path ABSL_GUARDED_BY(mutex);
+};
+
+DictionaryState* GetSharedDictionaryState() {
+  static auto* kState = new DictionaryState();
+  return kState;
+}
+
+void UpdateUserDictionaryLocked(
+    const GruPenaltyConfig& config,
+    dictionary::EnglishDictionary* user_dict,
+    std::vector<std::string>* loaded_user_words,
+    int64_t* last_mtime,
+    std::string* file_path) {
+  if (file_path->empty()) {
+    *file_path = GruConfigManager::GetDefaultDataFilePath("user_english_words.txt");
   }
 
   int64_t file_mtime = -1;
-  if (!file_path.empty() && std::filesystem::exists(file_path)) {
-    file_mtime = GruConfigManager::GetFileMtime(file_path);
+  if (!file_path->empty() && std::filesystem::exists(*file_path)) {
+    file_mtime = GruConfigManager::GetFileMtime(*file_path);
   }
 
-  if (loaded_user_words_ == config.user_english_words &&
-      last_user_dict_file_mtime_ == file_mtime) {
+  if (*loaded_user_words == config.user_english_words &&
+      *last_mtime == file_mtime) {
     return;
   }
 
@@ -157,19 +171,112 @@ void EnglishFallbackRewriter::MaybeUpdateUserDictionary(
     new_user_dict.AddWord(word);
   }
 
-  if (file_mtime != -1 && !file_path.empty()) {
-    new_user_dict.LoadFromFile(file_path);
+  if (file_mtime != -1 && !file_path->empty()) {
+    new_user_dict.LoadFromFile(*file_path);
   }
 
-  user_dictionary_ = std::move(new_user_dict);
-  loaded_user_words_ = config.user_english_words;
-  last_user_dict_file_mtime_ = file_mtime;
-  VLOG(1) << "Loaded " << user_dictionary_.size() << " user English words.";
+  *user_dict = std::move(new_user_dict);
+  *loaded_user_words = config.user_english_words;
+  *last_mtime = file_mtime;
+  VLOG(1) << "Loaded " << user_dict->size() << " user English words.";
+}
+
+void EnsureSharedDictionaryUpToDate(const GruPenaltyConfig& config) {
+  DictionaryState* state = GetSharedDictionaryState();
+  absl::MutexLock lock(state->mutex);
+  if (!state->base_initialized) {
+    LoadBaseDictionary(&state->base_dict);
+    state->base_initialized = true;
+  }
+  UpdateUserDictionaryLocked(config, &state->user_dict,
+                             &state->loaded_user_words,
+                             &state->last_user_dict_mtime,
+                             &state->user_dict_file_path);
+}
+
+size_t MatchLongestWordInDictionaries(
+    const dictionary::EnglishDictionary& base_dict,
+    const dictionary::EnglishDictionary& user_dict,
+    absl::string_view text, size_t min_word_length,
+    std::string* orig_word) {
+  std::string user_orig;
+  const size_t user_len =
+      user_dict.LongestPrefixMatch(text, min_word_length, &user_orig);
+  std::string base_orig;
+  const size_t base_len =
+      base_dict.LongestPrefixMatch(text, min_word_length, &base_orig);
+  if (user_len >= base_len && user_len > 0) {
+    *orig_word = std::move(user_orig);
+    return user_len;
+  }
+  if (base_len > 0) {
+    *orig_word = std::move(base_orig);
+    return base_len;
+  }
+  orig_word->clear();
+  return 0;
+}
+
+bool ShouldTriggerFallbackCommon(const ConversionRequest& request,
+                                 const Segments& segments,
+                                 const GruPenaltyConfig& config,
+                                 bool has_words) {
+  if (!config.enable_english_fallback) {
+    return false;
+  }
+  if (request.request_type() != ConversionRequest::CONVERSION) {
+    return false;
+  }
+  if (request.config().preedit_method() == config::Config::KANA) {
+    return false;
+  }
+
+  const bool is_live_conversion =
+      (request.options().composer_key_selection ==
+       ConversionRequest::PREDICTION_KEY);
+  if (is_live_conversion && !config.enable_live_conversion_english_fallback) {
+    return false;
+  }
+
+  if (segments.conversion_segments_size() == 0 ||
+      request.composer().GetLength() == 0 || !has_words) {
+    return false;
+  }
+
+  for (size_t i = 0; i < segments.conversion_segments_size(); ++i) {
+    const Segment& seg = segments.conversion_segment(i);
+    if (seg.candidates_size() > 0 &&
+        (seg.candidate(0).cost >= config.english_fallback_cost_threshold ||
+         seg.candidate(0).wcost >= config.english_fallback_cost_threshold)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+void EnglishFallbackRewriter::InitBaseDictionary() {
+  absl::MutexLock lock(mutex_);
+  LoadBaseDictionary(&base_dictionary_);
+}
+
+void EnglishFallbackRewriter::MaybeUpdateUserDictionary(
+    const GruPenaltyConfig& config) const {
+  absl::MutexLock lock(mutex_);
+  UpdateUserDictionaryLocked(config, &user_dictionary_, &loaded_user_words_,
+                             &last_user_dict_file_mtime_,
+                             &user_dict_file_path_);
 }
 
 bool EnglishFallbackRewriter::Reload() {
   if (!is_injected_dictionary_) {
     InitBaseDictionary();
+    DictionaryState* state = GetSharedDictionaryState();
+    absl::MutexLock lock(state->mutex);
+    state->base_initialized = false;
+    state->loaded_user_words.clear();
+    state->last_user_dict_mtime = -1;
   }
   {
     absl::MutexLock lock(mutex_);
@@ -178,6 +285,9 @@ bool EnglishFallbackRewriter::Reload() {
   }
   const auto config = GruConfigManager::LoadConfig();
   MaybeUpdateUserDictionary(config);
+  if (!is_injected_dictionary_) {
+    EnsureSharedDictionaryUpToDate(config);
+  }
   return true;
 }
 
@@ -251,46 +361,12 @@ void EnglishFallbackRewriter::AddEnglishCandidates(
 bool EnglishFallbackRewriter::ShouldTriggerFallback(
     const ConversionRequest& request, const Segments& segments,
     const GruPenaltyConfig& config) const {
-  if (!config.enable_english_fallback) {
-    return false;
-  }
-
-  if (request.request_type() != ConversionRequest::CONVERSION) {
-    return false;
-  }
-  if (request.config().preedit_method() == config::Config::KANA) {
-    return false;
-  }
-
-  const bool is_live_conversion =
-      (request.options().composer_key_selection ==
-       ConversionRequest::PREDICTION_KEY);
-  if (is_live_conversion && !config.enable_live_conversion_english_fallback) {
-    return false;
-  }
-
-  if (segments.conversion_segments_size() == 0) {
-    return false;
-  }
-  if (request.composer().GetLength() == 0) {
-    return false;
-  }
+  bool has_words = false;
   {
     absl::MutexLock lock(mutex_);
-    if (base_dictionary_.empty() && user_dictionary_.empty()) {
-      return false;
-    }
+    has_words = !base_dictionary_.empty() || !user_dictionary_.empty();
   }
-
-  for (size_t i = 0; i < segments.conversion_segments_size(); ++i) {
-    const Segment& seg = segments.conversion_segment(i);
-    if (seg.candidates_size() > 0 &&
-        (seg.candidate(0).cost >= config.english_fallback_cost_threshold ||
-         seg.candidate(0).wcost >= config.english_fallback_cost_threshold)) {
-      return true;
-    }
-  }
-  return false;
+  return ShouldTriggerFallbackCommon(request, segments, config, has_words);
 }
 
 bool EnglishFallbackRewriter::MatchWordAtOffset(
@@ -301,53 +377,223 @@ bool EnglishFallbackRewriter::MatchWordAtOffset(
   if (offset >= total_composed_len) {
     return false;
   }
-  const size_t remaining_preedit_len = total_composed_len - offset;
-  const std::string remaining_raw =
-      composer.GetRawSubString(offset, remaining_preedit_len);
+
+  const std::vector<composer::ChunkSpan> spans = composer.GetChunkSpans();
+  size_t start_idx = spans.size();
+  for (size_t i = 0; i < spans.size(); ++i) {
+    if (spans[i].preedit_start == offset) {
+      start_idx = i;
+      break;
+    }
+    if (spans[i].preedit_start > offset) {
+      return false;
+    }
+  }
+  if (start_idx == spans.size()) {
+    return false;
+  }
+
+  std::string remaining_raw;
+  for (size_t i = start_idx; i < spans.size(); ++i) {
+    if (spans[i].preedit_start + spans[i].preedit_len > total_composed_len) {
+      break;
+    }
+    remaining_raw.append(spans[i].raw);
+  }
+  if (remaining_raw.empty()) {
+    return false;
+  }
 
   size_t matched_raw_len = 0;
   std::string orig_word;
   {
     absl::MutexLock lock(mutex_);
-    std::string user_orig;
-    const size_t user_len = user_dictionary_.LongestPrefixMatch(
-        remaining_raw, min_word_length, &user_orig);
-    std::string base_orig;
-    const size_t base_len = base_dictionary_.LongestPrefixMatch(
-        remaining_raw, min_word_length, &base_orig);
-    if (user_len >= base_len && user_len > 0) {
-      matched_raw_len = user_len;
-      orig_word = user_orig;
-    } else if (base_len > 0) {
-      matched_raw_len = base_len;
-      orig_word = base_orig;
-    }
+    matched_raw_len = MatchLongestWordInDictionaries(
+        base_dictionary_, user_dictionary_, remaining_raw, min_word_length,
+        &orig_word);
   }
   if (matched_raw_len == 0) {
     return false;
   }
 
   const std::string word = remaining_raw.substr(0, matched_raw_len);
+  const size_t target_raw_end = spans[start_idx].raw_start + matched_raw_len;
 
-  // Find the number of preedit characters corresponding to matched_raw_len.
-  for (size_t p = 1; p <= remaining_preedit_len; ++p) {
-    const std::string raw_sub = composer.GetRawSubString(offset, p);
-    if (raw_sub.length() == matched_raw_len) {
-      if (raw_sub == word) {
-        *matched_word = word;
-        if (matched_original_word != nullptr) {
-          *matched_original_word = orig_word;
-        }
-        *matched_preedit_chars = p;
-        return true;
-      }
-      break;
-    } else if (raw_sub.length() > matched_raw_len) {
-      // Exceeded without exact match (e.g. boundary split within Romaji token)
-      break;
+  for (size_t j = start_idx; j < spans.size(); ++j) {
+    const size_t chunk_raw_end = spans[j].raw_start + spans[j].raw_len;
+    if (chunk_raw_end < target_raw_end) {
+      continue;
     }
+    if (chunk_raw_end == target_raw_end) {
+      *matched_word = word;
+      if (matched_original_word != nullptr) {
+        *matched_original_word = orig_word;
+      }
+      *matched_preedit_chars =
+          (spans[j].preedit_start + spans[j].preedit_len) - offset;
+      return true;
+    }
+    // `target_raw_end` falls strictly inside `spans[j]`. Only allow splitting
+    // inside non-Romaji (e.g. HALF_ASCII) 1:1 chunks; never split mid-Romaji
+    // chunk (that must be handled via Composer chunk separation).
+    if (!spans[j].is_romaji && spans[j].preedit_len == spans[j].raw_len) {
+      const size_t inner_raw = target_raw_end - spans[j].raw_start;
+      *matched_word = word;
+      if (matched_original_word != nullptr) {
+        *matched_original_word = orig_word;
+      }
+      *matched_preedit_chars = (spans[j].preedit_start + inner_raw) - offset;
+      return true;
+    }
+    return false;
   }
   return false;
+}
+
+std::vector<size_t> EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
+    const composer::ComposerData& composer, const Segments& segments,
+    const ConversionRequest& request, size_t base_preedit_offset) {
+  const auto config = GruConfigManager::LoadConfig();
+  EnsureSharedDictionaryUpToDate(config);
+
+  DictionaryState* dict_state = GetSharedDictionaryState();
+  bool has_words = false;
+  {
+    absl::MutexLock lock(dict_state->mutex);
+    has_words = !dict_state->base_dict.empty() || !dict_state->user_dict.empty();
+  }
+  if (!ShouldTriggerFallbackCommon(request, segments, config, has_words)) {
+    return {};
+  }
+
+  struct SegRange {
+    size_t start = 0;
+    size_t end = 0;
+    bool is_free = false;
+    bool is_high_cost = false;
+  };
+  std::vector<SegRange> seg_ranges;
+  seg_ranges.reserve(segments.conversion_segments_size());
+  size_t cur_pos = base_preedit_offset;
+  for (size_t i = 0; i < segments.conversion_segments_size(); ++i) {
+    const Segment& seg = segments.conversion_segment(i);
+    const size_t len = Util::CharsLen(seg.key());
+    const bool high_cost =
+        seg.candidates_size() > 0 &&
+        (seg.candidate(0).cost >= config.english_fallback_cost_threshold ||
+         seg.candidate(0).wcost >= config.english_fallback_cost_threshold);
+    seg_ranges.push_back(SegRange{
+        .start = cur_pos,
+        .end = cur_pos + len,
+        .is_free = (seg.segment_type() == Segment::FREE),
+        .is_high_cost = high_cost,
+    });
+    cur_pos += len;
+  }
+  const size_t max_seg_preedit_end = cur_pos;
+
+  const std::vector<composer::ChunkSpan> spans = composer.GetChunkSpans();
+  if (spans.empty()) {
+    return {};
+  }
+
+  std::string active_raw;
+  size_t active_span_end = 0;
+  for (size_t i = 0; i < spans.size(); ++i) {
+    if (spans[i].preedit_start >= max_seg_preedit_end) {
+      break;
+    }
+    active_raw.append(spans[i].raw);
+    active_span_end = i + 1;
+  }
+  if (active_raw.empty()) {
+    return {};
+  }
+
+  auto span_range_is_free_and_high_cost = [&](size_t start_p, size_t end_p) {
+    bool overlapped = false;
+    bool all_free = true;
+    bool any_high_cost = false;
+    for (const auto& sr : seg_ranges) {
+      if (sr.end <= start_p || sr.start >= end_p) {
+        continue;
+      }
+      overlapped = true;
+      if (!sr.is_free) {
+        all_free = false;
+        break;
+      }
+      if (sr.is_high_cost) {
+        any_high_cost = true;
+      }
+    }
+    return overlapped && all_free && any_high_cost;
+  };
+
+  std::vector<size_t> split_offsets;
+  size_t idx = 0;
+  while (idx < active_span_end) {
+    if (spans[idx].preedit_start < base_preedit_offset ||
+        spans[idx].raw_len == 0) {
+      ++idx;
+      continue;
+    }
+
+    bool start_in_free_seg = false;
+    for (const auto& sr : seg_ranges) {
+      if (sr.end > spans[idx].preedit_start &&
+          sr.start <= spans[idx].preedit_start) {
+        start_in_free_seg = sr.is_free;
+        break;
+      }
+    }
+    if (!start_in_free_seg) {
+      ++idx;
+      continue;
+    }
+
+    const absl::string_view remaining_raw =
+        absl::string_view(active_raw).substr(spans[idx].raw_start);
+    std::string orig_word;
+    size_t matched_raw_len = 0;
+    {
+      absl::MutexLock lock(dict_state->mutex);
+      matched_raw_len = MatchLongestWordInDictionaries(
+          dict_state->base_dict, dict_state->user_dict, remaining_raw,
+          config.english_fallback_min_word_length, &orig_word);
+    }
+    if (matched_raw_len == 0) {
+      ++idx;
+      continue;
+    }
+
+    const size_t target_raw_end = spans[idx].raw_start + matched_raw_len;
+    size_t j = idx;
+    while (j < active_span_end &&
+           spans[j].raw_start + spans[j].raw_len < target_raw_end) {
+      ++j;
+    }
+    if (j >= active_span_end) {
+      ++idx;
+      continue;
+    }
+
+    const size_t chunk_raw_end = spans[j].raw_start + spans[j].raw_len;
+    if (spans[j].raw_start < target_raw_end &&
+        target_raw_end < chunk_raw_end && spans[j].is_romaji) {
+      if (span_range_is_free_and_high_cost(
+              spans[idx].preedit_start,
+              spans[j].preedit_start + spans[j].preedit_len)) {
+        split_offsets.push_back(target_raw_end);
+        idx = j + 1;
+        continue;
+      }
+    }
+
+    ++idx;
+  }
+
+  return split_offsets;
 }
 
 std::optional<RewriterInterface::ResizeSegmentsRequest>

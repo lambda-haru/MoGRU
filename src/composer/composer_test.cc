@@ -3238,5 +3238,84 @@ TEST_F(ComposerTest, CreateEmptyComposerData) {
   EXPECT_EQ(data.source_text(), "");
 }
 
+TEST_F(ComposerTest, SeparateChunksAtRawBoundaries) {
+  auto create_default_composer = [](absl::string_view input_seq) {
+    auto table = std::make_shared<Table>();
+    table->InitializeWithRequestAndConfig(Request::default_instance(),
+                                          Config::default_instance());
+    Composer composer(table, Request::default_instance(),
+                      Config::default_instance());
+    for (char c : input_seq) {
+      commands::KeyEvent key;
+      key.set_key_code(c);
+      composer.InsertCharacterKeyEvent(key);
+    }
+    return composer;
+  };
+
+  struct Case {
+    const char* raw_input;
+    const char* before_preedit;
+    size_t split_offset;
+    const char* after_preedit;
+  };
+
+  const Case cases[] = {
+      {"wordapuri", "をｒだぷり", 4, "をｒｄあぷり"},
+      {"dockera", "どｃけら", 6, "どｃけｒあ"},
+      {"englisha", "えんｇぃしゃ", 7, "えんｇぃｓｈあ"},
+      {"gita", "ぎた", 3, "ぎｔあ"},
+      {"gitsu", "ぎつ", 3, "ぎｔす"},
+      {"gitwo", "ぎとぉ", 3, "ぎｔを"},
+      {"testwo", "てｓとぉ", 4, "てｓｔを"},
+      {"classwo", "ｃぁっすぉ", 5, "ｃぁっｓを"},
+      {"githa", "ぎてゃ", 3, "ぎｔは"},
+      {"loginno", "ぉぎんお", 5, "ぉぎｎの"},
+      {"linuxno", "ぃぬんお", 5, "ぃぬｘの"},
+  };
+
+  for (const auto& tc : cases) {
+    Composer composer = create_default_composer(tc.raw_input);
+    EXPECT_EQ(composer.GetStringForPreedit(), tc.before_preedit)
+        << tc.raw_input;
+    EXPECT_TRUE(composer.SeparateChunksAtRawBoundaries({tc.split_offset}))
+        << tc.raw_input;
+    EXPECT_EQ(composer.GetStringForPreedit(), tc.after_preedit)
+        << tc.raw_input;
+    EXPECT_EQ(composer.GetRawString(), tc.raw_input) << tc.raw_input;
+    EXPECT_EQ(composer.GetCursor(), composer.GetLength()) << tc.raw_input;
+  }
+
+  // Already aligned boundary should be a no-op returning false.
+  Composer aligned = create_default_composer("mergesuru");
+  EXPECT_FALSE(aligned.SeparateChunksAtRawBoundaries({5}));
+  EXPECT_EQ(aligned.GetStringForPreedit(), "めｒげする");
+
+  // Mixed-case Shift prefix preserves raw casing across separation.
+  {
+    auto table = std::make_shared<Table>();
+    table->InitializeWithRequestAndConfig(Request::default_instance(),
+                                          Config::default_instance());
+    Composer composer(table, Request::default_instance(),
+                      Config::default_instance());
+    commands::KeyEvent shift_w;
+    shift_w.set_key_code('W');
+    shift_w.add_modifier_keys(commands::KeyEvent::SHIFT);
+    composer.InsertCharacterKeyEvent(shift_w);
+    for (char c : std::string("ordapuri")) {
+      commands::KeyEvent key;
+      key.set_key_code(c);
+      composer.InsertCharacterKeyEvent(key);
+    }
+    EXPECT_TRUE(composer.SeparateChunksAtRawBoundaries({4}));
+    EXPECT_EQ(composer.GetRawString(), "Wordapuri");
+    EXPECT_EQ(composer.GetRawSubString(0, 3), "Wor");  // W + o + r
+    EXPECT_EQ(composer.GetStringForPreedit().substr(
+                  composer.GetStringForPreedit().size() -
+                  std::string("あぷり").size()),
+              "あぷり");
+  }
+}
+
 }  // namespace composer
 }  // namespace mozc
