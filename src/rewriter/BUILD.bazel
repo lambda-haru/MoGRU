@@ -1842,6 +1842,7 @@ mozc_cc_library(
         "//composer",
         "//config:gru_config",
         "//converter:attribute",
+        "//converter:immutable_converter_interface",
         "//converter:segments",
         "//dictionary:english_dictionary",
         "//dictionary:pos_matcher",

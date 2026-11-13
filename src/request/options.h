@@ -145,6 +145,10 @@ struct ConversionOptions {
 
   // This conversion request is called by predictor for realtime conversion.
   bool used_in_predictor_realtime_conversion = false;
+
+  // Preedit character offset corresponding to the start of `key()` inside
+  // `composer`, when `key()` omits a frozen live-conversion prefix.
+  size_t base_preedit_offset = 0;
 };
 
 static_assert(std::is_trivially_copyable<ConversionOptions>::value,

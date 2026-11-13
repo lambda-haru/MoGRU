@@ -172,7 +172,8 @@ Rewriter::Rewriter(const engine::Modules& modules,
   AddRewriter(std::make_unique<ZipcodeRewriter>(pos_matcher));
   AddRewriter(std::make_unique<DiceRewriter>());
   AddRewriter(std::make_unique<SmallLetterRewriter>());
-  AddRewriter(std::make_unique<EnglishFallbackRewriter>(pos_matcher));
+  AddRewriter(std::make_unique<EnglishFallbackRewriter>(pos_matcher,
+                                                        immutable_converter));
   AddRewriter(std::make_unique<GruRewriter>(immutable_converter));
 
   if (absl::GetFlag(FLAGS_use_history_rewriter)) {

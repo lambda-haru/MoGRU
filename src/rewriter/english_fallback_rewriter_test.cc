@@ -1042,5 +1042,171 @@ TEST_F(EnglishFallbackRewriterTest,
   }
 }
 
+TEST_F(EnglishFallbackRewriterTest,
+       CheckAdditionalResizeSegmentsRequestMultiWord) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("apple");
+  dict.AddWord("pencil");
+
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  composer::Composer composer = CreateComposer("ApplePencilni");
+  ASSERT_EQ(composer.GetStringForPreedit(), "AっｐぇPえんしｌに");
+  // Simulate 1st word already resized into FIXED_BOUNDARY ("Aっｐぇ", 4 chars),
+  // while 2nd word + particle remains split across FREE segments.
+  Segments segments;
+  segments.set_resized(true);
+
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("Aっｐぇ");
+  seg0->set_segment_type(Segment::FIXED_BOUNDARY);
+  auto* c0 = seg0->add_candidate();
+  c0->key = "Aっｐぇ";
+  c0->value = "Aっpぇ";
+  c0->cost = 25000;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("Pえ");
+  seg1->set_segment_type(Segment::FREE);
+  auto* c1 = seg1->add_candidate();
+  c1->key = "Pえ";
+  c1->value = "Pe";
+  c1->cost = 25000;
+
+  Segment* seg2 = segments.add_segment();
+  seg2->set_key("んしｌに");
+  seg2->set_segment_type(Segment::FREE);
+  auto* c2 = seg2->add_candidate();
+  c2->key = "んしｌに";
+  c2->value = "ncilに";
+  c2->cost = 25000;
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+
+  // Standard CheckResizeSegmentsRequest respects segments.resized().
+  EXPECT_FALSE(
+      rewriter.CheckResizeSegmentsRequest(request, segments).has_value());
+
+  // CheckAdditionalResizeSegmentsRequest skips exact FIXED_BOUNDARY seg0 and
+  // requests boundary resize for the 2nd English word ("Pえんしｌ", 5 chars).
+  const auto additional_req =
+      rewriter.CheckAdditionalResizeSegmentsRequest(request, segments);
+  ASSERT_TRUE(additional_req.has_value());
+  EXPECT_EQ(additional_req->segment_index, 1);
+  EXPECT_EQ(additional_req->segment_sizes[0], 5);
+
+  // If 2nd word crosses a user FIXED_BOUNDARY segment, do not resize.
+  seg1->set_segment_type(Segment::FIXED_BOUNDARY);
+  EXPECT_FALSE(rewriter.CheckAdditionalResizeSegmentsRequest(request, segments)
+                   .has_value());
+}
+
+TEST_F(EnglishFallbackRewriterTest,
+       RewriteMultiWordTrailingParticleClearsMetaCandidatesAndDoesNotSlice) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("YouTube");
+
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  auto table = std::make_shared<composer::Table>();
+  commands::Request client_request;
+  config::Config default_config;
+  table->InitializeWithRequestAndConfig(client_request, default_config);
+  // Simulate custom Romaji table where "e" -> "う" ("be" -> "ｂ" + "う").
+  table->AddRule("e", "う", "");
+  table->AddRule("be", "ｂう", "");
+
+  composer::Composer composer(table, client_request, default_config);
+  InsertASCIISequence("YouTubeni", &composer);
+  ASSERT_EQ(composer.GetStringForPreedit(), "YおうTうｂうに");
+
+  Segments segments;
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("YおうTうｂ");
+  auto* c0 = seg0->add_candidate();
+  c0->key = "YおうTうｂ";
+  c0->value = "YおうTうb";
+  c0->cost = 25000;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("うに");
+  auto* c1 = seg1->add_candidate();
+  c1->key = "うに";
+  c1->value = "ウニ";  // Previously sliced into "ニ"!
+  c1->cost = 5000;
+  auto* m1 = seg1->add_meta_candidate();
+  m1->key = "うに";
+  m1->value = "うに";  // Stale meta candidate that must be cleared!
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+
+  EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+  ASSERT_EQ(segments.conversion_segments_size(), 2);
+  EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "YouTube");
+
+  const Segment& ni_seg = segments.conversion_segment(1);
+  EXPECT_EQ(ni_seg.key(), "に");
+  ASSERT_GE(ni_seg.candidates_size(), 1);
+  // Without ImmutableConverter, extra_seg uses extra_key ("に"), never "ニ".
+  EXPECT_EQ(ni_seg.candidate(0).value, "に");
+  // Stale "うに" meta-candidate from reused last_seg must be cleared.
+  EXPECT_EQ(ni_seg.meta_candidates_size(), 0);
+}
+
+TEST_F(EnglishFallbackRewriterTest, BasePreeditOffsetAlignsChunks) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("Apple");
+
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  composer::Composer composer = CreateComposer("korehaAppleni");
+  ASSERT_EQ(composer.GetStringForPreedit(), "これはAっｐぇに");
+  // Active key skips frozen prefix "これは" (3 chars).
+  Segments segments;
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("Aっ");
+  auto* c0 = seg0->add_candidate();
+  c0->key = "Aっ";
+  c0->value = "Aっ";
+  c0->cost = 25000;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("ｐぇに");
+  auto* c1 = seg1->add_candidate();
+  c1->key = "ｐぇに";
+  c1->value = "pぇに";
+  c1->cost = 25000;
+
+  ConversionRequest::Options options;
+  options.base_preedit_offset = 3;  // "これは"
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetOptions(options)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .SetKey("Aっｐぇに")
+          .Build();
+
+  const auto resize_req =
+      rewriter.CheckResizeSegmentsRequest(request, segments);
+  ASSERT_TRUE(resize_req.has_value());
+  EXPECT_EQ(resize_req->segment_index, 0);
+  EXPECT_EQ(resize_req->segment_sizes[0], 4);  // "あっｐぇ"
+
+  EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+  ASSERT_EQ(segments.conversion_segments_size(), 2);
+  EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "Apple");
+  EXPECT_EQ(segments.conversion_segment(1).key(), "に");
+  EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "に");
+}
+
 }  // namespace
 }  // namespace mozc

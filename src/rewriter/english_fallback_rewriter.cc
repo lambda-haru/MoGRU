@@ -51,6 +51,7 @@
 #include "config/gru_config.h"
 #include "converter/attribute.h"
 #include "converter/candidate.h"
+#include "converter/immutable_converter_interface.h"
 #include "converter/segments.h"
 #include "dictionary/english_dictionary.h"
 #include "dictionary/pos_matcher.h"
@@ -254,6 +255,44 @@ bool ShouldTriggerFallbackCommon(const ConversionRequest& request,
   return false;
 }
 
+void PopulateExtraSegmentCandidates(
+    const ConversionRequest& request, const std::string& extra_key,
+    uint16_t extra_lid, uint16_t extra_rid,
+    const ImmutableConverterInterface* immutable_converter,
+    Segment* extra_seg) {
+  extra_seg->set_key(extra_key);
+  extra_seg->clear_candidates();
+  extra_seg->clear_meta_candidates();
+
+  if (immutable_converter != nullptr) {
+    Segments temp_segments;
+    Segment* temp_seg = temp_segments.add_segment();
+    temp_seg->set_key(extra_key);
+    temp_seg->set_segment_type(Segment::FIXED_BOUNDARY);
+    if (immutable_converter->Convert(request.options(), &temp_segments) &&
+        temp_segments.conversion_segments_size() > 0 &&
+        temp_segments.conversion_segment(0).candidates_size() > 0) {
+      const Segment& converted = temp_segments.conversion_segment(0);
+      for (size_t k = 0; k < converted.candidates_size(); ++k) {
+        *extra_seg->add_candidate() = converted.candidate(k);
+      }
+      return;
+    }
+  }
+
+  auto* cand = extra_seg->add_candidate();
+  cand->key = extra_key;
+  cand->content_key = extra_key;
+  cand->value = extra_key;
+  cand->content_value = extra_key;
+  cand->cost = 3000;
+  cand->wcost = 2000;
+  cand->structure_cost = 1000;
+  cand->lid = extra_lid;
+  cand->rid = extra_rid;
+  cand->converted_segment_count = 1;
+}
+
 }  // namespace
 
 void EnglishFallbackRewriter::InitBaseDictionary() {
@@ -292,16 +331,20 @@ bool EnglishFallbackRewriter::Reload() {
 }
 
 EnglishFallbackRewriter::EnglishFallbackRewriter(
-    const dictionary::PosMatcher& pos_matcher)
-    : unknown_id_(pos_matcher.GetUnknownId()) {
+    const dictionary::PosMatcher& pos_matcher,
+    const ImmutableConverterInterface* immutable_converter)
+    : unknown_id_(pos_matcher.GetUnknownId()),
+      immutable_converter_(immutable_converter) {
   InitBaseDictionary();
   MaybeUpdateUserDictionary(GruConfigManager::LoadConfig());
 }
 
 EnglishFallbackRewriter::EnglishFallbackRewriter(
     const dictionary::PosMatcher& pos_matcher,
-    dictionary::EnglishDictionary dictionary)
+    dictionary::EnglishDictionary dictionary,
+    const ImmutableConverterInterface* immutable_converter)
     : unknown_id_(pos_matcher.GetUnknownId()),
+      immutable_converter_(immutable_converter),
       is_injected_dictionary_(true) {
   {
     absl::MutexLock lock(mutex_);
@@ -449,6 +492,33 @@ bool EnglishFallbackRewriter::MatchWordAtOffset(
     return false;
   }
   return false;
+}
+
+bool EnglishFallbackRewriter::MatchBestWordAtOffset(
+    const composer::ComposerData& composer, size_t offset,
+    size_t total_composed_len, size_t min_word_length,
+    std::string* matched_word, std::string* matched_original_word,
+    size_t* matched_preedit_chars) const {
+  if (!MatchWordAtOffset(composer, offset, total_composed_len, min_word_length,
+                         matched_word, matched_original_word,
+                         matched_preedit_chars)) {
+    return false;
+  }
+  const size_t current_raw_len = matched_word->size();
+  // Prevent a short spurious match (e.g., Japanese particle "と" + 'P' ->
+  // "top") from stealing the leading character of a strictly longer English
+  // word starting inside the same span (e.g., "Pencil").
+  for (size_t q = offset + 1; q < offset + *matched_preedit_chars; ++q) {
+    std::string next_word;
+    std::string next_orig;
+    size_t next_preedit_chars = 0;
+    if (MatchWordAtOffset(composer, q, total_composed_len, min_word_length,
+                          &next_word, &next_orig, &next_preedit_chars) &&
+        next_word.size() > current_raw_len) {
+      return false;
+    }
+  }
+  return true;
 }
 
 std::vector<size_t> EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
@@ -600,7 +670,22 @@ std::vector<size_t> EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
 std::optional<RewriterInterface::ResizeSegmentsRequest>
 EnglishFallbackRewriter::CheckResizeSegmentsRequest(
     const ConversionRequest& request, const Segments& segments) const {
-  if (segments.resized()) {
+  return CheckResizeSegmentsRequestInternal(request, segments,
+                                            /*allow_when_resized=*/false);
+}
+
+std::optional<RewriterInterface::ResizeSegmentsRequest>
+EnglishFallbackRewriter::CheckAdditionalResizeSegmentsRequest(
+    const ConversionRequest& request, const Segments& segments) const {
+  return CheckResizeSegmentsRequestInternal(request, segments,
+                                            /*allow_when_resized=*/true);
+}
+
+std::optional<RewriterInterface::ResizeSegmentsRequest>
+EnglishFallbackRewriter::CheckResizeSegmentsRequestInternal(
+    const ConversionRequest& request, const Segments& segments,
+    const bool allow_when_resized) const {
+  if (!allow_when_resized && segments.resized()) {
     return std::nullopt;
   }
 
@@ -611,15 +696,16 @@ EnglishFallbackRewriter::CheckResizeSegmentsRequest(
   }
 
   const composer::ComposerData& composer = request.composer();
+  const size_t base_preedit_offset = request.options().base_preedit_offset;
 
-  size_t total_composed_len = 0;
+  size_t total_composed_len = base_preedit_offset;
   for (size_t i = 0; i < segments.conversion_segments_size(); ++i) {
     total_composed_len += Util::CharsLen(segments.conversion_segment(i).key());
   }
 
   size_t current_seg_idx = 0;
-  size_t current_preedit_offset = 0;
-  size_t skip_until_preedit_offset = 0;
+  size_t current_preedit_offset = base_preedit_offset;
+  size_t skip_until_preedit_offset = base_preedit_offset;
 
   while (current_seg_idx < segments.conversion_segments_size()) {
     const Segment& cur_seg = segments.conversion_segment(current_seg_idx);
@@ -651,66 +737,82 @@ EnglishFallbackRewriter::CheckResizeSegmentsRequest(
       continue;
     }
 
-    if (current_preedit_offset < skip_until_preedit_offset) {
-      current_preedit_offset += cur_seg_len;
-      current_seg_idx++;
-      continue;
-    }
-
-    std::string matched_word;
-    std::string matched_original_word;
-    size_t matched_preedit_chars = 0;
-    if (!MatchWordAtOffset(composer, current_preedit_offset, total_composed_len,
-                           config.english_fallback_min_word_length,
-                           &matched_word, &matched_original_word,
-                           &matched_preedit_chars)) {
-      current_preedit_offset += cur_seg_len;
-      current_seg_idx++;
-      continue;
-    }
-
-    size_t covered_segments = 0;
-    size_t accumulated_chars = 0;
-    bool contains_high_cost = false;
-    bool all_free = true;
-
-    for (size_t j = current_seg_idx; j < segments.conversion_segments_size();
-         ++j) {
-      const Segment& seg = segments.conversion_segment(j);
-      accumulated_chars += Util::CharsLen(seg.key());
-      covered_segments++;
-      if (seg.segment_type() != Segment::FREE) {
-        all_free = false;
-      }
-      if (seg.candidates_size() > 0 &&
-          (seg.candidate(0).cost >= config.english_fallback_cost_threshold ||
-           seg.candidate(0).wcost >= config.english_fallback_cost_threshold)) {
-        contains_high_cost = true;
-      }
-      if (accumulated_chars >= matched_preedit_chars) {
-        break;
-      }
-    }
-
-    if (accumulated_chars >= matched_preedit_chars && covered_segments > 0) {
-      const size_t extra_chars = accumulated_chars - matched_preedit_chars;
-      if (!all_free) {
-        skip_until_preedit_offset = std::max(
-            skip_until_preedit_offset,
-            current_preedit_offset + matched_preedit_chars);
-      } else if (contains_high_cost) {
-        if ((covered_segments > 1 || extra_chars > 0) &&
-            matched_preedit_chars <= std::numeric_limits<uint8_t>::max()) {
-          ResizeSegmentsRequest resize_request;
-          resize_request.segment_index = current_seg_idx;
-          resize_request.segment_sizes[0] =
-              static_cast<uint8_t>(matched_preedit_chars);
-          return resize_request;
-        }
-        current_preedit_offset += matched_preedit_chars;
-        current_seg_idx++;
+    bool advanced_exact_match = false;
+    for (size_t p = std::max(current_preedit_offset, skip_until_preedit_offset);
+         p < current_preedit_offset + cur_seg_len; ++p) {
+      std::string matched_word;
+      std::string matched_original_word;
+      size_t matched_preedit_chars = 0;
+      if (!MatchBestWordAtOffset(composer, p, total_composed_len,
+                                 config.english_fallback_min_word_length,
+                                 &matched_word, &matched_original_word,
+                                 &matched_preedit_chars)) {
         continue;
       }
+
+      const size_t leading_chars = p - current_preedit_offset;
+      const size_t needed_chars = leading_chars + matched_preedit_chars;
+
+      size_t covered_segments = 0;
+      size_t accumulated_chars = 0;
+      bool contains_high_cost = false;
+      bool all_free = true;
+
+      for (size_t j = current_seg_idx; j < segments.conversion_segments_size();
+           ++j) {
+        const Segment& seg = segments.conversion_segment(j);
+        accumulated_chars += Util::CharsLen(seg.key());
+        covered_segments++;
+        if (seg.segment_type() != Segment::FREE) {
+          all_free = false;
+        }
+        if (seg.candidates_size() > 0 &&
+            (seg.candidate(0).cost >= config.english_fallback_cost_threshold ||
+             seg.candidate(0).wcost >= config.english_fallback_cost_threshold)) {
+          contains_high_cost = true;
+        }
+        if (accumulated_chars >= needed_chars) {
+          break;
+        }
+      }
+
+      if (accumulated_chars >= needed_chars && covered_segments > 0) {
+        const size_t extra_chars = accumulated_chars - needed_chars;
+        if (!all_free) {
+          skip_until_preedit_offset =
+              std::max(skip_until_preedit_offset, p + matched_preedit_chars);
+        } else if (contains_high_cost) {
+          if (leading_chars > 0 &&
+              leading_chars <= std::numeric_limits<uint8_t>::max() &&
+              matched_preedit_chars <= std::numeric_limits<uint8_t>::max()) {
+            ResizeSegmentsRequest resize_request;
+            resize_request.segment_index = current_seg_idx;
+            resize_request.segment_sizes[0] =
+                static_cast<uint8_t>(leading_chars);
+            resize_request.segment_sizes[1] =
+                static_cast<uint8_t>(matched_preedit_chars);
+            return resize_request;
+          }
+          if (leading_chars == 0 && (covered_segments > 1 || extra_chars > 0) &&
+              matched_preedit_chars <= std::numeric_limits<uint8_t>::max()) {
+            ResizeSegmentsRequest resize_request;
+            resize_request.segment_index = current_seg_idx;
+            resize_request.segment_sizes[0] =
+                static_cast<uint8_t>(matched_preedit_chars);
+            return resize_request;
+          }
+          if (leading_chars == 0 && covered_segments == 1 && extra_chars == 0) {
+            current_preedit_offset += matched_preedit_chars;
+            current_seg_idx++;
+            advanced_exact_match = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (advanced_exact_match) {
+      continue;
     }
 
     current_preedit_offset += cur_seg_len;
@@ -729,17 +831,18 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
   }
 
   const composer::ComposerData& composer = request.composer();
+  const size_t base_preedit_offset = request.options().base_preedit_offset;
 
-  // Total character length across all conversion segments.
-  size_t total_composed_len = 0;
+  // Total character length across all conversion segments in composer space.
+  size_t total_composed_len = base_preedit_offset;
   for (size_t i = 0; i < segments->conversion_segments_size(); ++i) {
     total_composed_len += Util::CharsLen(segments->conversion_segment(i).key());
   }
 
   bool modified = false;
   size_t current_seg_idx = 0;
-  size_t current_preedit_offset = 0;
-  size_t skip_until_preedit_offset = 0;
+  size_t current_preedit_offset = base_preedit_offset;
+  size_t skip_until_preedit_offset = base_preedit_offset;
 
   while (current_seg_idx < segments->conversion_segments_size()) {
     const Segment& cur_seg = segments->conversion_segment(current_seg_idx);
@@ -788,10 +891,10 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
     std::string matched_word;
     std::string matched_original_word;
     size_t matched_preedit_chars = 0;
-    if (!MatchWordAtOffset(composer, current_preedit_offset, total_composed_len,
-                           config.english_fallback_min_word_length,
-                           &matched_word, &matched_original_word,
-                           &matched_preedit_chars)) {
+    if (!MatchBestWordAtOffset(
+            composer, current_preedit_offset, total_composed_len,
+            config.english_fallback_min_word_length, &matched_word,
+            &matched_original_word, &matched_preedit_chars)) {
       current_preedit_offset += cur_seg_len;
       current_seg_idx++;
       continue;
@@ -849,6 +952,9 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
           Segment* seg = segments->mutable_conversion_segment(current_seg_idx);
           seg->set_key(merged_key);
           seg->clear_candidates();
+          if (covered_segments > 1) {
+            seg->clear_meta_candidates();
+          }
           AddEnglishCandidates(matched_word, matched_original_word, merged_key, seg);
 
           if (covered_segments > 1) {
@@ -869,70 +975,36 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
               Util::Utf8SubString(last_seg.key(), used_chars, extra_chars));
           merged_key += used_key;
 
-          std::string extra_val = extra_key;
           uint16_t extra_lid = 0, extra_rid = 0;
           if (last_seg.candidates_size() > 0) {
             extra_lid = last_seg.candidate(0).lid;
             extra_rid = last_seg.candidate(0).rid;
-            const size_t val_len = Util::CharsLen(last_seg.candidate(0).value);
-            if (val_len >= extra_chars) {
-              extra_val = std::string(Util::Utf8SubString(
-                  last_seg.candidate(0).value, val_len - extra_chars,
-                  extra_chars));
-            }
           }
 
           const size_t raw_start_idx =
               segments->history_segments_size() + current_seg_idx;
 
+          Segment* seg =
+              segments->mutable_conversion_segment(current_seg_idx);
+          seg->set_key(merged_key);
+          seg->clear_candidates();
+          seg->clear_meta_candidates();
+          AddEnglishCandidates(matched_word, matched_original_word, merged_key,
+                               seg);
+
+          Segment* extra_seg = nullptr;
           if (covered_segments == 1) {
-            Segment* seg =
-                segments->mutable_conversion_segment(current_seg_idx);
-            seg->set_key(merged_key);
-            seg->clear_candidates();
-            AddEnglishCandidates(matched_word, matched_original_word, merged_key, seg);
-
-            Segment* extra_seg = segments->insert_segment(raw_start_idx + 1);
-            extra_seg->set_key(extra_key);
-            extra_seg->clear_candidates();
-            auto* cand = extra_seg->add_candidate();
-            cand->key = extra_key;
-            cand->content_key = extra_key;
-            cand->value = extra_val;
-            cand->content_value = extra_val;
-            cand->cost = 3000;
-            cand->wcost = 2000;
-            cand->structure_cost = 1000;
-            cand->lid = extra_lid;
-            cand->rid = extra_rid;
-            cand->converted_segment_count = 1;
+            extra_seg = segments->insert_segment(raw_start_idx + 1);
           } else {
-            Segment* seg =
-                segments->mutable_conversion_segment(current_seg_idx);
-            seg->set_key(merged_key);
-            seg->clear_candidates();
-            AddEnglishCandidates(matched_word, matched_original_word, merged_key, seg);
-
             if (covered_segments > 2) {
               segments->erase_segments(raw_start_idx + 1, covered_segments - 2);
             }
-
-            Segment* extra_seg =
+            extra_seg =
                 segments->mutable_conversion_segment(current_seg_idx + 1);
-            extra_seg->set_key(extra_key);
-            extra_seg->clear_candidates();
-            auto* cand = extra_seg->add_candidate();
-            cand->key = extra_key;
-            cand->content_key = extra_key;
-            cand->value = extra_val;
-            cand->content_value = extra_val;
-            cand->cost = 3000;
-            cand->wcost = 2000;
-            cand->structure_cost = 1000;
-            cand->lid = extra_lid;
-            cand->rid = extra_rid;
-            cand->converted_segment_count = 1;
           }
+          PopulateExtraSegmentCandidates(request, extra_key, extra_lid,
+                                         extra_rid, immutable_converter_,
+                                         extra_seg);
         }
 
         modified = true;

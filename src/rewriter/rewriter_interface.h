@@ -75,6 +75,16 @@ class RewriterInterface {
     return std::nullopt;
   }
 
+  // Called during Converter::StartConversion when a prior rewriter resize has
+  // already marked `segments.resized()` true, so remaining Segment::FREE
+  // regions can request additional boundary adjustments without overriding
+  // existing FIXED_BOUNDARY segments.
+  virtual std::optional<ResizeSegmentsRequest>
+  CheckAdditionalResizeSegmentsRequest(const ConversionRequest& request,
+                                       const Segments& segments) const {
+    return std::nullopt;
+  }
+
   virtual bool Rewrite(const ConversionRequest& request,
                        Segments* segments) const = 0;
 

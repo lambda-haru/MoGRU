@@ -74,6 +74,19 @@ class MergerRewriter : public RewriterInterface {
     return std::nullopt;
   }
 
+  std::optional<ResizeSegmentsRequest> CheckAdditionalResizeSegmentsRequest(
+      const ConversionRequest& request,
+      const Segments& segments) const override {
+    for (const std::unique_ptr<RewriterInterface>& rewriter : rewriters_) {
+      std::optional<ResizeSegmentsRequest> resize_request =
+          rewriter->CheckAdditionalResizeSegmentsRequest(request, segments);
+      if (resize_request.has_value()) {
+        return resize_request;
+      }
+    }
+    return std::nullopt;
+  }
+
   bool Rewrite(const ConversionRequest& request,
                Segments* segments) const override {
     if (segments == nullptr) {

@@ -41,6 +41,7 @@
 #include "absl/synchronization/mutex.h"
 #include "composer/composer.h"
 #include "config/gru_config.h"
+#include "converter/immutable_converter_interface.h"
 #include "converter/segments.h"
 #include "dictionary/english_dictionary.h"
 #include "dictionary/pos_matcher.h"
@@ -54,17 +55,25 @@ namespace mozc {
 // merges them into a clean English candidate (e.g. "merge" + "する").
 class EnglishFallbackRewriter : public RewriterInterface {
  public:
-  explicit EnglishFallbackRewriter(const dictionary::PosMatcher& pos_matcher);
+  explicit EnglishFallbackRewriter(
+      const dictionary::PosMatcher& pos_matcher,
+      const ImmutableConverterInterface* immutable_converter = nullptr);
 
   // Constructor for testing with an injected dictionary.
-  EnglishFallbackRewriter(const dictionary::PosMatcher& pos_matcher,
-                          dictionary::EnglishDictionary dictionary);
+  EnglishFallbackRewriter(
+      const dictionary::PosMatcher& pos_matcher,
+      dictionary::EnglishDictionary dictionary,
+      const ImmutableConverterInterface* immutable_converter = nullptr);
 
   ~EnglishFallbackRewriter() override = default;
 
   int capability(const ConversionRequest& request) const override;
 
   std::optional<ResizeSegmentsRequest> CheckResizeSegmentsRequest(
+      const ConversionRequest& request,
+      const Segments& segments) const override;
+
+  std::optional<ResizeSegmentsRequest> CheckAdditionalResizeSegmentsRequest(
       const ConversionRequest& request,
       const Segments& segments) const override;
 
@@ -90,11 +99,21 @@ class EnglishFallbackRewriter : public RewriterInterface {
                              const Segments& segments,
                              const GruPenaltyConfig& config) const;
 
+  std::optional<ResizeSegmentsRequest> CheckResizeSegmentsRequestInternal(
+      const ConversionRequest& request, const Segments& segments,
+      bool allow_when_resized) const;
+
   bool MatchWordAtOffset(const composer::ComposerData& composer, size_t offset,
                          size_t total_composed_len, size_t min_word_length,
                          std::string* matched_word,
                          std::string* matched_original_word,
                          size_t* matched_preedit_chars) const;
+
+  bool MatchBestWordAtOffset(const composer::ComposerData& composer,
+                             size_t offset, size_t total_composed_len,
+                             size_t min_word_length, std::string* matched_word,
+                             std::string* matched_original_word,
+                             size_t* matched_preedit_chars) const;
 
   void AddEnglishCandidates(absl::string_view word,
                             absl::string_view original_word,
@@ -102,6 +121,7 @@ class EnglishFallbackRewriter : public RewriterInterface {
                             Segment* segment) const;
 
   uint16_t unknown_id_ = 0;
+  const ImmutableConverterInterface* immutable_converter_ = nullptr;
   bool is_injected_dictionary_ = false;
 
   mutable absl::Mutex mutex_;

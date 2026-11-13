@@ -4130,5 +4130,140 @@ TEST_F(ConverterTest,
   }
 }
 
+TEST_F(ConverterTest, EnglishFallbackMultiWordWithTrailingParticle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Engine> engine,
+                       MockDataEngineFactory::Create());
+  std::shared_ptr<const ConverterInterface> converter = engine->GetConverter();
+
+  auto make_table = []() {
+    auto table = std::make_shared<composer::Table>();
+    commands::Request client_request;
+    config::Config config;
+    table->InitializeWithRequestAndConfig(client_request, config);
+    return table;
+  };
+
+  auto insert_ascii = [](absl::string_view text, composer::Composer* composer) {
+    for (char c : text) {
+      commands::KeyEvent key;
+      key.set_key_code(c);
+      composer->InsertCharacterKeyEvent(key);
+    }
+  };
+
+  // 1. Adjacent 2 English words + trailing particle: "ApplePencilに"
+  {
+    auto table = make_table();
+    commands::Request client_request;
+    config::Config config;
+    composer::Composer composer(table, client_request, config);
+    insert_ascii("ApplePencilni", &composer);
+
+    Segments segments;
+    const ConversionRequest convreq =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestView(client_request)
+            .SetConfigView(config)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    ASSERT_TRUE(converter->StartConversion(convreq, &segments));
+
+    ASSERT_EQ(segments.conversion_segments_size(), 3);
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "Apple");
+    EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "Pencil");
+
+    const Segment& ni_seg = segments.conversion_segment(2);
+    EXPECT_EQ(ni_seg.key(), "に");
+    ASSERT_GT(ni_seg.candidates_size(), 1);
+    for (size_t i = 0; i < ni_seg.candidates_size(); ++i) {
+      EXPECT_EQ(ni_seg.candidate(i).value.find("ncil"), std::string::npos);
+      EXPECT_EQ(ni_seg.candidate(i).value.find("ｎｃｉｌ"), std::string::npos);
+      EXPECT_EQ(ni_seg.candidate(i).value.find("しｌ"), std::string::npos);
+    }
+    for (size_t i = 0; i < ni_seg.meta_candidates_size(); ++i) {
+      EXPECT_EQ(ni_seg.meta_candidate(i).value.find("ncil"),
+                std::string::npos);
+      EXPECT_EQ(ni_seg.meta_candidate(i).value.find("ｎｃｉｌ"),
+                std::string::npos);
+      EXPECT_EQ(ni_seg.meta_candidate(i).value.find("しｌ"),
+                std::string::npos);
+    }
+
+    // Manual ResizeSegment after conversion must not be re-merged by fallback.
+    ASSERT_TRUE(converter->ResizeSegment(&segments, convreq, 0, -1));
+    EXPECT_NE(segments.conversion_segment(0).candidate(0).value, "Apple");
+  }
+
+  // 2. Non-adjacent 2 English words separated by Japanese particle: "AppleとPencilに"
+  {
+    auto table = make_table();
+    commands::Request client_request;
+    config::Config config;
+    composer::Composer composer(table, client_request, config);
+    insert_ascii("AppletoPencilni", &composer);
+
+    Segments segments;
+    const ConversionRequest convreq =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestView(client_request)
+            .SetConfigView(config)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    ASSERT_TRUE(converter->StartConversion(convreq, &segments));
+
+    std::string debug_segs;
+    for (size_t i = 0; i < segments.conversion_segments_size(); ++i) {
+      const auto& s = segments.conversion_segment(i);
+      absl::StrAppend(&debug_segs, "[", i, " key=", s.key(),
+                      " type=", static_cast<int>(s.segment_type()),
+                      " cost=", (s.candidates_size() > 0 ? s.candidate(0).cost : -1),
+                      " wcost=", (s.candidates_size() > 0 ? s.candidate(0).wcost : -1),
+                      " val=", (s.candidates_size() > 0 ? s.candidate(0).value : ""),
+                      "] ");
+    }
+
+    ASSERT_EQ(segments.conversion_segments_size(), 4) << debug_segs;
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "Apple") << debug_segs;
+    EXPECT_EQ(segments.conversion_segment(1).key(), "と") << debug_segs;
+    EXPECT_EQ(segments.conversion_segment(2).candidate(0).value, "Pencil") << debug_segs;
+    EXPECT_EQ(segments.conversion_segment(3).key(), "に") << debug_segs;
+  }
+
+  // 3. Custom Romaji table ("e" -> "う") where trailing hiragana forms "うに" ("cubeni").
+  {
+    auto table = make_table();
+    table->AddRule("e", "う", "");
+    table->AddRule("be", "ｂう", "");
+    commands::Request client_request;
+    config::Config config;
+    composer::Composer composer(table, client_request, config);
+    insert_ascii("cubeni", &composer);
+
+    Segments segments;
+    const ConversionRequest convreq =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestView(client_request)
+            .SetConfigView(config)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    ASSERT_TRUE(converter->StartConversion(convreq, &segments));
+
+    ASSERT_EQ(segments.conversion_segments_size(), 2);
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "cube");
+    const Segment& ni_seg = segments.conversion_segment(1);
+    EXPECT_EQ(ni_seg.key(), "に");
+    EXPECT_NE(ni_seg.candidate(0).value, "ニ");
+    for (size_t i = 0; i < ni_seg.candidates_size(); ++i) {
+      EXPECT_EQ(ni_seg.candidate(i).value.find("うに"), std::string::npos);
+    }
+    for (size_t i = 0; i < ni_seg.meta_candidates_size(); ++i) {
+      EXPECT_EQ(ni_seg.meta_candidate(i).value.find("うに"), std::string::npos);
+    }
+  }
+}
+
 }  // namespace converter
 }  // namespace mozc

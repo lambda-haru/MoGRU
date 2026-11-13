@@ -188,6 +188,8 @@ Converter::Converter(
                   return legacy_rewriter_factory(modules);
                 }) {}
 
+constexpr int kMaxAdditionalRewriterResizes = 16;
+
 bool Converter::StartConversion(const ConversionRequest& request,
                                 Segments* segments) const {
   DCHECK_EQ(request.request_type(), ConversionRequest::CONVERSION);
@@ -198,7 +200,9 @@ bool Converter::StartConversion(const ConversionRequest& request,
   }
 
   segments->InitForConvert(key);
-  ApplyConversion(segments, request);
+  const int additional_resize_budget =
+      segments->resized() ? 0 : kMaxAdditionalRewriterResizes;
+  ApplyConversionInternal(segments, request, additional_resize_budget);
   return IsValidSegments(request, *segments);
 }
 
@@ -305,7 +309,15 @@ void Converter::PrependCandidates(const ConversionRequest& request,
 
 void Converter::ApplyPostProcessing(const ConversionRequest& request,
                                     Segments* segments) const {
-  RewriteAndSuppressCandidates(request, segments);
+  ApplyPostProcessingInternal(request, segments,
+                              /*additional_resize_budget=*/0);
+}
+
+void Converter::ApplyPostProcessingInternal(
+    const ConversionRequest& request, Segments* segments,
+    const int additional_resize_budget) const {
+  RewriteAndSuppressCandidatesInternal(request, segments,
+                                       additional_resize_budget);
   TrimCandidates(request, segments);
   if (request.request_type() == ConversionRequest::PARTIAL_SUGGESTION ||
       request.request_type() == ConversionRequest::PARTIAL_PREDICTION) {
@@ -533,6 +545,15 @@ bool Converter::ResizeSegments(Segments* segments,
                                const ConversionRequest& request,
                                size_t start_segment_index,
                                absl::Span<const uint8_t> new_size_array) const {
+  return ResizeSegmentsInternal(segments, request, start_segment_index,
+                                new_size_array,
+                                /*additional_resize_budget=*/0);
+}
+
+bool Converter::ResizeSegmentsInternal(
+    Segments* segments, const ConversionRequest& request,
+    size_t start_segment_index, absl::Span<const uint8_t> new_size_array,
+    const int additional_resize_budget) const {
   if (request.request_type() != ConversionRequest::CONVERSION) {
     return false;
   }
@@ -546,7 +567,7 @@ bool Converter::ResizeSegments(Segments* segments,
     return false;
   }
 
-  ApplyConversion(segments, request);
+  ApplyConversionInternal(segments, request, additional_resize_budget);
   return true;
 }
 
@@ -556,6 +577,12 @@ void Converter::CommitContext(const ConversionRequest& request) const {
 
 void Converter::ApplyConversion(Segments* segments,
                                 const ConversionRequest& request) const {
+  ApplyConversionInternal(segments, request, /*additional_resize_budget=*/0);
+}
+
+void Converter::ApplyConversionInternal(
+    Segments* segments, const ConversionRequest& request,
+    const int additional_resize_budget) const {
   if (!immutable_converter_->Convert(request.options(), segments)) {
     // Conversion can fail for keys like "12". Even in such cases, rewriters
     // (e.g., number and variant rewriters) can populate some candidates.
@@ -564,7 +591,7 @@ void Converter::ApplyConversion(Segments* segments,
   }
 
   MaybeApplyPredictionToConversion(request, segments);
-  ApplyPostProcessing(request, segments);
+  ApplyPostProcessingInternal(request, segments, additional_resize_budget);
 }
 
 bool Converter::ResizeSegmentsByResult(const ConversionRequest& request,
@@ -895,18 +922,31 @@ void Converter::CompletePosIds(Candidate* candidate) const {
 
 void Converter::RewriteAndSuppressCandidates(const ConversionRequest& request,
                                              Segments* segments) const {
+  RewriteAndSuppressCandidatesInternal(request, segments,
+                                       /*additional_resize_budget=*/0);
+}
+
+void Converter::RewriteAndSuppressCandidatesInternal(
+    const ConversionRequest& request, Segments* segments,
+    const int additional_resize_budget) const {
   // 1. Resize segments if needed.
   // Check if the segments need to be resized.
-  if (std::optional<RewriterInterface::ResizeSegmentsRequest> resize_request =
-          rewriter_->CheckResizeSegmentsRequest(request, *segments);
-      resize_request.has_value()) {
-    if (ResizeSegments(segments, request, resize_request->segment_index,
-                       resize_request->segment_sizes)) {
-      // If the segments are resized, ResizeSegments recursively executed
-      // RewriteAndSuppressCandidates with resized segments. No need to execute
-      // them again.
-      // TODO(b/381537649): Stop using the recursive call of
-      // RewriteAndSuppressCandidates.
+  const bool was_resized = segments->resized();
+  std::optional<RewriterInterface::ResizeSegmentsRequest> resize_request;
+  if (!was_resized) {
+    resize_request = rewriter_->CheckResizeSegmentsRequest(request, *segments);
+  } else if (additional_resize_budget > 0) {
+    resize_request =
+        rewriter_->CheckAdditionalResizeSegmentsRequest(request, *segments);
+  }
+  if (resize_request.has_value()) {
+    const int next_budget =
+        was_resized ? additional_resize_budget - 1 : additional_resize_budget;
+    if (ResizeSegmentsInternal(segments, request, resize_request->segment_index,
+                               resize_request->segment_sizes, next_budget)) {
+      // If the segments are resized, ResizeSegmentsInternal recursively
+      // executed RewriteAndSuppressCandidatesInternal with resized segments.
+      // No need to execute them again.
       return;
     }
   }

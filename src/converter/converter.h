@@ -216,6 +216,20 @@ class Converter final : public ConverterInterface {
   void RewriteAndSuppressCandidates(const ConversionRequest& request,
                                     Segments* segments) const;
 
+  void ApplyConversionInternal(Segments* segments,
+                               const ConversionRequest& request,
+                               int additional_resize_budget) const;
+  void ApplyPostProcessingInternal(const ConversionRequest& request,
+                                   Segments* segments,
+                                   int additional_resize_budget) const;
+  void RewriteAndSuppressCandidatesInternal(
+      const ConversionRequest& request, Segments* segments,
+      int additional_resize_budget) const;
+  [[nodiscard]] bool ResizeSegmentsInternal(
+      Segments* segments, const ConversionRequest& request,
+      size_t start_segment_index, absl::Span<const uint8_t> new_size_array,
+      int additional_resize_budget) const;
+
   // Limits the number of candidates based on a request.
   // This method doesn't drop meta candidates for T13n conversion.
   void TrimCandidates(const ConversionRequest& request,

@@ -605,6 +605,8 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
     ConversionRequest::Options live_options;
     live_options.enable_user_history_for_conversion = preferences.use_history;
     live_options.composer_key_selection = ConversionRequest::PREDICTION_KEY;
+    live_options.base_preedit_offset =
+        Util::CharsLen(live_conversion_frozen_key_);
     SetRequestType(ConversionRequest::CONVERSION, live_options);
     const ConversionRequest::Options base_live_options = live_options;
     segments_.clear_conversion_segments();
@@ -1137,6 +1139,8 @@ void EngineConverter::CommitPreedit(const composer::Composer& composer,
         ConversionRequest::Options live_options;
         live_options.enable_user_history_for_conversion =
             conversion_preferences_.use_history;
+        live_options.base_preedit_offset =
+            Util::CharsLen(live_conversion_frozen_key_);
         SetRequestType(ConversionRequest::CONVERSION, live_options);
         const ConversionRequest::Options base_live_options = live_options;
         segments_.clear_conversion_segments();
@@ -1825,7 +1829,9 @@ bool EngineConverter::TryCrossBoundaryEnglishFallback(
     std::string* out_pred_key, std::string* out_tail,
     std::vector<size_t>* out_split_offsets) {
   const size_t base_preedit_offset =
-      is_live ? Util::CharsLen(live_conversion_frozen_key_) : 0;
+      !live_conversion_frozen_key_.empty()
+          ? Util::CharsLen(live_conversion_frozen_key_)
+          : original_request.options().base_preedit_offset;
   std::vector<size_t> split_offsets =
       EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
           original_request.composer(), segments_, original_request,
@@ -1840,12 +1846,12 @@ bool EngineConverter::TryCrossBoundaryEnglishFallback(
   }
 
   ConversionRequest::Options sep_options = base_options;
+  sep_options.base_preedit_offset = base_preedit_offset;
   ConversionRequestBuilder builder;
   builder.SetComposer(separated_composer)
       .SetRequestView(*request_)
       .SetContextView(context)
-      .SetConfigView(*config_)
-      .SetOptions(std::move(sep_options));
+      .SetConfigView(*config_);
 
   std::string sep_pred_key;
   std::string sep_active_key;
@@ -1857,20 +1863,27 @@ bool EngineConverter::TryCrossBoundaryEnglishFallback(
                                        &sep_active_key, &sep_tail)) {
       return false;
     }
+    builder.SetOptions(std::move(sep_options));
     builder.SetKey(sep_active_key);
   } else if (!live_conversion_frozen_key_.empty()) {
     const std::string conv_key = separated_composer.GetQueryForConversion();
     std::string active_conv_key = conv_key;
     if (conv_key.starts_with(live_conversion_frozen_key_)) {
       active_conv_key = conv_key.substr(live_conversion_frozen_key_.size());
+    } else {
+      sep_options.base_preedit_offset = 0;
     }
     if (active_conv_key.empty()) {
       return false;
     }
     sep_pred_key = conv_key;
+    builder.SetOptions(std::move(sep_options));
     builder.SetKey(active_conv_key);
-  } else if (out_pred_key != nullptr) {
-    sep_pred_key = separated_composer.GetQueryForConversion();
+  } else {
+    if (out_pred_key != nullptr) {
+      sep_pred_key = separated_composer.GetQueryForConversion();
+    }
+    builder.SetOptions(std::move(sep_options));
   }
 
   const ConversionRequest sep_request = builder.Build();
