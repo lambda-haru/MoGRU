@@ -1866,6 +1866,7 @@ mozc_cc_test(
         "//composer",
         "//composer:table",
         "//config:gru_config",
+        "//converter:attribute",
         "//converter:segments",
         "//data_manager/testing:mock_data_manager",
         "//dictionary:english_dictionary",

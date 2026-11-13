@@ -286,6 +286,13 @@ class EngineConverter : public EngineConverterInterface {
   // Resets the session state variables.
   void ResetState();
 
+  // Internal Convert implementation allowing callers such as transliteration
+  // to opt out of cross-boundary English fallback chunk separation.
+  bool ConvertInternal(const composer::Composer& composer,
+                       const commands::Context& context,
+                       const ConversionPreferences& preferences,
+                       bool allow_cross_boundary_fallback);
+
   // Notifies the converter that the current segment is focused.
   void SegmentFocus();
 

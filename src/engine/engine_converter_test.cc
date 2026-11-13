@@ -5865,5 +5865,43 @@ TEST_F(EngineConverterTest, CrossBoundaryEnglishFallbackInLiveConversion) {
   absl::SetFlag(&FLAGS_enable_live_conversion, false);
 }
 
+TEST_F(EngineConverterTest,
+       ConvertToTransliterationSkipsCrossBoundaryEnglishFallback) {
+  auto mock_converter = std::make_shared<MockConverter>();
+  EngineConverter converter(mock_converter, request_, config_);
+
+  composer_->InsertCharacter("wordapuri");
+  ASSERT_EQ(composer_->GetQueryForConversion(), "をrだぷり");
+
+  Segments high_cost_segments;
+  {
+    Segment* seg = high_cost_segments.add_segment();
+    seg->set_key("をrだぷり");
+    converter::Candidate* cand = seg->add_candidate();
+    cand->key = "をrだぷり";
+    cand->content_key = "をrだぷり";
+    cand->value = "をrだぷり";
+    cand->content_value = "をrだぷり";
+    cand->cost = 30000;
+  }
+  FillT13Ns(&high_cost_segments, composer_.get());
+
+  // Must invoke StartConversion only once without splitting chunks.
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce([&](const ConversionRequest& req, Segments* segs) {
+        EXPECT_EQ(req.composer().GetQueryForConversion(), "をrだぷり");
+        *segs = high_cost_segments;
+        return true;
+      });
+
+  ASSERT_TRUE(converter.ConvertToTransliteration(*composer_,
+                                                 transliteration::HALF_ASCII));
+  commands::Output output;
+  converter.FillOutput(*composer_, &output);
+  ASSERT_TRUE(output.has_preedit());
+  ASSERT_EQ(output.preedit().segment_size(), 1);
+  EXPECT_EQ(output.preedit().segment(0).value(), "wordapuri");
+}
+
 }  // namespace engine
 }  // namespace mozc

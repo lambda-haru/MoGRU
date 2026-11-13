@@ -1944,6 +1944,92 @@ TEST_F(GruRewriterTest, InstantModeTogglePersistsAcrossProfilesAndAppSwitching) 
   }
 }
 
+TEST_F(GruRewriterTest,
+       EnglishFallbackBypassesGruScoringAndPreservesExactCasing) {
+  const std::string test_config = FileUtil::JoinPath(
+      std::filesystem::temp_directory_path().string(),
+      "gru_english_fallback_bypass_config.ini");
+  std::error_code ec;
+  std::filesystem::remove(test_config, ec);
+
+  GruPenaltyConfig cfg;
+  cfg.enable_gru_rewriter = true;
+  cfg.show_gru_score = true;
+  cfg.gru_score_weight = 800.0;
+  ASSERT_TRUE(config::GruConfigManager::SaveConfig(cfg, test_config));
+
+  absl::SetFlag(&FLAGS_gru_config_path, test_config);
+  ASSERT_TRUE(rewriter_->Reload());
+
+  ConversionRequest request;
+
+  // 1. Single-segment mixed-case fallback ("WoRd" with secondary "word"):
+  // Must bypass GRU scoring, leave "WoRd" at index 0, and omit "GRU:" tag.
+  {
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("WおRd");
+    AddCandidate("WおRd", "WoRd", 6000, seg);
+    AddCandidate("WおRd", "word", 6000, seg);
+    for (size_t i = 0; i < seg->candidates_size(); ++i) {
+      seg->mutable_candidate(i)->attributes =
+          converter::Attribute::NO_VARIANTS_EXPANSION |
+          converter::Attribute::DISABLE_RESCORING;
+    }
+
+    EXPECT_FALSE(rewriter_->Rewrite(request, &segments));
+    EXPECT_EQ(seg->candidate(0).value, "WoRd");
+    for (size_t i = 0; i < seg->candidates_size(); ++i) {
+      EXPECT_EQ(seg->candidate(i).description.find("GRU:"), std::string::npos)
+          << "cand=" << i << " desc=" << seg->candidate(i).description;
+    }
+  }
+
+  // 2. Contrast without DISABLE_RESCORING: verify GRU model is active here
+  // and would otherwise attach "GRU:" to hiragana-keyed alphabet candidates.
+  {
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("WおRd");
+    AddCandidate("WおRd", "WoRd", 6000, seg);
+    AddCandidate("WおRd", "word", 6000, seg);
+
+    rewriter_->Rewrite(request, &segments);
+    EXPECT_NE(seg->candidate(0).description.find("GRU:"), std::string::npos);
+  }
+
+  // 3. Multi-segment conversion: fallback segment + Japanese segment.
+  // Segment 0 ("WoRd", "word") must stay un-reordered and without "GRU:", while
+  // Segment 1 ("きょうは") still runs GRU scoring.
+  {
+    Segments segments;
+    Segment* seg0 = segments.add_segment();
+    seg0->set_key("WおRd");
+    AddCandidate("WおRd", "WoRd", 6000, seg0);
+    AddCandidate("WおRd", "word", 6000, seg0);
+    for (size_t i = 0; i < seg0->candidates_size(); ++i) {
+      seg0->mutable_candidate(i)->attributes =
+          converter::Attribute::NO_VARIANTS_EXPANSION |
+          converter::Attribute::DISABLE_RESCORING;
+    }
+
+    Segment* seg1 = segments.add_segment();
+    seg1->set_key("きょうは");
+    AddCandidate("きょうは", "今日は", 1000, seg1);
+    AddCandidate("きょうは", "教派", 1000, seg1);
+
+    EXPECT_TRUE(rewriter_->Rewrite(request, &segments));
+    EXPECT_EQ(seg0->candidate(0).value, "WoRd");
+    for (size_t i = 0; i < seg0->candidates_size(); ++i) {
+      EXPECT_EQ(seg0->candidate(i).description.find("GRU:"), std::string::npos);
+    }
+    EXPECT_NE(seg1->candidate(0).description.find("GRU:"), std::string::npos);
+  }
+
+  std::filesystem::remove(test_config, ec);
+  absl::SetFlag(&FLAGS_gru_config_path, "");
+}
+
 }  // namespace
 }  // namespace mozc
 

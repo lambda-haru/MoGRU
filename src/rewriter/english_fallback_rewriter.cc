@@ -353,7 +353,8 @@ void EnglishFallbackRewriter::AddEnglishCandidates(
     cand->lid = unknown_id_;
     cand->rid = unknown_id_;
     cand->converted_segment_count = 1;
-    cand->attributes = converter::Attribute::NO_VARIANTS_EXPANSION;
+    cand->attributes = converter::Attribute::NO_VARIANTS_EXPANSION |
+                       converter::Attribute::DISABLE_RESCORING;
     cost += 100;
   }
 }

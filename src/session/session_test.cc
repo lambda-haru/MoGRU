@@ -10723,5 +10723,36 @@ TEST_F(SessionTest, CrossBoundaryEnglishFallbackWithMockDataEngine) {
   }
 }
 
+TEST_F(SessionTest, MixedCaseShiftEnglishFallbackWithMockDataEngine) {
+  Session session(*mock_data_engine_);
+  InitSessionToPrecomposition(&session);
+
+  commands::Command command;
+  // Type "woRd" (Shift+r -> uppercase 'R' in Mozc KeyEvent) -> matches "word"
+  // case-insensitively, restores exact user casing "woRd" at candidate 0,
+  // and bypasses GRU scoring.
+  InsertCharacterChars("woRd", &session, &command);
+
+  command.Clear();
+  ASSERT_TRUE(session.Convert(&command));
+  ASSERT_TRUE(command.output().has_preedit());
+  ASSERT_EQ(command.output().preedit().segment_size(), 1);
+  EXPECT_EQ(command.output().preedit().segment(0).value(), "woRd");
+
+  command.Clear();
+  ASSERT_TRUE(session.Commit(&command));
+  ASSERT_TRUE(command.output().has_result());
+  EXPECT_EQ(command.output().result().value(), "woRd");
+
+  // Mixed-case cross-boundary input: "woRdapuri" -> "woRd" + "アプリ".
+  InsertCharacterChars("woRdapuri", &session, &command);
+
+  command.Clear();
+  ASSERT_TRUE(session.Convert(&command));
+  ASSERT_TRUE(command.output().has_preedit());
+  ASSERT_GE(command.output().preedit().segment_size(), 2);
+  EXPECT_EQ(command.output().preedit().segment(0).value(), "woRd");
+}
+
 }  // namespace session
 }  // namespace mozc

@@ -156,6 +156,14 @@ const ConversionPreferences& EngineConverter::conversion_preferences() const {
 bool EngineConverter::Convert(const composer::Composer& composer,
                               const commands::Context& context,
                               const ConversionPreferences& preferences) {
+  return ConvertInternal(composer, context, preferences,
+                         /*allow_cross_boundary_fallback=*/true);
+}
+
+bool EngineConverter::ConvertInternal(
+    const composer::Composer& composer, const commands::Context& context,
+    const ConversionPreferences& preferences,
+    const bool allow_cross_boundary_fallback) {
   DCHECK(CheckState(COMPOSITION | SUGGESTION | CONVERSION));
   const bool was_live_conversion = (live_conversion_active_ || live_conversion_presented_);
   if (was_live_conversion) {
@@ -198,11 +206,13 @@ bool EngineConverter::Convert(const composer::Composer& composer,
     return false;
   }
 
-  TryCrossBoundaryEnglishFallback(
-      composer, context, conversion_request, base_options,
-      /*is_live=*/false, /*excluded_hiragana_chars=*/0,
-      /*out_pred_key=*/nullptr, /*out_tail=*/nullptr,
-      &pending_separated_raw_offsets_);
+  if (allow_cross_boundary_fallback) {
+    TryCrossBoundaryEnglishFallback(
+        composer, context, conversion_request, base_options,
+        /*is_live=*/false, /*excluded_hiragana_chars=*/0,
+        /*out_pred_key=*/nullptr, /*out_tail=*/nullptr,
+        &pending_separated_raw_offsets_);
+  }
 
   segment_index_ = 0;
   state_ = CONVERSION;
@@ -375,7 +385,9 @@ bool EngineConverter::ConvertToTransliteration(
        (HALF_WIDTH | FULL_WIDTH | ASCII | HIRAGANA | KATAKANA));
 
   if (CheckState(COMPOSITION | SUGGESTION)) {
-    if (!Convert(composer)) {
+    if (!ConvertInternal(composer, commands::Context::default_instance(),
+                         conversion_preferences_,
+                         /*allow_cross_boundary_fallback=*/false)) {
       LOG(ERROR) << "Conversion failed";
       return false;
     }
@@ -468,7 +480,9 @@ bool EngineConverter::SwitchKanaType(const composer::Composer& composer) {
 
   Attributes attributes = NO_ATTRIBUTES;
   if (CheckState(COMPOSITION | SUGGESTION)) {
-    if (!Convert(composer)) {
+    if (!ConvertInternal(composer, commands::Context::default_instance(),
+                         conversion_preferences_,
+                         /*allow_cross_boundary_fallback=*/false)) {
       LOG(ERROR) << "Conversion failed";
       return false;
     }

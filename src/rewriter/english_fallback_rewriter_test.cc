@@ -36,6 +36,7 @@
 #include "composer/composer.h"
 #include "composer/table.h"
 #include "config/gru_config.h"
+#include "converter/attribute.h"
 #include "converter/segments.h"
 #include "data_manager/testing/mock_data_manager.h"
 #include "dictionary/english_dictionary.h"
@@ -1001,6 +1002,44 @@ TEST_F(EnglishFallbackRewriterTest,
   EXPECT_TRUE(EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
                   request.composer(), segments, request)
                   .empty());
+}
+
+TEST_F(EnglishFallbackRewriterTest,
+       MixedCaseRestoresExactCasingAndSetsDisableRescoring) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("Word");
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  for (const char* input : {"word", "Word", "WoRd", "woRd", "WORD"}) {
+    composer::Composer composer = CreateComposer(input);
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    const std::string key = composer.GetQueryForConversion();
+    seg->set_key(key);
+    auto* c = seg->add_candidate();
+    c->key = key;
+    c->value = key;
+    c->cost = 25000;
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_TRUE(rewriter.Rewrite(request, &segments)) << input;
+    ASSERT_GE(seg->candidates_size(), 1) << input;
+    EXPECT_EQ(seg->candidate(0).value, input) << input;
+    for (size_t i = 0; i < seg->candidates_size(); ++i) {
+      EXPECT_NE(seg->candidate(i).attributes &
+                    converter::Attribute::NO_VARIANTS_EXPANSION,
+                0)
+          << input << " cand=" << i;
+      EXPECT_NE(seg->candidate(i).attributes &
+                    converter::Attribute::DISABLE_RESCORING,
+                0)
+          << input << " cand=" << i;
+    }
+  }
 }
 
 }  // namespace

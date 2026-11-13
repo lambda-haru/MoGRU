@@ -127,6 +127,17 @@ bool IsAlphabetCandidate(const Segment::Candidate& cand) {
   return Util::ContainsScriptType(cand.value, Util::ALPHABET);
 }
 
+bool IsEnglishFallbackSegment(const Segment& seg) {
+  return seg.candidates_size() > 0 &&
+         (seg.candidate(0).attributes &
+          converter::Attribute::DISABLE_RESCORING) != 0 &&
+         IsAlphabetCandidate(seg.candidate(0));
+}
+
+bool ShouldBypassSegment(const Segment& seg) {
+  return IsSymbolSegment(seg) || IsEnglishFallbackSegment(seg);
+}
+
 bool IsKatakanaCandidate(const Segment::Candidate& cand) {
   return !cand.value.empty() && Util::IsScriptType(cand.value, Util::KATAKANA);
 }
@@ -946,7 +957,7 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
   // Single-segment case
   if (num_target == 1) {
     Segment* seg = segments->mutable_segment(start_seg_idx);
-    if (IsSymbolSegment(*seg)) {
+    if (ShouldBypassSegment(*seg)) {
       return false;
     }
     const gruscorer::GruContext init_context =
@@ -1024,8 +1035,9 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
       return false;
     }
     const int32_t top_cost = seg0.candidate(0).cost;
+    const bool bypass_seg0 = ShouldBypassSegment(seg0);
     const size_t num_eval =
-        IsSymbolSegment(seg0)
+        bypass_seg0
             ? std::min<size_t>(seg0.candidates_size(), 1)
             : std::min(seg0.candidates_size(), kMaxCandidatesPerSegmentForBeam);
     const gruscorer::GruContext init_context =
@@ -1036,10 +1048,11 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
       if (cand.cost > top_cost + kMaxCostDiff) continue;
 
       const bool is_emoji =
-          !IsSymbolSegment(seg0) && IsCandidateEmoji(*indexer_, cand);
+          !bypass_seg0 && IsCandidateEmoji(*indexer_, cand);
       const float score =
-          ScoreCandidateWithContext(*model_, *indexer_, cand, init_context,
-                                    penalty_config);
+          bypass_seg0 ? 0.0f
+                      : ScoreCandidateWithContext(*model_, *indexer_, cand,
+                                                  init_context, penalty_config);
       const PenaltyResult penalty_res =
           CalculatePenalty(cand, is_emoji, penalty_config);
 
@@ -1060,9 +1073,9 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
     const size_t seg_idx = start_seg_idx + rel_idx;
     const Segment& seg = segments->segment(seg_idx);
     const int32_t top_cost = seg.candidate(0).cost;
-    const bool is_sym_seg = IsSymbolSegment(seg);
+    const bool bypass_seg = ShouldBypassSegment(seg);
     const size_t num_eval =
-        is_sym_seg
+        bypass_seg
             ? std::min<size_t>(seg.candidates_size(), 1)
             : std::min(seg.candidates_size(), kMaxCandidatesPerSegmentForBeam);
 
@@ -1077,10 +1090,11 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
         if (cand.cost > top_cost + kMaxCostDiff) continue;
 
         const bool is_emoji =
-            path.has_emoji || (!is_sym_seg && IsCandidateEmoji(*indexer_, cand));
+            path.has_emoji || (!bypass_seg && IsCandidateEmoji(*indexer_, cand));
         const float cand_score =
-            ScoreCandidateWithContext(*model_, *indexer_, cand, path_ctx,
-                                      penalty_config);
+            bypass_seg ? 0.0f
+                       : ScoreCandidateWithContext(*model_, *indexer_, cand,
+                                                   path_ctx, penalty_config);
         const int32_t new_viterbi = path.total_viterbi_cost + cand.cost;
 
         const PenaltyResult penalty_res =
@@ -1115,7 +1129,7 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
   for (size_t rel_idx = 0; rel_idx < num_target; ++rel_idx) {
     const size_t seg_idx = start_seg_idx + rel_idx;
     Segment* seg = segments->mutable_segment(seg_idx);
-    if (IsSymbolSegment(*seg) || seg->candidates_size() <= 1) {
+    if (ShouldBypassSegment(*seg) || seg->candidates_size() <= 1) {
       if (seg->candidates_size() > 0) {
         accum_text += seg->candidate(0).value;
       }
@@ -1343,7 +1357,7 @@ std::optional<GruRewriter::ResegmentResult> GruRewriter::EvaluateResegmentation(
   std::vector<uint8_t> default_sizes;
   for (size_t i = start_seg_idx; i < num_total; ++i) {
     const Segment& seg = segments.segment(i);
-    if (IsSymbolSegment(seg)) {
+    if (ShouldBypassSegment(seg)) {
       return std::nullopt;
     }
     target_key.append(seg.key());
