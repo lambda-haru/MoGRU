@@ -1509,7 +1509,7 @@ TEST_F(GruRewriterTest, InlineCommandCandidatesAndProfileSwitching) {
     }
     EXPECT_TRUE(found_instant_cmd);
 
-    // Commit instant mode ON
+    // Commit instant mode ON while active_profile is "coding"
     Segments commit_segments;
     Segment* fixed = commit_segments.add_segment();
     fixed->set_key("いんすたんと");
@@ -1519,6 +1519,40 @@ TEST_F(GruRewriterTest, InlineCommandCandidatesAndProfileSwitching) {
 
     GruPenaltyConfig cfg = rewriter_->penalty_config();
     EXPECT_TRUE(cfg.enable_instant_mode);
+
+    // Must persist across Reload() on non-default profile ("coding")
+    ASSERT_TRUE(rewriter_->Reload());
+    EXPECT_EQ(rewriter_->active_profile(), "coding");
+    EXPECT_TRUE(rewriter_->penalty_config().enable_instant_mode);
+
+    // Next Rewrite must offer OFF instead of ON
+    Segments segs_after_on;
+    Segment* seg2 = segs_after_on.add_segment();
+    seg2->set_key("いんすたんと");
+    AddCandidate("いんすたんと", "インスタント", 1000, seg2);
+    EXPECT_TRUE(rewriter_->Rewrite(request, &segs_after_on));
+    bool found_off = false;
+    bool found_on = false;
+    for (size_t i = 0; i < seg2->candidates_size(); ++i) {
+      if (seg2->candidate(i).value == "MoGRU: インスタント速習モード OFF") {
+        found_off = true;
+      } else if (seg2->candidate(i).value == "MoGRU: インスタント速習モード ON") {
+        found_on = true;
+      }
+    }
+    EXPECT_TRUE(found_off);
+    EXPECT_FALSE(found_on);
+
+    // Commit instant mode OFF and verify persistence across Reload()
+    Segments commit_off;
+    Segment* fixed_off = commit_off.add_segment();
+    fixed_off->set_key("いんすたんと");
+    fixed_off->set_segment_type(Segment::FIXED_VALUE);
+    AddCandidate("いんすたんと", "MoGRU: インスタント速習モード OFF", 0, fixed_off);
+    rewriter_->Finish(request, commit_off);
+    ASSERT_TRUE(rewriter_->Reload());
+    EXPECT_EQ(rewriter_->active_profile(), "coding");
+    EXPECT_FALSE(rewriter_->penalty_config().enable_instant_mode);
   }
 }
 
@@ -1819,6 +1853,94 @@ TEST_F(GruRewriterTest, RestrictedInlineCommandKeywordsOnly) {
       EXPECT_FALSE(seg->candidate(i).attributes & converter::Attribute::COMMAND_CANDIDATE);
       EXPECT_FALSE(absl::StartsWith(seg->candidate(i).value, "MoGRU:"));
     }
+  }
+}
+
+TEST_F(GruRewriterTest, InstantModeTogglePersistsAcrossProfilesAndAppSwitching) {
+  const std::string config_path =
+      config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+
+  // 1. Config-level persistence on default, coding, instant (turning OFF), and custom profile
+  {
+    GruPenaltyConfig root;
+    root.current_profile = "default";
+    config::GruConfigManager::AddProfile(&root, "myprof");
+
+    config::GruConfigManager::SetInstantModeEnabled(&root, "default", true);
+    config::GruConfigManager::SetInstantModeEnabled(&root, "coding", true);
+    config::GruConfigManager::SetInstantModeEnabled(&root, "instant", false);
+    config::GruConfigManager::SetInstantModeEnabled(&root, "myprof", true);
+    ASSERT_TRUE(config::GruConfigManager::SaveConfig(root, config_path));
+
+    const GruPenaltyConfig reloaded =
+        config::GruConfigManager::LoadConfig(config_path);
+    EXPECT_TRUE(config::GruConfigManager::GetEffectiveProfileConfig(reloaded, "default").enable_instant_mode);
+    EXPECT_TRUE(config::GruConfigManager::GetEffectiveProfileConfig(reloaded, "coding").enable_instant_mode);
+    EXPECT_FALSE(config::GruConfigManager::GetEffectiveProfileConfig(reloaded, "instant").enable_instant_mode);
+    EXPECT_TRUE(config::GruConfigManager::GetEffectiveProfileConfig(reloaded, "myprof").enable_instant_mode);
+  }
+
+  // 2. App-switched profile toggle end-to-end via GruRewriter
+  {
+    GruPenaltyConfig root;
+    root.current_profile = "default";
+    root.enable_app_profile_switching = true;
+    root.app_profile_map = "vscode:coding";
+    ASSERT_TRUE(config::GruConfigManager::SaveConfig(root, config_path));
+    config::GruConfigManager::InvalidateConfigCache();
+    ASSERT_TRUE(rewriter_->Reload());
+
+    commands::Context ctx;
+    ctx.set_application_name("vscode");
+    const ConversionRequest req =
+        ConversionRequestBuilder()
+            .SetContextView(ctx)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+
+    // First conversion in vscode should auto-switch to "coding" and offer ON
+    Segments segs;
+    Segment* seg = segs.add_segment();
+    seg->set_key("いんsたんt");
+    AddCandidate("いんsたんt", "instant", 1000, seg);
+    EXPECT_TRUE(rewriter_->Rewrite(req, &segs));
+    EXPECT_EQ(rewriter_->active_profile(), "coding");
+
+    bool found_on = false;
+    for (size_t i = 0; i < seg->candidates_size(); ++i) {
+      if (seg->candidate(i).value == "MoGRU: インスタント速習モード ON") {
+        found_on = true;
+      }
+    }
+    EXPECT_TRUE(found_on);
+
+    // Commit ON -> must persist for "coding" across Reload(), NOT "default"
+    Segments commit_on;
+    Segment* fixed_on = commit_on.add_segment();
+    fixed_on->set_key("いんsたんt");
+    fixed_on->set_segment_type(Segment::FIXED_VALUE);
+    AddCandidate("いんsたんt", "MoGRU: インスタント速習モード ON", 0, fixed_on);
+    rewriter_->Finish(req, commit_on);
+
+    ASSERT_TRUE(rewriter_->Reload());
+    const GruPenaltyConfig after_on =
+        config::GruConfigManager::LoadConfig(config_path);
+    EXPECT_FALSE(after_on.enable_instant_mode);
+    EXPECT_TRUE(config::GruConfigManager::GetEffectiveProfileConfig(after_on, "coding").enable_instant_mode);
+
+    // Next conversion in vscode should offer OFF
+    Segments segs2;
+    Segment* seg2 = segs2.add_segment();
+    seg2->set_key("いんsたんt");
+    AddCandidate("いんsたんt", "instant", 1000, seg2);
+    EXPECT_TRUE(rewriter_->Rewrite(req, &segs2));
+    bool found_off = false;
+    for (size_t i = 0; i < seg2->candidates_size(); ++i) {
+      if (seg2->candidate(i).value == "MoGRU: インスタント速習モード OFF") {
+        found_off = true;
+      }
+    }
+    EXPECT_TRUE(found_off);
   }
 }
 

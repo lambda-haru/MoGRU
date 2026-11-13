@@ -3648,6 +3648,59 @@ TEST_F(EngineConverterTest, ExecuteCommandCandidate) {
     EXPECT_TRUE(cfg.enable_app_profile_switching);
     EXPECT_EQ(config::GruConfigManager::DetectProfileFromApplication("slack", cfg), "business");
   }
+
+  // MoGRU Instant Mode Toggle Command Candidate (on non-default & app-switched profile)
+  {
+    auto mock_converter = std::make_shared<MockConverter>();
+    EngineConverter converter(mock_converter, request_, config_);
+
+    Context slack_ctx;
+    slack_ctx.set_application_name("slack");
+
+    // 1. Toggle ON while active profile is "business" (via current_profile + slack -> business)
+    {
+      Segments segments;
+      SetAiueo(&segments);
+      SetCommandCandidate(&segments, 0, 0, converter::Candidate::DEFAULT_COMMAND);
+      segments.mutable_conversion_segment(0)->mutable_candidate(0)->value =
+          "MoGRU: インスタント速習モード ON";
+      EXPECT_CALL(*mock_converter, StartConversion(_, _))
+          .WillOnce(DoAll(SetArgPointee<1>(segments), Return(true)));
+
+      composer_->InsertCharacterPreedit(kChars_Aiueo);
+      EXPECT_TRUE(converter.Convert(*composer_));
+      converter.Commit(*composer_, slack_ctx);
+
+      const std::string config_path =
+          config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+      const auto cfg = config::GruConfigManager::LoadConfig(config_path);
+      EXPECT_TRUE(
+          config::GruConfigManager::GetEffectiveProfileConfig(cfg, "business")
+              .enable_instant_mode);
+    }
+
+    // 2. Toggle OFF while active profile is "business"
+    {
+      Segments segments;
+      SetAiueo(&segments);
+      SetCommandCandidate(&segments, 0, 0, converter::Candidate::DEFAULT_COMMAND);
+      segments.mutable_conversion_segment(0)->mutable_candidate(0)->value =
+          "MoGRU: インスタント速習モード OFF";
+      EXPECT_CALL(*mock_converter, StartConversion(_, _))
+          .WillOnce(DoAll(SetArgPointee<1>(segments), Return(true)));
+
+      composer_->InsertCharacterPreedit(kChars_Aiueo);
+      EXPECT_TRUE(converter.Convert(*composer_));
+      converter.Commit(*composer_, slack_ctx);
+
+      const std::string config_path =
+          config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+      const auto cfg = config::GruConfigManager::LoadConfig(config_path);
+      EXPECT_FALSE(
+          config::GruConfigManager::GetEffectiveProfileConfig(cfg, "business")
+              .enable_instant_mode);
+    }
+  }
 }
 
 TEST_F(EngineConverterTest, PropagateConfigToRenderer) {

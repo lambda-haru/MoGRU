@@ -184,6 +184,18 @@ class GruConfigManager {
       const std::string& app_name,
       const GruPenaltyConfig& config);
 
+  // Resolves the effective active profile name given |root_config| and |context|
+  // (accounting for app-based auto-switching when enabled and deleted profiles).
+  static std::string ResolveActiveProfileForContext(
+      const GruPenaltyConfig& root_config,
+      const commands::Context* context = nullptr);
+
+  // Sets |enable_instant_mode| on |active_profile| (or root config when empty
+  // or "default") so saving and reloading preserves the setting for that profile.
+  static void SetInstantModeEnabled(GruPenaltyConfig* config,
+                                    absl::string_view active_profile,
+                                    bool enabled);
+
   // Resolves the current application name from Context, env vars, or active window.
   static std::string GetCurrentApplicationName(
       const commands::Context* context = nullptr);

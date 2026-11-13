@@ -313,10 +313,13 @@ class EngineConverter : public EngineConverterInterface {
 
   // Performs the command if the command candidate is selected.  True
   // is returned if a command is performed.
-  bool MaybePerformCommandCandidate(size_t index, size_t size);
+  bool MaybePerformCommandCandidate(size_t index, size_t size,
+                                    const commands::Context& context);
 
   // Updates internal states and fill result_.
-  bool UpdateResult(size_t index, size_t size, size_t* consumed_key_size);
+  bool UpdateResult(size_t index, size_t size,
+                    const commands::Context& context,
+                    size_t* consumed_key_size);
 
   // Updates ResultTokens of result_.
   void UpdateResultTokens(size_t index, size_t size);

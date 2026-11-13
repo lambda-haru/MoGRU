@@ -683,18 +683,8 @@ std::string GruConfigManager::ResolveEffectiveActiveProfile(
     }
   }
 
-  if (state.cached_root_config.enable_app_profile_switching) {
-    const std::string app_name = GetCurrentApplicationName(context);
-    if (!app_name.empty()) {
-      const std::string target_profile =
-          DetectProfileFromApplication(app_name, state.cached_root_config);
-      const std::string effective = target_profile.empty()
-                                        ? state.cached_root_config.current_profile
-                                        : target_profile;
-      state.active_profile = SanitizeProfileName(effective);
-    }
-  }
-
+  state.active_profile =
+      ResolveActiveProfileForContext(state.cached_root_config, context);
   return state.active_profile;
 }
 
@@ -928,6 +918,47 @@ GruPenaltyConfig GruConfigManager::GetEffectiveProfileConfig(
 
   eff.gru_user_model_path = ResolveProfileUserModelFilePath(profile_name, root_config.gru_user_model_path);
   return eff;
+}
+
+std::string GruConfigManager::ResolveActiveProfileForContext(
+    const GruPenaltyConfig& root_config,
+    const commands::Context* context) {
+  std::string prof = SanitizeProfileName(root_config.current_profile);
+  if (root_config.enable_app_profile_switching) {
+    const std::string app_name = GetCurrentApplicationName(context);
+    if (!app_name.empty()) {
+      const std::string target_profile =
+          DetectProfileFromApplication(app_name, root_config);
+      if (!target_profile.empty()) {
+        prof = SanitizeProfileName(target_profile);
+      }
+    }
+  }
+  if (prof.empty() || root_config.deleted_profiles.count(prof) > 0) {
+    return "default";
+  }
+  return prof;
+}
+
+void GruConfigManager::SetInstantModeEnabled(GruPenaltyConfig* config,
+                                             absl::string_view active_profile,
+                                             bool enabled) {
+  if (config == nullptr) return;
+  const std::string prof = SanitizeProfileName(active_profile);
+  if (prof.empty() || prof == "default" ||
+      config->deleted_profiles.count(prof) > 0) {
+    config->enable_instant_mode = enabled;
+    return;
+  }
+  auto it = config->profiles.find(prof);
+  if (it == config->profiles.end()) {
+    GruPenaltyConfig eff = GetEffectiveProfileConfig(*config, prof);
+    eff.current_profile = prof;
+    eff.profiles.clear();
+    eff.deleted_profiles.clear();
+    it = config->profiles.emplace(prof, std::move(eff)).first;
+  }
+  it->second.enable_instant_mode = enabled;
 }
 
 std::string GruConfigManager::DetectProfileFromApplication(

@@ -551,23 +551,9 @@ void GruRewriter::Finish(const ConversionRequest& request,
   if (!absl::GetFlag(FLAGS_enable_gru_rewriter)) {
     return;
   }
-  if (!absl::GetFlag(FLAGS_enable_gru_online_learning)) {
-    return;
-  }
-  if (request.incognito_mode()) {
-    return;
-  }
-  if (request.config().history_learning_level() != config::Config::DEFAULT_HISTORY) {
-    return;
-  }
 
   const GruPenaltyConfig penalty_config = GetPenaltyConfig();
-  if (!penalty_config.enable_gru_rewriter ||
-      !penalty_config.enable_online_learning ||
-      penalty_config.online_learning_rate <= 0.0) {
-    return;
-  }
-  if (!EnsureInitialized()) {
+  if (!penalty_config.enable_gru_rewriter) {
     return;
   }
 
@@ -594,6 +580,10 @@ void GruRewriter::Finish(const ConversionRequest& request,
               config::GruConfigManager::LoadConfig(config_file_path_);
           root_config.current_profile = new_profile;
           config::GruConfigManager::SaveConfig(root_config, config_file_path_);
+          config::GruConfigManager::InvalidateConfigCache();
+          root_penalty_config_ = root_config;
+          last_config_mtime_ =
+              config::GruConfigManager::GetFileMtime(config_file_path_);
           SwitchProfileLocked(new_profile, root_config);
           return;
         }
@@ -619,13 +609,18 @@ void GruRewriter::Finish(const ConversionRequest& request,
               config::GruConfigManager::AddOrUpdateAppProfileMapping(&root_config, app_name, target_profile);
               root_config.enable_app_profile_switching = true;
               config::GruConfigManager::SaveConfig(root_config, config_file_path_);
+              config::GruConfigManager::InvalidateConfigCache();
               root_penalty_config_ = root_config;
+              last_config_mtime_ =
+                  config::GruConfigManager::GetFileMtime(config_file_path_);
               SwitchProfileLocked(target_profile, root_config);
               return;
             }
           }
         }
-        if (val == "MoGRU: インスタント速習モード ON") {
+        if (val == "MoGRU: インスタント速習モード ON" ||
+            val == "MoGRU: インスタント速習モード OFF") {
+          const bool enable = (val == "MoGRU: インスタント速習モード ON");
           absl::MutexLock l(mutex_);
           if (config_file_path_.empty()) {
             config_file_path_ = config::GruConfigManager::ResolveConfigFilePath(
@@ -633,26 +628,38 @@ void GruRewriter::Finish(const ConversionRequest& request,
           }
           GruPenaltyConfig root_config =
               config::GruConfigManager::LoadConfig(config_file_path_);
-          root_config.enable_instant_mode = true;
+          const std::string active_prof =
+              config::GruConfigManager::ResolveActiveProfileForContext(
+                  root_config, &request.context());
+          config::GruConfigManager::SetInstantModeEnabled(
+              &root_config, active_prof, enable);
           config::GruConfigManager::SaveConfig(root_config, config_file_path_);
-          penalty_config_.enable_instant_mode = true;
-          return;
-        }
-        if (val == "MoGRU: インスタント速習モード OFF") {
-          absl::MutexLock l(mutex_);
-          if (config_file_path_.empty()) {
-            config_file_path_ = config::GruConfigManager::ResolveConfigFilePath(
-                "", /*allow_in_test=*/true);
-          }
-          GruPenaltyConfig root_config =
-              config::GruConfigManager::LoadConfig(config_file_path_);
-          root_config.enable_instant_mode = false;
-          config::GruConfigManager::SaveConfig(root_config, config_file_path_);
-          penalty_config_.enable_instant_mode = false;
+          config::GruConfigManager::InvalidateConfigCache();
+          root_penalty_config_ = root_config;
+          last_config_mtime_ =
+              config::GruConfigManager::GetFileMtime(config_file_path_);
+          SwitchProfileLocked(active_prof, root_config);
           return;
         }
       }
     }
+  }
+
+  if (!absl::GetFlag(FLAGS_enable_gru_online_learning)) {
+    return;
+  }
+  if (request.incognito_mode()) {
+    return;
+  }
+  if (request.config().history_learning_level() != config::Config::DEFAULT_HISTORY) {
+    return;
+  }
+  if (!penalty_config.enable_online_learning ||
+      penalty_config.online_learning_rate <= 0.0) {
+    return;
+  }
+  if (!EnsureInitialized()) {
+    return;
   }
 
   std::string committed_text;
@@ -797,7 +804,7 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
     return false;
   }
 
-  const GruPenaltyConfig penalty_config = GetPenaltyConfig();
+  GruPenaltyConfig penalty_config = GetPenaltyConfig();
   if (!penalty_config.enable_gru_rewriter) {
     return false;
   }
@@ -809,6 +816,7 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
   {
     absl::MutexLock l(mutex_);
     CheckAndApplyAppProfileLocked(&request.context());
+    penalty_config = penalty_config_;
   }
 
   const std::string hist_prefix = GetHistoryPrefix(&request, *segments);
@@ -1269,7 +1277,8 @@ std::optional<RewriterInterface::ResizeSegmentsRequest> GruRewriter::CheckResize
     }
     if ((raw_input == "profile" || raw_input == "instant" ||
          concat_key == "pろふぃぇ" || concat_key == "ｐろふぃぇ" ||
-         concat_key == "いんsたんt" || concat_key == "いんｓたんｔ") &&
+         concat_key == "いんsたんt" || concat_key == "いんｓたんｔ" ||
+         concat_key == "ぷろふぁいる" || concat_key == "いんすたんと") &&
         total_char_len > 0 && total_char_len <= 255) {
       ResizeSegmentsRequest resize_req;
       resize_req.segment_index = 0;

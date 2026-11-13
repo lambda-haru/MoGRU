@@ -881,7 +881,7 @@ void EngineConverter::Commit(const composer::Composer& composer,
   DCHECK(CheckState(PREDICTION | CONVERSION));
   ResetResult();
 
-  if (!UpdateResult(0, segments_.conversion_segments_size(), nullptr)) {
+  if (!UpdateResult(0, segments_.conversion_segments_size(), context, nullptr)) {
     Cancel();
     ResetState();
     return;
@@ -953,7 +953,7 @@ bool EngineConverter::CommitSuggestionInternal(
   ResetResult();
   const std::string preedit = composer.GetStringForPreedit();
 
-  if (!UpdateResult(0, segments_.conversion_segments_size(),
+  if (!UpdateResult(0, segments_.conversion_segments_size(), context,
                     consumed_key_size)) {
     // Do not need to call Cancel like Commit because the current
     // state is SUGGESTION.
@@ -1071,7 +1071,7 @@ void EngineConverter::CommitSegmentsInternal(const composer::Composer& composer,
   }
 
   // Store the first conversion segment to the result.
-  if (!UpdateResult(0, segments_to_commit, nullptr)) {
+  if (!UpdateResult(0, segments_to_commit, context, nullptr)) {
     // If the selected candidate of the first segment has the command
     // attribute, Cancel is performed instead of Commit.
     Cancel();
@@ -1173,7 +1173,7 @@ void EngineConverter::CommitPreedit(const composer::Composer& composer,
       }
 
       if (segments_.conversion_segments_size() > 0) {
-        if (!UpdateResult(0, segments_.conversion_segments_size(), nullptr)) {
+        if (!UpdateResult(0, segments_.conversion_segments_size(), context, nullptr)) {
           Cancel();
           ResetState();
           return;
@@ -1973,8 +1973,8 @@ size_t EngineConverter::GetConsumedPreeditSize(const size_t index,
   return result;
 }
 
-bool EngineConverter::MaybePerformCommandCandidate(const size_t index,
-                                                   const size_t size) {
+bool EngineConverter::MaybePerformCommandCandidate(
+    const size_t index, const size_t size, const commands::Context& context) {
   // If a candidate has the command attribute, Cancel is performed
   // instead of Commit after executing the specified action.
   for (size_t i = index; i < size; ++i) {
@@ -1992,6 +1992,7 @@ bool EngineConverter::MaybePerformCommandCandidate(const size_t index,
         GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
         cfg.current_profile = new_profile;
         config::GruConfigManager::SaveConfig(cfg, config_path);
+        config::GruConfigManager::InvalidateConfigCache();
         if (converter_) {
           const_cast<ConverterInterface*>(converter_.get())->Reload();
         }
@@ -2016,6 +2017,7 @@ bool EngineConverter::MaybePerformCommandCandidate(const size_t index,
             config::GruConfigManager::AddOrUpdateAppProfileMapping(&cfg, app_name, target_profile);
             cfg.enable_app_profile_switching = true;
             config::GruConfigManager::SaveConfig(cfg, config_path);
+            config::GruConfigManager::InvalidateConfigCache();
             if (converter_) {
               const_cast<ConverterInterface*>(converter_.get())->Reload();
             }
@@ -2025,28 +2027,22 @@ bool EngineConverter::MaybePerformCommandCandidate(const size_t index,
           }
         }
       }
-      if (val == "MoGRU: インスタント速習モード ON") {
+      if (val == "MoGRU: インスタント速習モード ON" ||
+          val == "MoGRU: インスタント速習モード OFF") {
+        const bool enable = (val == "MoGRU: インスタント速習モード ON");
         const std::string config_path =
             config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
         GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
-        cfg.enable_instant_mode = true;
+        const std::string active_prof =
+            config::GruConfigManager::ResolveActiveProfileForContext(cfg, &context);
+        config::GruConfigManager::SetInstantModeEnabled(&cfg, active_prof, enable);
         config::GruConfigManager::SaveConfig(cfg, config_path);
+        config::GruConfigManager::InvalidateConfigCache();
         if (converter_) {
           const_cast<ConverterInterface*>(converter_.get())->Reload();
         }
-        LOG(INFO) << "EngineConverter: Enabled MoGRU instant mode";
-        return true;
-      }
-      if (val == "MoGRU: インスタント速習モード OFF") {
-        const std::string config_path =
-            config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
-        GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
-        cfg.enable_instant_mode = false;
-        config::GruConfigManager::SaveConfig(cfg, config_path);
-        if (converter_) {
-          const_cast<ConverterInterface*>(converter_.get())->Reload();
-        }
-        LOG(INFO) << "EngineConverter: Disabled MoGRU instant mode";
+        LOG(INFO) << "EngineConverter: " << (enable ? "Enabled" : "Disabled")
+                  << " MoGRU instant mode for profile: " << active_prof;
         return true;
       }
 
@@ -2071,12 +2067,13 @@ bool EngineConverter::MaybePerformCommandCandidate(const size_t index,
 }
 
 bool EngineConverter::UpdateResult(size_t index, size_t size,
+                                   const commands::Context& context,
                                    size_t* consumed_key_size) {
   DCHECK(CheckState(SUGGESTION | PREDICTION | CONVERSION));
 
   // If command candidate is performed, result is not updated and
   // returns false.
-  if (MaybePerformCommandCandidate(index, size)) {
+  if (MaybePerformCommandCandidate(index, size, context)) {
     return false;
   }
 
