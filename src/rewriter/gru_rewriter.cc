@@ -830,16 +830,30 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
     Segment* seg = segments->mutable_conversion_segment(0);
     const absl::string_view key = seg->key();
     bool match_profile =
-        (key == "ぷろふぁいる" || key == "プロファイル" || key == "profile");
+        (key == "ぷろふぁいる" || key == "プロファイル" || key == "profile" ||
+         key == "pろふぃぇ" || key == "ｐろふぃぇ");
     bool match_instant =
-        (key == "いんすたんと" || key == "インスタント" || key == "instant");
+        (key == "いんすたんと" || key == "インスタント" || key == "instant" ||
+         key == "いんsたんt" || key == "いんｓたんｔ");
+
+    if (!match_profile && !match_instant &&
+        request.composer().GetLength() > 0) {
+      const std::string raw_input = request.composer().GetRawString();
+      if (raw_input == "profile") {
+        match_profile = true;
+      } else if (raw_input == "instant") {
+        match_instant = true;
+      }
+    }
 
     if (!match_profile && !match_instant) {
       for (size_t ci = 0; ci < seg->candidates_size(); ++ci) {
         const absl::string_view val = seg->candidate(ci).value;
-        if (val == "プロファイル" || val == "ぷろふぁいる") {
+        if (val == "プロファイル" || val == "ぷろふぁいる" ||
+            val == "profile") {
           match_profile = true;
-        } else if (val == "インスタント" || val == "いんすたんと") {
+        } else if (val == "インスタント" || val == "いんすたんと" ||
+                   val == "instant") {
           match_instant = true;
         }
       }
@@ -1235,6 +1249,33 @@ std::optional<RewriterInterface::ResizeSegmentsRequest> GruRewriter::CheckResize
 
   if (request.request_type() != ConversionRequest::CONVERSION) {
     return std::nullopt;
+  }
+
+  // Merge segments when typing inline command keywords ("profile", "instant")
+  // in Japanese Romaji mode if they were split by the converter.
+  const bool is_live_conversion =
+      (request.options().composer_key_selection ==
+       ConversionRequest::PREDICTION_KEY);
+  if (!is_live_conversion && segments.conversion_segments_size() > 1) {
+    const std::string raw_input = request.composer().GetLength() > 0
+                                      ? request.composer().GetRawString()
+                                      : std::string();
+    std::string concat_key;
+    size_t total_char_len = 0;
+    for (size_t i = 0; i < segments.conversion_segments_size(); ++i) {
+      const absl::string_view k = segments.conversion_segment(i).key();
+      concat_key.append(k.data(), k.size());
+      total_char_len += Util::CharsLen(k);
+    }
+    if ((raw_input == "profile" || raw_input == "instant" ||
+         concat_key == "pろふぃぇ" || concat_key == "ｐろふぃぇ" ||
+         concat_key == "いんsたんt" || concat_key == "いんｓたんｔ") &&
+        total_char_len > 0 && total_char_len <= 255) {
+      ResizeSegmentsRequest resize_req;
+      resize_req.segment_index = 0;
+      resize_req.segment_sizes[0] = static_cast<uint8_t>(total_char_len);
+      return resize_req;
+    }
   }
 
   if (immutable_converter_ == nullptr) {

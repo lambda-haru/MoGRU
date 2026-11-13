@@ -1735,6 +1735,77 @@ TEST_F(GruRewriterTest, RestrictedInlineCommandKeywordsOnly) {
     EXPECT_TRUE(found_instant_cmd);
   }
 
+  // Post-EnglishFallbackRewriter Romaji-preedit keys for "profile" ("pろふぃぇ")
+  // and "instant" ("いんsたんt")
+  {
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("pろふぃぇ");
+    AddCandidate("pろふぃぇ", "profile", 6000, seg);
+    EXPECT_TRUE(rewriter_->Rewrite(request, &segments));
+    EXPECT_EQ(seg->candidate(0).value, "profile");
+    bool found_profile_cmd = false;
+    bool found_instant_cmd = false;
+    for (size_t i = 1; i < seg->candidates_size(); ++i) {
+      if (absl::StartsWith(seg->candidate(i).value, "MoGRU: プロファイル切替 [")) {
+        found_profile_cmd = true;
+      }
+      if (absl::StartsWith(seg->candidate(i).value, "MoGRU: インスタント速習モード")) {
+        found_instant_cmd = true;
+      }
+    }
+    EXPECT_TRUE(found_profile_cmd);
+    EXPECT_FALSE(found_instant_cmd);
+  }
+  {
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("いんsたんt");
+    AddCandidate("いんsたんt", "instant", 6000, seg);
+    EXPECT_TRUE(rewriter_->Rewrite(request, &segments));
+    EXPECT_EQ(seg->candidate(0).value, "instant");
+    bool found_profile_cmd = false;
+    bool found_instant_cmd = false;
+    for (size_t i = 1; i < seg->candidates_size(); ++i) {
+      if (absl::StartsWith(seg->candidate(i).value, "MoGRU: プロファイル切替 [")) {
+        found_profile_cmd = true;
+      }
+      if (absl::StartsWith(seg->candidate(i).value, "MoGRU: インスタント速習モード")) {
+        found_instant_cmd = true;
+      }
+    }
+    EXPECT_FALSE(found_profile_cmd);
+    EXPECT_TRUE(found_instant_cmd);
+  }
+
+  // Multi-segment split of "pろふぃぇ" / "いんsたんt" is merged via CheckResizeSegmentsRequest
+  {
+    Segments segments;
+    Segment* s0 = segments.add_segment();
+    s0->set_key("pろ");
+    AddCandidate("pろ", "pろ", 10000, s0);
+    Segment* s1 = segments.add_segment();
+    s1->set_key("ふぃぇ");
+    AddCandidate("ふぃぇ", "ふぃぇ", 10000, s1);
+    auto req = rewriter_->CheckResizeSegmentsRequest(request, segments);
+    ASSERT_TRUE(req.has_value());
+    EXPECT_EQ(req->segment_index, 0);
+    EXPECT_EQ(req->segment_sizes[0], 5);
+  }
+  {
+    Segments segments;
+    Segment* s0 = segments.add_segment();
+    s0->set_key("いんs");
+    AddCandidate("いんs", "いんs", 10000, s0);
+    Segment* s1 = segments.add_segment();
+    s1->set_key("たんt");
+    AddCandidate("たんt", "たんt", 10000, s1);
+    auto req = rewriter_->CheckResizeSegmentsRequest(request, segments);
+    ASSERT_TRUE(req.has_value());
+    EXPECT_EQ(req->segment_index, 0);
+    EXPECT_EQ(req->segment_sizes[0], 6);
+  }
+
   // Removed keywords must NOT trigger any MoGRU inline command candidates
   for (const char* removed : {"もぐら", "モグラ", "mogru", "::mogru",
                               "::profile", "::instant", "purofairu",
