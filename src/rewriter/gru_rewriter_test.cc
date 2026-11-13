@@ -1690,6 +1690,67 @@ TEST_F(GruRewriterTest, CustomProfileAddAndDeleteRoundTripAndInlineCommands) {
   EXPECT_FALSE(found_business_cmd);
 }
 
+TEST_F(GruRewriterTest, RestrictedInlineCommandKeywordsOnly) {
+  ConversionRequest request;
+
+  // "profile" triggers only profile commands
+  {
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("profile");
+    AddCandidate("profile", "profile", 1000, seg);
+    EXPECT_TRUE(rewriter_->Rewrite(request, &segments));
+    bool found_profile_cmd = false;
+    bool found_instant_cmd = false;
+    for (size_t i = 0; i < seg->candidates_size(); ++i) {
+      if (absl::StartsWith(seg->candidate(i).value, "MoGRU: プロファイル切替 [")) {
+        found_profile_cmd = true;
+      }
+      if (absl::StartsWith(seg->candidate(i).value, "MoGRU: インスタント速習モード")) {
+        found_instant_cmd = true;
+      }
+    }
+    EXPECT_TRUE(found_profile_cmd);
+    EXPECT_FALSE(found_instant_cmd);
+  }
+
+  // "instant" and "インスタント" trigger only instant commands
+  for (const char* kw : {"instant", "インスタント"}) {
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key(kw);
+    AddCandidate(kw, kw, 1000, seg);
+    EXPECT_TRUE(rewriter_->Rewrite(request, &segments));
+    bool found_profile_cmd = false;
+    bool found_instant_cmd = false;
+    for (size_t i = 0; i < seg->candidates_size(); ++i) {
+      if (absl::StartsWith(seg->candidate(i).value, "MoGRU: プロファイル切替 [")) {
+        found_profile_cmd = true;
+      }
+      if (absl::StartsWith(seg->candidate(i).value, "MoGRU: インスタント速習モード")) {
+        found_instant_cmd = true;
+      }
+    }
+    EXPECT_FALSE(found_profile_cmd);
+    EXPECT_TRUE(found_instant_cmd);
+  }
+
+  // Removed keywords must NOT trigger any MoGRU inline command candidates
+  for (const char* removed : {"もぐら", "モグラ", "mogru", "::mogru",
+                              "::profile", "::instant", "purofairu",
+                              "insutanto"}) {
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key(removed);
+    AddCandidate(removed, removed, 1000, seg);
+    rewriter_->Rewrite(request, &segments);
+    for (size_t i = 0; i < seg->candidates_size(); ++i) {
+      EXPECT_FALSE(seg->candidate(i).attributes & converter::Attribute::COMMAND_CANDIDATE);
+      EXPECT_FALSE(absl::StartsWith(seg->candidate(i).value, "MoGRU:"));
+    }
+  }
+}
+
 }  // namespace
 }  // namespace mozc
 

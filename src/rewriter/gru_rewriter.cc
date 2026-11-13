@@ -829,16 +829,10 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
   if (!is_live_conversion && segments->conversion_segments_size() == 1) {
     Segment* seg = segments->mutable_conversion_segment(0);
     const absl::string_view key = seg->key();
-    bool match_profile = (key == "ぷろふぁいる" || key == "プロファイル" ||
-                          key == "profile" || key == "purofairu" ||
-                          key == "::profile" || key == "もぐら" ||
-                          key == "モグラ" || key == "mogru" ||
-                          key == "::mogru");
-    bool match_instant = (key == "いんすたんと" || key == "インスタント" ||
-                          key == "instant" || key == "insutanto" ||
-                          key == "::instant" || key == "もぐら" ||
-                          key == "モグラ" || key == "mogru" ||
-                          key == "::mogru");
+    bool match_profile =
+        (key == "ぷろふぁいる" || key == "プロファイル" || key == "profile");
+    bool match_instant =
+        (key == "いんすたんと" || key == "インスタント" || key == "instant");
 
     if (!match_profile && !match_instant) {
       for (size_t ci = 0; ci < seg->candidates_size(); ++ci) {
