@@ -36,6 +36,9 @@
 #include <string>
 #include <vector>
 
+#include "absl/flags/declare.h"
+#include "absl/flags/flag.h"
+#include "absl/flags/reflection.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
@@ -73,6 +76,8 @@
 #include "testing/mozctest.h"
 #include "testing/test_peer.h"
 #include "transliteration/transliteration.h"
+
+ABSL_DECLARE_FLAG(bool, enable_shift_immediate_japanese_return);
 
 namespace mozc {
 
@@ -3636,12 +3641,13 @@ TEST_F(SessionTest, SpaceOnAlphanumeric) {
   MockEngine engine;
   std::shared_ptr<MockConverter> converter = CreateEngineConverterMock(&engine);
 
-  Session session(engine);
+  // Explicit alphanumeric mode continues to honor space_on_alphanumeric.
   {
     request.set_space_on_alphanumeric(commands::Request::COMMIT);
 
     Session session(engine);
     InitSessionToPrecomposition(&session, request);
+    ASSERT_TRUE(session.ToggleAlphanumericMode(&command));
 
     SendKey("A", &session, &command);
     EXPECT_EQ(GetComposition(command), "A");
@@ -3657,6 +3663,7 @@ TEST_F(SessionTest, SpaceOnAlphanumeric) {
 
     Session session(engine);
     InitSessionToPrecomposition(&session, request);
+    ASSERT_TRUE(session.ToggleAlphanumericMode(&command));
 
     SendKey("A", &session, &command);
     EXPECT_EQ(GetComposition(command), "A");
@@ -3665,6 +3672,7 @@ TEST_F(SessionTest, SpaceOnAlphanumeric) {
     EXPECT_FALSE(command.output().has_result());
     EXPECT_EQ(GetComposition(command), "A ");
 
+    ASSERT_TRUE(session.ToggleAlphanumericMode(&command));
     SendKey("a", &session, &command);
     EXPECT_RESULT("A ", command);
     EXPECT_EQ(GetComposition(command), "あ");
@@ -3677,6 +3685,7 @@ TEST_F(SessionTest, SpaceOnAlphanumeric) {
 
     Session session(engine);
     InitSessionToPrecomposition(&session, request);
+    ASSERT_TRUE(session.ToggleAlphanumericMode(&command));
 
     SendKey("A", &session, &command);
     EXPECT_EQ(GetComposition(command), "A");
@@ -3685,9 +3694,54 @@ TEST_F(SessionTest, SpaceOnAlphanumeric) {
     EXPECT_FALSE(command.output().has_result());
     EXPECT_EQ(GetComposition(command), "A ");
 
+    ASSERT_TRUE(session.ToggleAlphanumericMode(&command));
     SendKey("a", &session, &command);
     EXPECT_FALSE(command.output().has_result());
     EXPECT_EQ(GetComposition(command), "A あ");
+    Mock::VerifyAndClearExpectations(converter.get());
+  }
+
+  // With immediate Japanese return enabled (default), Space after Shift+A
+  // in Hiragana mode exits temporary HALF_ASCII and starts conversion.
+  {
+    request.set_space_on_alphanumeric(commands::Request::COMMIT);
+    Session session(engine);
+    InitSessionToPrecomposition(&session, request);
+
+    Segments segments;
+    Segment* segment = segments.add_segment();
+    segment->set_key("A");
+    AddCandidate("A", "A", segment);
+    EXPECT_CALL(*converter, StartConversion(_, _))
+        .WillOnce(DoAll(SetArgPointee<1>(segments), Return(true)));
+
+    SendKey("A", &session, &command);
+    EXPECT_EQ(GetComposition(command), "A");
+    EXPECT_EQ(session.context().composer().GetInputMode(),
+              transliteration::HALF_ASCII);
+
+    SendKey("Space", &session, &command);
+    EXPECT_FALSE(command.output().has_result());
+    EXPECT_EQ(session.context().composer().GetInputMode(),
+              transliteration::HIRAGANA);
+    EXPECT_EQ(session.context().state(), ImeContext::CONVERSION);
+    Mock::VerifyAndClearExpectations(converter.get());
+  }
+
+  // With immediate Japanese return disabled, legacy behavior is preserved.
+  {
+    const absl::FlagSaver flag_saver;
+    absl::SetFlag(&FLAGS_enable_shift_immediate_japanese_return, false);
+    request.set_space_on_alphanumeric(commands::Request::COMMIT);
+
+    Session session(engine);
+    InitSessionToPrecomposition(&session, request);
+
+    SendKey("A", &session, &command);
+    EXPECT_EQ(GetComposition(command), "A");
+
+    SendKey("Space", &session, &command);
+    EXPECT_RESULT("A ", command);
     Mock::VerifyAndClearExpectations(converter.get());
   }
 }
@@ -6124,6 +6178,31 @@ TEST_F(SessionTest, Issue1518994) {
   }
 
   {
+    Session session(engine);
+    InitSessionToPrecomposition(&session);
+    commands::Command command;
+
+    Segments segments;
+    Segment* segment = segments.add_segment();
+    segment->set_key("あI");
+    AddCandidate("あI", "亜I", segment);
+    EXPECT_CALL(*converter, StartConversion(_, _))
+        .WillOnce(DoAll(SetArgPointee<1>(segments), Return(true)));
+
+    EXPECT_TRUE(SendKey("a", &session, &command));
+    EXPECT_TRUE(SendKey("I", &session, &command));
+    EXPECT_EQ(GetComposition(command), "あI");
+
+    EXPECT_TRUE(SendKey("Space", &session, &command));
+    EXPECT_EQ(session.context().state(), ImeContext::CONVERSION);
+    EXPECT_EQ(session.context().composer().GetInputMode(),
+              transliteration::HIRAGANA);
+    Mock::VerifyAndClearExpectations(converter.get());
+  }
+
+  {
+    const absl::FlagSaver flag_saver;
+    absl::SetFlag(&FLAGS_enable_shift_immediate_japanese_return, false);
     Session session(engine);
     InitSessionToPrecomposition(&session);
     commands::Command command;
@@ -10751,7 +10830,78 @@ TEST_F(SessionTest, MixedCaseShiftEnglishFallbackWithMockDataEngine) {
   ASSERT_TRUE(session.Convert(&command));
   ASSERT_TRUE(command.output().has_preedit());
   ASSERT_GE(command.output().preedit().segment_size(), 2);
-  EXPECT_EQ(command.output().preedit().segment(0).value(), "woRd");
+  EXPECT_EQ(command.output().preedit().segment_size() >= 2 ? command.output().preedit().segment(0).value() : "", "woRd");
+}
+
+TEST_F(SessionTest, ShiftUppercaseImmediateReturnWithSpaceAndSymbols) {
+  // 1. Default ON: Shift+uppercase followed by symbol immediately reverts to
+  // HIRAGANA and formats the symbol as full-width Japanese punctuation.
+  {
+    Session session(*mock_data_engine_);
+    InitSessionToPrecomposition(&session);
+
+    commands::Command command;
+    EXPECT_TRUE(SendKey("W", &session, &command));
+    EXPECT_EQ(GetComposition(command), "W");
+    EXPECT_EQ(session.context().composer().GetInputMode(),
+              transliteration::HALF_ASCII);
+
+    EXPECT_TRUE(SendKey("!", &session, &command));
+    EXPECT_EQ(GetComposition(command), "W！");
+    EXPECT_EQ(session.context().composer().GetInputMode(),
+              transliteration::HIRAGANA);
+  }
+
+  // 2. Default ON: Shift+uppercase directly followed by Space exits temporary
+  // HALF_ASCII and converts instead of inserting a half-width space.
+  {
+    Session session(*mock_data_engine_);
+    InitSessionToPrecomposition(&session);
+
+    commands::Command command;
+    EXPECT_TRUE(SendKey("W", &session, &command));
+    EXPECT_EQ(GetComposition(command), "W");
+    EXPECT_EQ(session.context().composer().GetInputMode(),
+              transliteration::HALF_ASCII);
+
+    EXPECT_TRUE(SendKey("Space", &session, &command));
+    EXPECT_EQ(session.context().state(), ImeContext::CONVERSION);
+    EXPECT_EQ(session.context().composer().GetInputMode(),
+              transliteration::HIRAGANA);
+    ASSERT_TRUE(command.output().has_preedit());
+    EXPECT_GE(command.output().preedit().segment_size(), 1);
+  }
+
+  // 3. Default ON: Shift+uppercase followed by explicit InsertSpace uses the
+  // HIRAGANA space form (full-width space), not half-width space.
+  {
+    Session session(*mock_data_engine_);
+    InitSessionToPrecomposition(&session);
+
+    commands::Command command;
+    EXPECT_TRUE(SendKey("W", &session, &command));
+    command.Clear();
+    EXPECT_TRUE(session.InsertSpace(&command));
+    EXPECT_EQ(GetComposition(command), "W　");
+  }
+
+  // 4. Disabled: legacy behavior keeps HALF_ASCII on symbol and Space.
+  {
+    const absl::FlagSaver flag_saver;
+    absl::SetFlag(&FLAGS_enable_shift_immediate_japanese_return, false);
+    Session session(*mock_data_engine_);
+    InitSessionToPrecomposition(&session);
+
+    commands::Command command;
+    EXPECT_TRUE(SendKey("W", &session, &command));
+    EXPECT_TRUE(SendKey("!", &session, &command));
+    EXPECT_EQ(GetComposition(command), "W!");
+
+    commands::Command space_cmd;
+    EXPECT_TRUE(SendKey("Space", &session, &space_cmd));
+    EXPECT_EQ(session.context().state(), ImeContext::COMPOSITION);
+    EXPECT_EQ(GetComposition(space_cmd), "W! ");
+  }
 }
 
 }  // namespace session

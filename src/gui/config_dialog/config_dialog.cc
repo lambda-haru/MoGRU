@@ -925,6 +925,8 @@ void ConfigDialog::SetupMogruUi() {
         QString::fromUtf8("指定文字数を超えた場合に前文節を固定（計算量抑制）"));
     enableLiveConversionAutoCommitCheckBox->setText(
         QString::fromUtf8("前文節固定の次の更新タイミングで自動確定する"));
+    enableShiftImmediateJapaneseReturnCheckBox->setText(
+        QString::fromUtf8("Shift大文字入力後の記号・スペースで即座に日本語入力へ戻す"));
     liveConversionLengthThresholdLabel->setText(
         QString::fromUtf8("固定・自動確定トリガー文字数:"));
     liveConversionExcludedHiraganaCharactersLabel->setText(
@@ -1445,6 +1447,8 @@ void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
       gru_config.enable_live_conversion_prefix_freezing);
   enableLiveConversionAutoCommitCheckBox->setChecked(
       gru_config.enable_live_conversion_auto_commit);
+  enableShiftImmediateJapaneseReturnCheckBox->setChecked(
+      gru_config.enable_shift_immediate_japanese_return);
   liveConversionLengthThresholdSpinBox->setValue(
       gru_config.live_conversion_length_threshold);
   liveConversionExcludedHiraganaCharactersSpinBox->setValue(
@@ -1491,6 +1495,8 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
       enableLiveConversionPrefixFreezingCheckBox->isChecked();
   cfg.enable_live_conversion_auto_commit =
       enableLiveConversionAutoCommitCheckBox->isChecked();
+  cfg.enable_shift_immediate_japanese_return =
+      enableShiftImmediateJapaneseReturnCheckBox->isChecked();
   cfg.live_conversion_length_threshold =
       liveConversionLengthThresholdSpinBox->value();
   cfg.live_conversion_excluded_hiragana_characters =

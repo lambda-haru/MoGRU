@@ -38,6 +38,9 @@
 #include <vector>
 
 #include "absl/container/btree_set.h"
+#include "absl/flags/declare.h"
+#include "absl/flags/flag.h"
+#include "absl/flags/reflection.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
@@ -52,6 +55,8 @@
 #include "testing/gunit.h"
 #include "testing/test_peer.h"
 #include "transliteration/transliteration.h"
+
+ABSL_DECLARE_FLAG(bool, enable_shift_immediate_japanese_return);
 
 namespace mozc {
 namespace composer {
@@ -920,9 +925,9 @@ TEST_F(ComposerTest, ApplyTemporaryInputMode) {
         std::make_pair("a", false),  std::make_pair("A", true),
         std::make_pair("A", true),   std::make_pair("A", true),
         std::make_pair("a", false),  std::make_pair("A", true),
-        std::make_pair(".", true),   std::make_pair("a", false),
+        std::make_pair(".", false),  std::make_pair("a", false),
         std::make_pair("A", true),   std::make_pair("A", true),
-        std::make_pair(".", true),   std::make_pair("a", false),
+        std::make_pair(".", false),  std::make_pair("a", false),
         std::make_pair("あ", false), std::make_pair("a", false),
     };
 
@@ -951,9 +956,9 @@ TEST_F(ComposerTest, ApplyTemporaryInputMode) {
         std::make_pair("A", false),  std::make_pair("a", true),
         std::make_pair("a", true),   std::make_pair("a", true),
         std::make_pair("A", false),  std::make_pair("a", true),
-        std::make_pair(".", true),   std::make_pair("A", false),
+        std::make_pair(".", false),  std::make_pair("A", false),
         std::make_pair("a", true),   std::make_pair("a", true),
-        std::make_pair(".", true),   std::make_pair("A", false),
+        std::make_pair(".", false),  std::make_pair("A", false),
         std::make_pair("あ", false), std::make_pair("A", false),
     };
 
@@ -982,9 +987,9 @@ TEST_F(ComposerTest, ApplyTemporaryInputMode) {
         std::make_pair("a", false),  std::make_pair("A", true),
         std::make_pair("A", true),   std::make_pair("A", true),
         std::make_pair("a", false),  std::make_pair("A", true),
-        std::make_pair(".", true),   std::make_pair("a", false),
+        std::make_pair(".", false),  std::make_pair("a", false),
         std::make_pair("A", true),   std::make_pair("A", true),
-        std::make_pair(".", true),   std::make_pair("a", false),
+        std::make_pair(".", false),  std::make_pair("a", false),
         std::make_pair("あ", false), std::make_pair("a", false),
     };
 
@@ -1013,9 +1018,9 @@ TEST_F(ComposerTest, ApplyTemporaryInputMode) {
         std::make_pair("A", false),  std::make_pair("a", true),
         std::make_pair("a", true),   std::make_pair("a", true),
         std::make_pair("A", false),  std::make_pair("a", true),
-        std::make_pair(".", true),   std::make_pair("A", false),
+        std::make_pair(".", false),  std::make_pair("A", false),
         std::make_pair("a", true),   std::make_pair("a", true),
-        std::make_pair(".", true),   std::make_pair("A", false),
+        std::make_pair(".", false),  std::make_pair("A", false),
         std::make_pair("あ", false), std::make_pair("A", false),
     };
 
@@ -1030,6 +1035,29 @@ TEST_F(ComposerTest, ApplyTemporaryInputMode) {
       EXPECT_EQ(expected, composer_->GetInputMode()) << "index=" << i;
       EXPECT_EQ(transliteration::HIRAGANA, composer_->GetComebackInputMode())
           << "index=" << i;
+    }
+  }
+
+  {  // Legacy behavior when immediate Japanese return is disabled
+    const absl::FlagSaver flag_saver;
+    absl::SetFlag(&FLAGS_enable_shift_immediate_japanese_return, false);
+    config_->set_shift_key_mode_switch(Config::ASCII_INPUT_MODE);
+    composer_->SetInputMode(transliteration::HIRAGANA);
+
+    std::pair<std::string, bool> kLegacyDataAscii[] = {
+        std::make_pair("a", false),  std::make_pair("A", true),
+        std::make_pair(".", true),   std::make_pair("a", true),
+        std::make_pair("A", true),   std::make_pair("A", true),
+        std::make_pair("a", false),
+    };
+
+    for (int i = 0; i < std::size(kLegacyDataAscii); ++i) {
+      composer_peer.ApplyTemporaryInputMode(kLegacyDataAscii[i].first,
+                                            kCapsUnlocked);
+      const transliteration::TransliterationType expected =
+          kLegacyDataAscii[i].second ? transliteration::HALF_ASCII
+                                     : transliteration::HIRAGANA;
+      EXPECT_EQ(expected, composer_->GetInputMode()) << "legacy index=" << i;
     }
   }
 }
@@ -1174,16 +1202,65 @@ TEST_F(ComposerTest, ShiftKeyOperation) {
     EXPECT_EQ(composer_->GetStringForPreedit(), "AAあAあ");
   }
 
-  {  // Multiple shifted characters #2
+  {  // Multiple shifted characters #2: symbols immediately return to HIRAGANA
+    composer_->SetInputMode(transliteration::HIRAGANA);
+    composer_->Reset();
+    InsertKey("D", composer_.get());  // "D"
+    InsertKey("&", composer_.get());  // "D＆"
+    InsertKey("D", composer_.get());  // "D＆D"
+    InsertKey("2", composer_.get());  // "D＆D２"
+    InsertKey("a", composer_.get());  // "D＆D２あ"
+
+    EXPECT_EQ(composer_->GetStringForPreedit(), "D＆D２あ");
+    EXPECT_EQ(composer_->GetInputMode(), transliteration::HIRAGANA);
+  }
+
+  {  // Romaji symbol rules work immediately after a shifted uppercase letter
+    table_->AddRule("-", "ー", "");
+    table_->AddRule("[", "「", "");
+    table_->AddRule("!", "！", "");
+
+    composer_->SetInputMode(transliteration::HIRAGANA);
+    composer_->Reset();
+    InsertKey("A", composer_.get());
+    EXPECT_EQ(composer_->GetInputMode(), transliteration::HALF_ASCII);
+    InsertKey("[", composer_.get());
+    EXPECT_EQ(composer_->GetInputMode(), transliteration::HIRAGANA);
+    EXPECT_EQ(composer_->GetStringForPreedit(), "A「");
+
+    composer_->Reset();
+    InsertKey("A", composer_.get());
+    InsertKey("!", composer_.get());
+    EXPECT_EQ(composer_->GetInputMode(), transliteration::HIRAGANA);
+    EXPECT_EQ(composer_->GetStringForPreedit(), "A！");
+
+    composer_->Reset();
+    InsertKey("A", composer_.get());
+    InsertKey("-", composer_.get());
+    InsertKey("a", composer_.get());
+    EXPECT_EQ(composer_->GetInputMode(), transliteration::HIRAGANA);
+    EXPECT_EQ(composer_->GetRawString(), "A-a");
+  }
+
+  {  // Legacy Shift behavior when immediate Japanese return is disabled
+    const absl::FlagSaver flag_saver;
+    absl::SetFlag(&FLAGS_enable_shift_immediate_japanese_return, false);
     composer_->SetInputMode(transliteration::HIRAGANA);
     composer_->Reset();
     InsertKey("D", composer_.get());  // "D"
     InsertKey("&", composer_.get());  // "D&"
     InsertKey("D", composer_.get());  // "D&D"
     InsertKey("2", composer_.get());  // "D&D2"
-    InsertKey("a", composer_.get());  // "D&D2あ"
+    InsertKey("a", composer_.get());  // stays in HALF_ASCII -> "D&D2a"
 
-    EXPECT_EQ(composer_->GetStringForPreedit(), "D&D2あ");
+    EXPECT_EQ(composer_->GetStringForPreedit(), "D&D2a");
+
+    composer_->SetInputMode(transliteration::HIRAGANA);
+    composer_->Reset();
+    InsertKey("D", composer_.get());  // "D"
+    InsertKey("D", composer_.get());  // "DD"
+    InsertKey("a", composer_.get());  // "DDあ"
+    EXPECT_EQ(composer_->GetStringForPreedit(), "DDあ");
   }
 
   {  // Full-witdh alphanumeric
@@ -2078,10 +2155,8 @@ TEST_F(ComposerTest, Issue2797991Case1) {
 }
 
 TEST_F(ComposerTest, Issue2797991Case2) {
-  // This is a unittest against http://b/2797991.
-  // Half-width alphanumeric mode quits after [CAPITAL LETTER]:[CAPITAL LETTER]
-  // e.g. C:\Wi -> C:\Wい
-
+  // Without a backslash after colon, ':' immediately reverts to HIRAGANA when
+  // immediate Japanese return is enabled.
   table_->AddRule("i", "い", "");
 
   InsertKey("C", composer_.get());
@@ -2089,7 +2164,28 @@ TEST_F(ComposerTest, Issue2797991Case2) {
   InsertKey("W", composer_.get());
   InsertKey("i", composer_.get());
 
-  EXPECT_EQ(composer_->GetStringForPreedit(), "C:Wい");
+  EXPECT_EQ(composer_->GetStringForPreedit(), "C：Wい");
+
+  {
+    const absl::FlagSaver flag_saver;
+    absl::SetFlag(&FLAGS_enable_shift_immediate_japanese_return, false);
+    composer_->Reset();
+    composer_->SetInputMode(transliteration::HIRAGANA);
+    InsertKey("C", composer_.get());
+    InsertKey(":", composer_.get());
+    InsertKey("W", composer_.get());
+    InsertKey("i", composer_.get());
+    EXPECT_EQ(composer_->GetStringForPreedit(), "C:Wi");
+
+    composer_->Reset();
+    composer_->SetInputMode(transliteration::HIRAGANA);
+    InsertKey("C", composer_.get());
+    InsertKey(":", composer_.get());
+    InsertKey("W", composer_.get());
+    InsertKey("W", composer_.get());
+    InsertKey("i", composer_.get());
+    EXPECT_EQ(composer_->GetStringForPreedit(), "C:WWい");
+  }
 }
 
 TEST_F(ComposerTest, Issue2797991Case3) {

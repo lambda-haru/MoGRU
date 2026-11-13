@@ -67,6 +67,8 @@ class ImmutableConverterTestPeer : testing::TestPeer<ImmutableConverter> {
   // Make them public via peer class.
   PEER_METHOD(MakeLattice);
   PEER_METHOD(Viterbi);
+  PEER_METHOD(MakeGroup);
+  PEER_METHOD(IsSegmentEndNode);
   PEER_METHOD(InsertDummyCandidates);
 };
 
@@ -791,6 +793,58 @@ TEST(ImmutableConverterTest,
   EXPECT_EQ(segments.history_segment(0).key(), "2");
   EXPECT_EQ(segments.history_segment(0).candidate(0).key, "2");
   EXPECT_EQ(segments.history_segment(0).candidate(0).value, "2");
+}
+
+TEST(ImmutableConverterTest, FixedValueSegmentIsNotSplitInternally) {
+  auto data_and_converter = std::make_unique<MockDataAndImmutableConverter>();
+  ImmutableConverterTestPeer converter =
+      data_and_converter->GetConverterTestPeer();
+
+  // Build lattice/Viterbi path as FREE first so internal multi-node path
+  // inside segment 0 exists, then verify IsSegmentEndNode forbids splitting
+  // inside segment 0 once it is marked FIXED_VALUE.
+  Segments segments;
+  Segment* seg0 = segments.add_segment();
+  seg0->set_segment_type(Segment::FREE);
+  seg0->set_key("わたしのなまえは");
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_segment_type(Segment::FREE);
+  seg1->set_key("なかのです");
+
+  Lattice lattice;
+  lattice.SetKey("わたしのなまえはなかのです");
+  const ConversionRequest request;
+  converter.MakeLattice(request.options(), &segments, &lattice);
+  converter.Viterbi(request.options(), segments, &lattice);
+
+  const std::vector<uint16_t> group = converter.MakeGroup(segments);
+  seg0->set_segment_type(Segment::FIXED_VALUE);
+  Candidate* cand0 = seg0->add_candidate();
+  cand0->key = "わたしのなまえは";
+  cand0->value = "わたしのなまえは";
+
+  bool checked_internal_node = false;
+  const Node* node = lattice.bos_node()->next;
+  while (node != nullptr && node->next != nullptr &&
+         node->next->node_type != Node::EOS_NODE) {
+    if (group[node->begin_pos] == 0 && group[node->next->begin_pos] == 0) {
+      checked_internal_node = true;
+      EXPECT_FALSE(converter.IsSegmentEndNode(request.options(), segments, node,
+                                              group, false));
+    }
+    node = node->next;
+  }
+  EXPECT_TRUE(checked_internal_node);
+
+  // Full Convert() must keep segment 0 unsplit as FIXED_VALUE.
+  Segments conv_segments = segments;
+  ASSERT_TRUE(data_and_converter->GetConverter()->Convert(request.options(),
+                                                          &conv_segments));
+  ASSERT_GE(conv_segments.conversion_segments_size(), 2);
+  EXPECT_EQ(conv_segments.conversion_segment(0).key(), "わたしのなまえは");
+  EXPECT_EQ(conv_segments.conversion_segment(0).segment_type(),
+            Segment::FIXED_VALUE);
 }
 
 }  // namespace mozc

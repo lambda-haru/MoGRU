@@ -123,3 +123,19 @@ SEND_KEY	CTRL l
 EXPECT_PREEDIT_IN_DETAIL	私のな	前は	中ノです
 SEND_KEY	CTRL k
 EXPECT_PREEDIT_IN_DETAIL	私の	名前は	中ノです
+
+################################################################################
+# Test resizing after jumping over FREE segments (MS-IME)
+RESET_CONTEXT
+SET_CONFIG	session_keymap	MSIME
+SEND_KEYS	watashinonamaehanakanodesu
+SEND_KEY	SPACE
+EXPECT_PREEDIT_IN_DETAIL	私の	名前は	中ノです
+
+# Jump from first segment to last segment via LEFT (skipping middle segment),
+# then resize the last segment; preceding segments must remain unchanged.
+SEND_KEY	LEFT
+SEND_KEY	SHIFT LEFT
+EXPECT_PREEDIT_IN_DETAIL	私の	名前は	中ノで	す
+SEND_KEY	SHIFT RIGHT
+EXPECT_PREEDIT_IN_DETAIL	私の	名前は	中ノです

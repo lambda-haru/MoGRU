@@ -79,6 +79,9 @@ struct GruPenaltyConfig {
   std::string conversion_stats_path = "";
   bool enable_conversion_history_log = false;
 
+  // Shift key temporary ASCII mode immediate Japanese return
+  bool enable_shift_immediate_japanese_return = true;
+
   // Profile configuration
   std::string current_profile = "default";
   bool enable_app_profile_switching = true;
@@ -291,6 +294,13 @@ class GruConfigManager {
   // TSV logging is enabled in gru_config.ini.
   static bool IsConversionHistoryLogEnabled(
       bool flag_default = false,
+      const std::string& explicit_config_path = "");
+
+  // Fast (1-second throttled mtime check) query for whether releasing Shift
+  // immediately restores the original (Japanese) input mode on non-uppercase
+  // ASCII, symbols, and space.
+  static bool IsShiftImmediateJapaneseReturnEnabled(
+      bool flag_default = true,
       const std::string& explicit_config_path = "");
 };
 

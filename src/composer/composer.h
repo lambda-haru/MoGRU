@@ -376,6 +376,10 @@ class Composer final {
 
   bool is_new_input() const { return is_new_input_; }
   size_t shifted_sequence_count() const { return shifted_sequence_count_; }
+
+  // Returns whether releasing Shift immediately restores the original
+  // (Japanese) input mode on non-uppercase ASCII, symbols, and space.
+  static bool IsShiftImmediateJapaneseReturnEnabled();
   absl::string_view source_text() const { return source_text_; }
   std::string* mutable_source_text() { return &source_text_; }
   void set_source_text(absl::string_view source_text);

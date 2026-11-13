@@ -1598,12 +1598,22 @@ bool Session::IsFullWidthInsertSpace(const commands::Input& input) const {
   auto get_input_mode = [this, &input]() {
     const bool has_mode = (input.has_key() && input.key().has_mode());
     if (!has_mode) {
+      if (composer::Composer::IsShiftImmediateJapaneseReturnEnabled() &&
+          context_->composer().GetInputMode() !=
+              context_->composer().GetComebackInputMode()) {
+        return context_->composer().GetComebackInputMode();
+      }
       return context_->composer().GetInputMode();
     }
 
     // Copy the current composer state just in case.
     composer::Composer temporary_composer = context_->composer();
     ApplyCompositionMode(input.key().mode(), &temporary_composer);
+    if (composer::Composer::IsShiftImmediateJapaneseReturnEnabled() &&
+        temporary_composer.GetInputMode() !=
+            temporary_composer.GetComebackInputMode()) {
+      return temporary_composer.GetComebackInputMode();
+    }
     // Refer to this temporary composer in this method.
     return temporary_composer.GetInputMode();
   };
@@ -2361,6 +2371,19 @@ bool Session::DeleteCandidateFromHistory(commands::Command* command) {
 bool Session::Convert(commands::Command* command) {
   command->mutable_output()->set_consumed(true);
   const std::string composition = context_->composer().GetQueryForConversion();
+
+  // When temporary Shift mode is active and immediate Japanese return is
+  // enabled, Space exits temporary ASCII/Katakana mode and triggers conversion
+  // rather than inserting a literal space.
+  if (context_->state() == ImeContext::COMPOSITION &&
+      composer::Composer::IsShiftImmediateJapaneseReturnEnabled() &&
+      context_->composer().GetInputMode() !=
+          context_->composer().GetComebackInputMode() &&
+      command->input().key().has_special_key() &&
+      command->input().key().special_key() == commands::KeyEvent::SPACE) {
+    context_->mutable_composer()->SetInputMode(
+        context_->composer().GetComebackInputMode());
+  }
 
   // TODO(komatsu): Make a function like ConvertOrSpace.
   // Handle a space key on the ASCII composition mode.

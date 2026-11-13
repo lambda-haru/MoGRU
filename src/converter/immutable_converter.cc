@@ -1511,10 +1511,11 @@ bool ImmutableConverter::IsSegmentEndNode(const ConversionOptions& options,
   }
 
   const Segment& old_segment = segments.segment(group[node->begin_pos]);
-  // |node| and |node->next| should be in same segment due to FIXED_BOUNDAY
-  // |node->next| is NOT a boundary. Very strong constraint.
+  // |node| and |node->next| should be in same segment due to FIXED_BOUNDARY
+  // or FIXED_VALUE. |node->next| is NOT a boundary. Very strong constraint.
   if (group[node->begin_pos] == group[node->next->begin_pos] &&
-      old_segment.segment_type() == Segment::FIXED_BOUNDARY) {
+      (old_segment.segment_type() == Segment::FIXED_BOUNDARY ||
+       old_segment.segment_type() == Segment::FIXED_VALUE)) {
     return false;
   }
 

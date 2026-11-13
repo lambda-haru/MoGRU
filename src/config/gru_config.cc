@@ -1107,6 +1107,11 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       "# - true: 有効, false: 無効（Enterキーを押すまでPreedit内に保持）\n"
       "enable_live_conversion_auto_commit = %s\n"
       "\n"
+      "# 【Shift一時英数入力後の即座日本語復帰の有効化】 (初期値: true)\n"
+      "# - Shift+大文字入力後にShiftを離した入力（小文字・記号・スペース等）で即座に元の日本語モードへ戻します。\n"
+      "# - true: 有効（MoGRU標準）, false: 無効（従来のMozc互換挙動）\n"
+      "enable_shift_immediate_japanese_return = %s\n"
+      "\n"
       "# 【ライブ変換の文節固定・自動確定トリガー文字数閾値】 (初期値: 24)\n"
       "# - 確定平仮名キーの文字数がこの値以上になった際に前文節を固定します。\n"
       "live_conversion_length_threshold = %d\n"
@@ -1251,6 +1256,7 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       config.show_segment_separator_in_live_conversion ? "true" : "false",
       config.enable_live_conversion_prefix_freezing ? "true" : "false",
       config.enable_live_conversion_auto_commit ? "true" : "false",
+      config.enable_shift_immediate_japanese_return ? "true" : "false",
       config.live_conversion_length_threshold,
       config.live_conversion_excluded_hiragana_characters,
       config.gru_model_path,
@@ -1455,6 +1461,11 @@ void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
     append_content +=
         "\n# 【ライブ変換時の自動確定（段階的確定）の有効化】 (初期値: false)\n"
         "enable_live_conversion_auto_commit = false\n";
+  }
+  if (content.find("enable_shift_immediate_japanese_return") == std::string::npos) {
+    append_content +=
+        "\n# 【Shift一時英数入力後の即座日本語復帰の有効化】 (初期値: true)\n"
+        "enable_shift_immediate_japanese_return = true\n";
   }
   if (content.find("live_conversion_length_threshold") == std::string::npos) {
     append_content +=
@@ -1693,6 +1704,11 @@ void ApplyConfigKeyValue(GruPenaltyConfig* config,
   if (key == "enable_live_conversion_auto_commit") {
     bool b = false;
     if (absl::SimpleAtob(val, &b)) config->enable_live_conversion_auto_commit = b;
+    return;
+  }
+  if (key == "enable_shift_immediate_japanese_return") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->enable_shift_immediate_japanese_return = b;
     return;
   }
   if (key == "live_conversion_length_threshold") {
@@ -1968,6 +1984,10 @@ void GruConfigManager::ApplyEnvOverrides(GruPenaltyConfig* config) {
   if (const char* e = std::getenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_AUTO_COMMIT")) {
     bool b = false;
     if (absl::SimpleAtob(e, &b)) config->enable_live_conversion_auto_commit = b;
+  }
+  if (const char* e = std::getenv("MOZC_GRU_ENABLE_SHIFT_IMMEDIATE_JAPANESE_RETURN")) {
+    bool b = true;
+    if (absl::SimpleAtob(e, &b)) config->enable_shift_immediate_japanese_return = b;
   }
   if (const char* e = std::getenv("MOZC_GRU_LIVE_CONVERSION_LENGTH_THRESHOLD")) {
     int32_t val_int = 24;
@@ -2594,6 +2614,51 @@ bool GruConfigManager::IsConversionHistoryLogEnabled(
     GruPenaltyConfig parsed = ParseConfigFile(path, base);
     ApplyEnvOverrides(&parsed);
     cached_value = parsed.enable_conversion_history_log;
+    has_cached = true;
+  }
+  return cached_value;
+}
+
+bool GruConfigManager::IsShiftImmediateJapaneseReturnEnabled(
+    bool flag_default,
+    const std::string& explicit_config_path) {
+  static absl::NoDestructor<absl::Mutex> mutex;
+  static absl::Time last_check_time = absl::InfinitePast();
+  static int64_t last_mtime = -1;
+  static std::string last_path;
+  static bool cached_value = true;
+  static bool has_cached = false;
+
+  absl::MutexLock lock(*mutex);
+  const std::string path =
+      ResolveConfigFilePath(explicit_config_path, /*allow_in_test=*/false);
+  if (path.empty() || IsInTestEnvironment()) {
+    GruPenaltyConfig cfg;
+    cfg.enable_shift_immediate_japanese_return = flag_default;
+    if (!path.empty()) {
+      cfg = ParseConfigFile(path, cfg);
+    }
+    ApplyEnvOverrides(&cfg);
+    return cfg.enable_shift_immediate_japanese_return;
+  }
+
+  const absl::Time now = absl::Now();
+  if (has_cached && path == last_path &&
+      (now - last_check_time) < absl::Seconds(1)) {
+    return cached_value;
+  }
+  last_check_time = now;
+
+  EnsureConfigFileExists(path);
+  const int64_t mtime = GetFileMtime(path);
+  if (!has_cached || path != last_path || mtime != last_mtime) {
+    last_path = path;
+    last_mtime = mtime;
+    GruPenaltyConfig base;
+    base.enable_shift_immediate_japanese_return = flag_default;
+    GruPenaltyConfig parsed = ParseConfigFile(path, base);
+    ApplyEnvOverrides(&parsed);
+    cached_value = parsed.enable_shift_immediate_japanese_return;
     has_cached = true;
   }
   return cached_value;

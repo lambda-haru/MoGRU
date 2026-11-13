@@ -1433,9 +1433,57 @@ void EngineConverter::ResizeSegmentWidth(const composer::Composer& composer,
     return;
   }
 
+  // Snapshot and lock all segments preceding `segment_index_` so that
+  // re-conversion triggered by ResizeSegment cannot re-segment or alter them.
+  std::vector<Segment> saved_prefix_segments;
+  std::vector<Segment::SegmentType> saved_prefix_types;
+  if (segment_index_ > 0 &&
+      segment_index_ <= segments_.conversion_segments_size()) {
+    saved_prefix_segments.reserve(segment_index_);
+    saved_prefix_types.reserve(segment_index_);
+    for (size_t i = 0; i < segment_index_; ++i) {
+      Segment* prev_seg = segments_.mutable_conversion_segment(i);
+      saved_prefix_segments.push_back(*prev_seg);
+      saved_prefix_types.push_back(prev_seg->segment_type());
+      if (prev_seg->segment_type() == Segment::FREE ||
+          prev_seg->segment_type() == Segment::FIXED_BOUNDARY) {
+        prev_seg->set_segment_type(prev_seg->candidates_size() > 0
+                                       ? Segment::FIXED_VALUE
+                                       : Segment::FIXED_BOUNDARY);
+      }
+    }
+  }
+
   if (!converter_->ResizeSegment(&segments_, conversion_request, segment_index_,
                                  offset_length)) {
+    for (size_t i = 0; i < saved_prefix_types.size(); ++i) {
+      segments_.mutable_conversion_segment(i)->set_segment_type(
+          saved_prefix_types[i]);
+    }
     return;
+  }
+
+  if (!saved_prefix_segments.empty() &&
+      segments_.conversion_segments_size() > saved_prefix_segments.size()) {
+    bool prefix_keys_match = true;
+    for (size_t i = 0; i < saved_prefix_segments.size(); ++i) {
+      if (segments_.conversion_segment(i).key() !=
+          saved_prefix_segments[i].key()) {
+        prefix_keys_match = false;
+        break;
+      }
+    }
+    if (prefix_keys_match) {
+      for (size_t i = 0; i < saved_prefix_segments.size(); ++i) {
+        const Segment::SegmentType locked_type =
+            saved_prefix_segments[i].candidates_size() > 0
+                ? Segment::FIXED_VALUE
+                : Segment::FIXED_BOUNDARY;
+        Segment* cur_seg = segments_.mutable_conversion_segment(i);
+        *cur_seg = std::move(saved_prefix_segments[i]);
+        cur_seg->set_segment_type(locked_type);
+      }
+    }
   }
 
   UpdateCandidateList();

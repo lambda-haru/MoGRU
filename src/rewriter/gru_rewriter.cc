@@ -135,7 +135,8 @@ bool IsEnglishFallbackSegment(const Segment& seg) {
 }
 
 bool ShouldBypassSegment(const Segment& seg) {
-  return IsSymbolSegment(seg) || IsEnglishFallbackSegment(seg);
+  return seg.segment_type() == Segment::FIXED_VALUE ||
+         IsSymbolSegment(seg) || IsEnglishFallbackSegment(seg);
 }
 
 bool IsKatakanaCandidate(const Segment::Candidate& cand) {

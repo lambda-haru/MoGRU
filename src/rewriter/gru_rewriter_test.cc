@@ -1148,6 +1148,7 @@ TEST_F(GruRewriterTest, GruConfigManagerSaveAndLoadAllSettingsRoundTrip) {
   saved.show_segment_separator_in_live_conversion = true;
   saved.enable_live_conversion_prefix_freezing = false;
   saved.enable_live_conversion_auto_commit = true;
+  saved.enable_shift_immediate_japanese_return = false;
   saved.live_conversion_length_threshold = 36;
   saved.live_conversion_excluded_hiragana_characters = 3;
   saved.gru_model_path = "/custom/path/grumodel.bin";
@@ -1179,6 +1180,7 @@ TEST_F(GruRewriterTest, GruConfigManagerSaveAndLoadAllSettingsRoundTrip) {
   EXPECT_EQ(loaded.show_segment_separator_in_live_conversion, true);
   EXPECT_EQ(loaded.enable_live_conversion_prefix_freezing, false);
   EXPECT_EQ(loaded.enable_live_conversion_auto_commit, true);
+  EXPECT_EQ(loaded.enable_shift_immediate_japanese_return, false);
   EXPECT_EQ(loaded.live_conversion_length_threshold, 36);
   EXPECT_EQ(loaded.live_conversion_excluded_hiragana_characters, 3);
   EXPECT_EQ(loaded.gru_model_path, "/custom/path/grumodel.bin");
@@ -1213,6 +1215,9 @@ TEST_F(GruRewriterTest, GruConfigManagerSaveAndLoadAllSettingsRoundTrip) {
   EXPECT_TRUE(
       config::GruConfigManager::IsLiveConversionAutoCommitEnabled(
           false, test_config));
+  EXPECT_FALSE(
+      config::GruConfigManager::IsShiftImmediateJapaneseReturnEnabled(
+          true, test_config));
   EXPECT_EQ(
       config::GruConfigManager::GetLiveConversionLengthThreshold(
           24, test_config),
@@ -2023,6 +2028,38 @@ TEST_F(GruRewriterTest,
     for (size_t i = 0; i < seg0->candidates_size(); ++i) {
       EXPECT_EQ(seg0->candidate(i).description.find("GRU:"), std::string::npos);
     }
+    EXPECT_NE(seg1->candidate(0).description.find("GRU:"), std::string::npos);
+  }
+
+  // 4. Single-segment and multi-segment FIXED_VALUE segments must not be
+  // reordered by GRU scoring even when candidate 1 has lower cost.
+  {
+    Segments single_seg;
+    Segment* seg = single_seg.add_segment();
+    seg->set_key("きょうは");
+    seg->set_segment_type(Segment::FIXED_VALUE);
+    AddCandidate("きょうは", "教派", 5000, seg);
+    AddCandidate("きょうは", "今日は", 1000, seg);
+
+    EXPECT_FALSE(rewriter_->Rewrite(request, &single_seg));
+    EXPECT_EQ(seg->candidate(0).value, "教派");
+  }
+  {
+    Segments multi_seg;
+    Segment* seg0 = multi_seg.add_segment();
+    seg0->set_key("きょうは");
+    seg0->set_segment_type(Segment::FIXED_VALUE);
+    AddCandidate("きょうは", "教派", 5000, seg0);
+    AddCandidate("きょうは", "今日は", 1000, seg0);
+
+    Segment* seg1 = multi_seg.add_segment();
+    seg1->set_key("いいてんき");
+    AddCandidate("いいてんき", "良い天気", 5000, seg1);
+    AddCandidate("いいてんき", "いい天気", 1000, seg1);
+
+    EXPECT_TRUE(rewriter_->Rewrite(request, &multi_seg));
+    EXPECT_EQ(seg0->candidate(0).value, "教派");
+    EXPECT_EQ(seg1->candidate(0).value, "いい天気");
     EXPECT_NE(seg1->candidate(0).description.find("GRU:"), std::string::npos);
   }
 

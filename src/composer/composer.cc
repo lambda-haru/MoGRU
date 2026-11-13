@@ -40,6 +40,7 @@
 
 #include "absl/base/no_destructor.h"
 #include "absl/container/btree_set.h"
+#include "absl/flags/flag.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/strings/str_cat.h"
@@ -61,9 +62,14 @@
 #include "composer/transliterators.h"
 #include "config/character_form_manager.h"
 #include "config/config_handler.h"
+#include "config/gru_config.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 #include "transliteration/transliteration.h"
+
+ABSL_FLAG(bool, enable_shift_immediate_japanese_return, true,
+          "Immediately restore the original input mode after temporary Shift "
+          "ASCII input on non-uppercase ASCII, symbols, and space.");
 
 namespace mozc {
 namespace composer {
@@ -688,6 +694,11 @@ transliteration::TransliterationType Composer::GetComebackInputMode() const {
   return comeback_input_mode_;
 }
 
+bool Composer::IsShiftImmediateJapaneseReturnEnabled() {
+  return absl::GetFlag(FLAGS_enable_shift_immediate_japanese_return) &&
+         config::GruConfigManager::IsShiftImmediateJapaneseReturnEnabled(true);
+}
+
 void Composer::ToggleInputMode() {
   if (input_mode_ == transliteration::HIRAGANA) {
     // TODO(komatsu): Refer user's preference.
@@ -738,6 +749,12 @@ void Composer::ApplyTemporaryInputMode(const absl::string_view input,
       (caps_locked && ('A' <= key && key <= 'Z')) ||
       (!caps_locked && ('a' <= key && key <= 'z'));
 
+  const bool immediate_revert = IsShiftImmediateJapaneseReturnEnabled();
+  const bool can_switch =
+      (switch_mode == config::Config::ASCII_INPUT_MODE ||
+       switch_mode == config::Config::KATAKANA_INPUT_MODE);
+  const bool has_temporary_mode = (comeback_input_mode_ != input_mode_);
+
   if (alpha_with_shift) {
     if (switch_mode == config::Config::ASCII_INPUT_MODE) {
       if (input_mode_ == transliteration::HALF_ASCII ||
@@ -755,17 +772,33 @@ void Composer::ApplyTemporaryInputMode(const absl::string_view input,
     }
     ++shifted_sequence_count_;
   } else if (alpha_without_shift) {
-    // When shift is released and a non-shifted alphabet key is pressed,
-    // immediately return to the original input mode (preferring Romaji/Hiragana input).
-    if (switch_mode == config::Config::ASCII_INPUT_MODE ||
-        switch_mode == config::Config::KATAKANA_INPUT_MODE) {
-      SetInputMode(comeback_input_mode_);
+    if (immediate_revert) {
+      // When shift is released and a non-shifted alphabet key is pressed,
+      // immediately return to the original input mode (preferring
+      // Romaji/Hiragana input).
+      if (can_switch && has_temporary_mode) {
+        SetInputMode(comeback_input_mode_);
+      }
+    } else {
+      // Legacy Mozc behavior: revert ASCII mode only after continuous shifted
+      // input, and always revert Katakana mode on lowercase input.
+      if (((shifted_sequence_count_ > 1 &&
+            switch_mode == config::Config::ASCII_INPUT_MODE) ||
+           switch_mode == config::Config::KATAKANA_INPUT_MODE) &&
+          has_temporary_mode) {
+        SetInputMode(comeback_input_mode_);
+      }
     }
     shifted_sequence_count_ = 0;
   } else {
-    // If the key is not an alphabet, reset shifted_sequence_count_
-    // because "Continuous shifted input" feature should be reset
-    // when the input meets non-alphabet character.
+    // Non-alphabet ASCII character (symbols, digits, space, etc.):
+    // When immediate Japanese return is enabled, exit temporary Shift mode
+    // immediately so symbols and spaces are handled in the original mode.
+    if (immediate_revert && can_switch && has_temporary_mode) {
+      SetInputMode(comeback_input_mode_);
+    }
+    // Reset shifted_sequence_count_ because continuous shifted input resets
+    // when meeting a non-alphabet character.
     shifted_sequence_count_ = 0;
   }
 }
