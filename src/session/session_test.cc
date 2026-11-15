@@ -10932,5 +10932,82 @@ TEST_F(SessionTest, CustomRomajiBToSemicolonEnglishFallback) {
   }
 }
 
+TEST_F(SessionTest, CommaPeriodPunctuationDoesNotFalseTriggerFallback) {
+  Session session(*mock_data_engine_);
+  InitSessionToPrecomposition(&session);
+
+  // Map prefixes to low-cost mock dictionary words ("けいと", "だいじ",
+  // "はじめる") and alpha keys 'b'/'p' to fullwidth "，"/"．" under
+  // COMMA_PERIOD. Composer::GetQueryForConversion() converts "，"/"．" to
+  // halfwidth ','/'.', which must still be excluded from low-cost fallback.
+  config::Config config;
+  config.set_preedit_method(config::Config::ROMAN);
+  config.set_punctuation_method(config::Config::COMMA_PERIOD);
+  config.set_custom_roman_table(
+      "ta\tけいと\n"
+      "jo\tだいじ\n"
+      "hu\tはじめる\n"
+      "ha\tは\n"
+      "ji\tじ\n"
+      "me\tめ\n"
+      "ru\tる\n"
+      "ke\tけ\n"
+      "i\tい\n"
+      "to\tと\n"
+      "b\t，\n"
+      "p\t．\n");
+  session.SetConfig(config);
+  auto table = std::make_shared<composer::Table>();
+  ASSERT_TRUE(table->InitializeWithRequestAndConfig(
+      commands::Request::default_instance(), config));
+  session.SetTable(table);
+
+  struct TestCase {
+    absl::string_view input;
+    absl::string_view expected_preedit;
+  };
+  const TestCase kCases[] = {
+      {"tab", "けいと，"},
+      {"job", "だいじ，"},
+      {"hub", "はじめる，"},
+      {"tap", "けいと．"},
+      {"hajimeru,keito.", "はじめる，けいと．"},
+  };
+
+  commands::Command command;
+  for (const auto& tc : kCases) {
+    InsertCharacterChars(tc.input, &session, &command);
+    EXPECT_EQ(GetComposition(command), tc.expected_preedit) << tc.input;
+    command.Clear();
+    ASSERT_TRUE(session.Convert(&command)) << tc.input;
+    ASSERT_TRUE(command.output().has_preedit()) << tc.input;
+    for (int i = 0; i < command.output().preedit().segment_size(); ++i) {
+      EXPECT_NE(command.output().preedit().segment(i).value(), tc.input)
+          << tc.input;
+    }
+    command.Clear();
+    ASSERT_TRUE(session.Commit(&command)) << tc.input;
+  }
+
+  // Contrast: mapping an alpha key to ';' under COMMA_PERIOD must still
+  // trigger English fallback even when the base Japanese word has low cost.
+  config.set_custom_roman_table(
+      "ta\tけいと\n"
+      "b\t;\n");
+  session.SetConfig(config);
+  auto semicolon_table = std::make_shared<composer::Table>();
+  ASSERT_TRUE(semicolon_table->InitializeWithRequestAndConfig(
+      commands::Request::default_instance(), config));
+  session.SetTable(semicolon_table);
+
+  InsertCharacterChars("tab", &session, &command);
+  EXPECT_EQ(GetComposition(command), "けいと；");
+  command.Clear();
+  ASSERT_TRUE(session.Convert(&command));
+  ASSERT_TRUE(command.output().has_preedit());
+  EXPECT_EQ(command.output().preedit().segment_size(), 1);
+  EXPECT_EQ(command.output().preedit().segment(0).value(), "tab");
+}
+
 }  // namespace session
 }  // namespace mozc

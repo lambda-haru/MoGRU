@@ -1310,8 +1310,23 @@ TEST_F(EnglishFallbackRewriterTest, CustomRomajiSymbolMappingLowCostFallback) {
 
   // Japanese sentence punctuation ('。', '．', '、', '，') mapped from ASCII
   // alpha keys must also be excluded from low-cost symbol fallback.
-  for (const char* b_output : {"。", "．", "、", "，"}) {
-    composer::Composer composer = build_composer(b_output, "github");
+  // Note: Composer::GetQueryForConversion() normalizes fullwidth ASCII '，' / '．'
+  // into halfwidth ',' / '.' in segment keys.
+  struct PunctuationCase {
+    const char* b_output;
+    const char* expected_seg_key;
+    const char* expected_query;
+  };
+  const PunctuationCase kPunctuationCases[] = {
+      {"。", "。", "ぎてゅ。"},
+      {"．", ".", "ぎてゅ."},
+      {"、", "、", "ぎてゅ、"},
+      {"，", ",", "ぎてゅ,"},
+  };
+  for (const auto& tc : kPunctuationCases) {
+    composer::Composer composer = build_composer(tc.b_output, "github");
+    EXPECT_EQ(composer.GetQueryForConversion(), tc.expected_query)
+        << tc.b_output;
 
     Segments segments;
     auto add_seg = [&](absl::string_view key, absl::string_view val,
@@ -1326,7 +1341,7 @@ TEST_F(EnglishFallbackRewriterTest, CustomRomajiSymbolMappingLowCostFallback) {
     };
     add_seg("ぎ", "義", 5000, 4500);
     add_seg("てゅ", "テュ", 10500, 8314);
-    add_seg(b_output, b_output, 4000, 2639);
+    add_seg(tc.expected_seg_key, tc.b_output, 4000, 2639);
 
     const ConversionRequest request =
         ConversionRequestBuilder()
@@ -1335,10 +1350,10 @@ TEST_F(EnglishFallbackRewriterTest, CustomRomajiSymbolMappingLowCostFallback) {
             .Build();
     EXPECT_FALSE(rewriter.CheckResizeSegmentsRequest(request, segments)
                      .has_value())
-        << b_output;
-    EXPECT_FALSE(rewriter.Rewrite(request, &segments)) << b_output;
+        << tc.b_output;
+    EXPECT_FALSE(rewriter.Rewrite(request, &segments)) << tc.b_output;
     EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "義")
-        << b_output;
+        << tc.b_output;
   }
 
   GruPenaltyConfig clean_cfg;

@@ -219,15 +219,23 @@ size_t MatchLongestWordInDictionaries(
 }
 
 bool IsExcludedFallbackPunctuation(char32_t codepoint) {
+  // Include halfwidth/ASCII ',' and '.' (and halfwidth '､'/'｡') because
+  // Composer::GetQueryForConversion() normalizes fullwidth '，'/'．' via
+  // FullWidthAsciiToHalfWidthAscii() before segmentation/conversion.
   return codepoint == 0x3001 ||  // '、' (IDEOGRAPHIC COMMA)
          codepoint == 0x3002 ||  // '。' (IDEOGRAPHIC FULL STOP)
          codepoint == 0xFF0C ||  // '，' (FULLWIDTH COMMA)
-         codepoint == 0xFF0E;    // '．' (FULLWIDTH FULL STOP)
+         codepoint == 0xFF0E ||  // '．' (FULLWIDTH FULL STOP)
+         codepoint == 0x002C ||  // ','  (COMMA, normalized from '，')
+         codepoint == 0x002E ||  // '.'  (FULL STOP, normalized from '．')
+         codepoint == 0xFF64 ||  // '､'  (HALFWIDTH IDEOGRAPHIC COMMA)
+         codepoint == 0xFF61;    // '｡'  (HALFWIDTH IDEOGRAPHIC FULL STOP)
 }
 
 // Returns true if `seg` covers a symbol/punctuation character (e.g. ";" when
 // custom Romaji maps "b" -> ";") produced from ASCII alphabet raw input in
-// `spans`, excluding Japanese sentence punctuation ('。', '．', '、', '，').
+// `spans`, excluding Japanese sentence punctuation ('。', '．', '.', '｡',
+// '、', '，', ',', '､').
 // Such segments get low dictionary cost in Mozc, so cost alone cannot detect
 // that the input may actually be a typed English word.
 bool IsSymbolFromAlphaInputSegment(
