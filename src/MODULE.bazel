@@ -140,6 +140,8 @@ single_version_override(
     patches = [
         # Enable to build x86 (32-bit) executables with clang-cl.
         # https://github.com/bazelbuild/rules_cc/pull/360
+        # Also includes Windows Clang 22+ version parsing fix:
+        # https://github.com/bazelbuild/rules_cc/pull/626
         "bazel/rules_cc_BUILD.windows.tpl.patch",
         "bazel/rules_cc_windows_cc_configure.bzl.patch",
         "bazel/rules_cc_windows_cc_toolchain_config.bzl.patch",

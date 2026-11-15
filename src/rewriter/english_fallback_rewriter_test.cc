@@ -1308,6 +1308,39 @@ TEST_F(EnglishFallbackRewriterTest, CustomRomajiSymbolMappingLowCostFallback) {
     EXPECT_EQ(seg0->candidate(0).value, "負け");
   }
 
+  // Japanese sentence punctuation ('。', '．', '、', '，') mapped from ASCII
+  // alpha keys must also be excluded from low-cost symbol fallback.
+  for (const char* b_output : {"。", "．", "、", "，"}) {
+    composer::Composer composer = build_composer(b_output, "github");
+
+    Segments segments;
+    auto add_seg = [&](absl::string_view key, absl::string_view val,
+                       int32_t cost, int32_t wcost) {
+      Segment* seg = segments.add_segment();
+      seg->set_key(key);
+      auto* c = seg->add_candidate();
+      c->key = std::string(key);
+      c->value = std::string(val);
+      c->cost = cost;
+      c->wcost = wcost;
+    };
+    add_seg("ぎ", "義", 5000, 4500);
+    add_seg("てゅ", "テュ", 10500, 8314);
+    add_seg(b_output, b_output, 4000, 2639);
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_FALSE(rewriter.CheckResizeSegmentsRequest(request, segments)
+                     .has_value())
+        << b_output;
+    EXPECT_FALSE(rewriter.Rewrite(request, &segments)) << b_output;
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "義")
+        << b_output;
+  }
+
   GruPenaltyConfig clean_cfg;
   clean_cfg.enable_english_fallback = true;
   GruConfigManager::SaveConfig(clean_cfg, config_path);

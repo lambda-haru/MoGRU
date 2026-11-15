@@ -218,10 +218,18 @@ size_t MatchLongestWordInDictionaries(
   return 0;
 }
 
+bool IsExcludedFallbackPunctuation(char32_t codepoint) {
+  return codepoint == 0x3001 ||  // '、' (IDEOGRAPHIC COMMA)
+         codepoint == 0x3002 ||  // '。' (IDEOGRAPHIC FULL STOP)
+         codepoint == 0xFF0C ||  // '，' (FULLWIDTH COMMA)
+         codepoint == 0xFF0E;    // '．' (FULLWIDTH FULL STOP)
+}
+
 // Returns true if `seg` covers a symbol/punctuation character (e.g. ";" when
 // custom Romaji maps "b" -> ";") produced from ASCII alphabet raw input in
-// `spans`. Such segments get low dictionary cost in Mozc, so cost alone cannot
-// detect that the input may actually be a typed English word.
+// `spans`, excluding Japanese sentence punctuation ('。', '．', '、', '，').
+// Such segments get low dictionary cost in Mozc, so cost alone cannot detect
+// that the input may actually be a typed English word.
 bool IsSymbolFromAlphaInputSegment(
     const Segment& seg, size_t seg_preedit_start, size_t seg_preedit_end,
     const std::vector<composer::ChunkSpan>& spans) {
@@ -255,7 +263,9 @@ bool IsSymbolFromAlphaInputSegment(
     const size_t overlap_end =
         std::min(seg_preedit_end, span_end) - seg_preedit_start;
     for (size_t k = overlap_start; k < overlap_end; ++k) {
-      if (Util::GetScriptType(key_u32[k]) == Util::UNKNOWN_SCRIPT) {
+      const char32_t codepoint = key_u32[k];
+      if (!IsExcludedFallbackPunctuation(codepoint) &&
+          Util::GetScriptType(codepoint) == Util::UNKNOWN_SCRIPT) {
         return true;
       }
     }
