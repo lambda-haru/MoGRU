@@ -1208,5 +1208,110 @@ TEST_F(EnglishFallbackRewriterTest, BasePreeditOffsetAlignsChunks) {
   EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "に");
 }
 
+TEST_F(EnglishFallbackRewriterTest, CustomRomajiSymbolMappingLowCostFallback) {
+  const std::string config_path =
+      GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+  GruPenaltyConfig cfg;
+  cfg.enable_english_fallback = true;
+  cfg.english_fallback_cost_threshold = 15000.0;
+  cfg.user_english_words = {"github"};
+  GruConfigManager::SaveConfig(cfg, config_path);
+
+  dictionary::EnglishDictionary empty_dict;
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(empty_dict));
+
+  auto build_composer = [](absl::string_view custom_rule,
+                           absl::string_view input) {
+    auto table = std::make_shared<composer::Table>();
+    commands::Request client_request;
+    config::Config default_config;
+    table->InitializeWithRequestAndConfig(client_request, default_config);
+    table->AddRule("b", custom_rule, "");
+
+    composer::Composer composer(table, client_request, default_config);
+    InsertASCIISequence(input, &composer);
+    return composer;
+  };
+
+  for (const char* b_output : {";", "；"}) {
+    composer::Composer composer = build_composer(b_output, "github");
+    EXPECT_EQ(composer.GetQueryForConversion(), "ぎてゅ;");
+
+    // Simulate OSS dictionary conversion where every segment is below 15000
+    // ("ぎ", "てゅ" wcost=8314, ";" wcost=2639).
+    Segments segments;
+    auto add_seg = [&](absl::string_view key, absl::string_view val,
+                       int32_t cost, int32_t wcost) {
+      Segment* seg = segments.add_segment();
+      seg->set_key(key);
+      auto* c = seg->add_candidate();
+      c->key = std::string(key);
+      c->value = std::string(val);
+      c->cost = cost;
+      c->wcost = wcost;
+    };
+    add_seg("ぎ", "義", 5000, 4500);
+    add_seg("てゅ", "テュ", 10500, 8314);
+    add_seg(";", ";", 4000, 2639);
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+
+    const auto resize_req =
+        rewriter.CheckResizeSegmentsRequest(request, segments);
+    ASSERT_TRUE(resize_req.has_value()) << b_output;
+    EXPECT_EQ(resize_req->segment_index, 0);
+    EXPECT_EQ(resize_req->segment_sizes[0], 4);
+
+    // Also verify Rewrite on a merged FIXED_BOUNDARY segment as happens after
+    // ResizeSegments, and directly on the unmerged segments.
+    EXPECT_TRUE(rewriter.Rewrite(request, &segments)) << b_output;
+    ASSERT_EQ(segments.conversion_segments_size(), 1) << b_output;
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "github")
+        << b_output;
+  }
+
+  // Contrast: literal ";" key (not produced from [a-zA-Z] raw input) must NOT
+  // trigger low-cost symbol fallback.
+  {
+    composer::Composer composer = CreateComposer("make;");
+    EXPECT_EQ(composer.GetQueryForConversion(), "まけ;");
+
+    Segments segments;
+    Segment* seg0 = segments.add_segment();
+    seg0->set_key("まけ");
+    auto* c0 = seg0->add_candidate();
+    c0->key = "まけ";
+    c0->value = "負け";
+    c0->cost = 4000;
+    c0->wcost = 3500;
+
+    Segment* seg1 = segments.add_segment();
+    seg1->set_key(";");
+    auto* c1 = seg1->add_candidate();
+    c1->key = ";";
+    c1->value = ";";
+    c1->cost = 4000;
+    c1->wcost = 2639;
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_FALSE(rewriter.CheckResizeSegmentsRequest(request, segments)
+                     .has_value());
+    EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+    EXPECT_EQ(seg0->candidate(0).value, "負け");
+  }
+
+  GruPenaltyConfig clean_cfg;
+  clean_cfg.enable_english_fallback = true;
+  GruConfigManager::SaveConfig(clean_cfg, config_path);
+}
+
 }  // namespace
 }  // namespace mozc

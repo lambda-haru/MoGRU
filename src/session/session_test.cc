@@ -10904,5 +10904,33 @@ TEST_F(SessionTest, ShiftUppercaseImmediateReturnWithSpaceAndSymbols) {
   }
 }
 
+TEST_F(SessionTest, CustomRomajiBToSemicolonEnglishFallback) {
+  Session session(*mock_data_engine_);
+  InitSessionToPrecomposition(&session);
+
+  config::Config config;
+  config.set_preedit_method(config::Config::ROMAN);
+  config.set_custom_roman_table(
+      "gi\tぎ\n"
+      "thu\tてゅ\n"
+      "ta\tた\n"
+      "jo\tじょ\n"
+      "hu\tふ\n"
+      "b\t;\n");
+  session.SetConfig(config);
+
+  commands::Command command;
+  for (absl::string_view word : {"tab", "job", "hub"}) {
+    InsertCharacterChars(word, &session, &command);
+    command.Clear();
+    ASSERT_TRUE(session.Convert(&command)) << word;
+    ASSERT_TRUE(command.output().has_preedit()) << word;
+    EXPECT_EQ(command.output().preedit().segment_size(), 1) << word;
+    EXPECT_EQ(command.output().preedit().segment(0).value(), word) << word;
+    command.Clear();
+    ASSERT_TRUE(session.Commit(&command)) << word;
+  }
+}
+
 }  // namespace session
 }  // namespace mozc

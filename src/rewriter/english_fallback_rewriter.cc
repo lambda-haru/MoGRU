@@ -218,10 +218,102 @@ size_t MatchLongestWordInDictionaries(
   return 0;
 }
 
-bool ShouldTriggerFallbackCommon(const ConversionRequest& request,
-                                 const Segments& segments,
-                                 const GruPenaltyConfig& config,
-                                 bool has_words) {
+// Returns true if `seg` covers a symbol/punctuation character (e.g. ";" when
+// custom Romaji maps "b" -> ";") produced from ASCII alphabet raw input in
+// `spans`. Such segments get low dictionary cost in Mozc, so cost alone cannot
+// detect that the input may actually be a typed English word.
+bool IsSymbolFromAlphaInputSegment(
+    const Segment& seg, size_t seg_preedit_start, size_t seg_preedit_end,
+    const std::vector<composer::ChunkSpan>& spans) {
+  if (seg_preedit_end <= seg_preedit_start) {
+    return false;
+  }
+  const std::u32string key_u32 = Util::Utf8ToUtf32(seg.key());
+  if (key_u32.size() != seg_preedit_end - seg_preedit_start) {
+    return false;
+  }
+  for (const auto& span : spans) {
+    const size_t span_end = span.preedit_start + span.preedit_len;
+    if (span_end <= seg_preedit_start) {
+      continue;
+    }
+    if (span.preedit_start >= seg_preedit_end) {
+      break;
+    }
+    bool has_alpha_raw = false;
+    for (const char ch : span.raw) {
+      if (absl::ascii_isalpha(static_cast<unsigned char>(ch))) {
+        has_alpha_raw = true;
+        break;
+      }
+    }
+    if (!has_alpha_raw) {
+      continue;
+    }
+    const size_t overlap_start =
+        std::max(seg_preedit_start, span.preedit_start) - seg_preedit_start;
+    const size_t overlap_end =
+        std::min(seg_preedit_end, span_end) - seg_preedit_start;
+    for (size_t k = overlap_start; k < overlap_end; ++k) {
+      if (Util::GetScriptType(key_u32[k]) == Util::UNKNOWN_SCRIPT) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool IsSegmentFallbackEligible(const Segment& seg, size_t seg_preedit_start,
+                               size_t seg_preedit_end,
+                               const std::vector<composer::ChunkSpan>& spans,
+                               double cost_threshold) {
+  if (seg.candidates_size() > 0 &&
+      (seg.candidate(0).cost >= cost_threshold ||
+       seg.candidate(0).wcost >= cost_threshold)) {
+    return true;
+  }
+  return IsSymbolFromAlphaInputSegment(seg, seg_preedit_start, seg_preedit_end,
+                                       spans);
+}
+
+struct CoveredSegmentsInfo {
+  size_t covered_segments = 0;
+  size_t accumulated_chars = 0;
+  bool contains_high_cost = false;
+  bool all_free = true;
+};
+
+CoveredSegmentsInfo MeasureCoveredSegments(
+    const Segments& segments, size_t start_seg_idx,
+    size_t start_preedit_offset, size_t needed_chars,
+    const std::vector<composer::ChunkSpan>& spans, double cost_threshold) {
+  CoveredSegmentsInfo info;
+  size_t seg_pos = start_preedit_offset;
+  for (size_t j = start_seg_idx; j < segments.conversion_segments_size(); ++j) {
+    const Segment& seg = segments.conversion_segment(j);
+    const size_t seg_len = Util::CharsLen(seg.key());
+    info.accumulated_chars += seg_len;
+    info.covered_segments++;
+    if (seg.segment_type() != Segment::FREE) {
+      info.all_free = false;
+    }
+    if (IsSegmentFallbackEligible(seg, seg_pos, seg_pos + seg_len, spans,
+                                  cost_threshold)) {
+      info.contains_high_cost = true;
+    }
+    seg_pos += seg_len;
+    if (info.accumulated_chars >= needed_chars) {
+      break;
+    }
+  }
+  return info;
+}
+
+bool ShouldTriggerFallbackCommon(
+    const ConversionRequest& request, const Segments& segments,
+    const GruPenaltyConfig& config, bool has_words,
+    size_t base_preedit_offset,
+    const std::vector<composer::ChunkSpan>& spans) {
   if (!config.enable_english_fallback) {
     return false;
   }
@@ -244,13 +336,15 @@ bool ShouldTriggerFallbackCommon(const ConversionRequest& request,
     return false;
   }
 
+  size_t cur_pos = base_preedit_offset;
   for (size_t i = 0; i < segments.conversion_segments_size(); ++i) {
     const Segment& seg = segments.conversion_segment(i);
-    if (seg.candidates_size() > 0 &&
-        (seg.candidate(0).cost >= config.english_fallback_cost_threshold ||
-         seg.candidate(0).wcost >= config.english_fallback_cost_threshold)) {
+    const size_t seg_len = Util::CharsLen(seg.key());
+    if (IsSegmentFallbackEligible(seg, cur_pos, cur_pos + seg_len, spans,
+                                  config.english_fallback_cost_threshold)) {
       return true;
     }
+    cur_pos += seg_len;
   }
   return false;
 }
@@ -410,7 +504,10 @@ bool EnglishFallbackRewriter::ShouldTriggerFallback(
     absl::MutexLock lock(mutex_);
     has_words = !base_dictionary_.empty() || !user_dictionary_.empty();
   }
-  return ShouldTriggerFallbackCommon(request, segments, config, has_words);
+  return ShouldTriggerFallbackCommon(
+      request, segments, config, has_words,
+      request.options().base_preedit_offset,
+      request.composer().GetChunkSpans());
 }
 
 bool EnglishFallbackRewriter::MatchWordAtOffset(
@@ -533,7 +630,10 @@ std::vector<size_t> EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
     absl::MutexLock lock(dict_state->mutex);
     has_words = !dict_state->base_dict.empty() || !dict_state->user_dict.empty();
   }
-  if (!ShouldTriggerFallbackCommon(request, segments, config, has_words)) {
+  const std::vector<composer::ChunkSpan> spans = composer.GetChunkSpans();
+  if (spans.empty() ||
+      !ShouldTriggerFallbackCommon(request, segments, config, has_words,
+                                    base_preedit_offset, spans)) {
     return {};
   }
 
@@ -549,10 +649,9 @@ std::vector<size_t> EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
   for (size_t i = 0; i < segments.conversion_segments_size(); ++i) {
     const Segment& seg = segments.conversion_segment(i);
     const size_t len = Util::CharsLen(seg.key());
-    const bool high_cost =
-        seg.candidates_size() > 0 &&
-        (seg.candidate(0).cost >= config.english_fallback_cost_threshold ||
-         seg.candidate(0).wcost >= config.english_fallback_cost_threshold);
+    const bool high_cost = IsSegmentFallbackEligible(
+        seg, cur_pos, cur_pos + len, spans,
+        config.english_fallback_cost_threshold);
     seg_ranges.push_back(SegRange{
         .start = cur_pos,
         .end = cur_pos + len,
@@ -562,11 +661,6 @@ std::vector<size_t> EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
     cur_pos += len;
   }
   const size_t max_seg_preedit_end = cur_pos;
-
-  const std::vector<composer::ChunkSpan> spans = composer.GetChunkSpans();
-  if (spans.empty()) {
-    return {};
-  }
 
   std::string active_raw;
   size_t active_span_end = 0;
@@ -696,6 +790,7 @@ EnglishFallbackRewriter::CheckResizeSegmentsRequestInternal(
   }
 
   const composer::ComposerData& composer = request.composer();
+  const std::vector<composer::ChunkSpan> spans = composer.GetChunkSpans();
   const size_t base_preedit_offset = request.options().base_preedit_offset;
 
   size_t total_composed_len = base_preedit_offset;
@@ -753,28 +848,13 @@ EnglishFallbackRewriter::CheckResizeSegmentsRequestInternal(
       const size_t leading_chars = p - current_preedit_offset;
       const size_t needed_chars = leading_chars + matched_preedit_chars;
 
-      size_t covered_segments = 0;
-      size_t accumulated_chars = 0;
-      bool contains_high_cost = false;
-      bool all_free = true;
-
-      for (size_t j = current_seg_idx; j < segments.conversion_segments_size();
-           ++j) {
-        const Segment& seg = segments.conversion_segment(j);
-        accumulated_chars += Util::CharsLen(seg.key());
-        covered_segments++;
-        if (seg.segment_type() != Segment::FREE) {
-          all_free = false;
-        }
-        if (seg.candidates_size() > 0 &&
-            (seg.candidate(0).cost >= config.english_fallback_cost_threshold ||
-             seg.candidate(0).wcost >= config.english_fallback_cost_threshold)) {
-          contains_high_cost = true;
-        }
-        if (accumulated_chars >= needed_chars) {
-          break;
-        }
-      }
+      const CoveredSegmentsInfo covered = MeasureCoveredSegments(
+          segments, current_seg_idx, current_preedit_offset, needed_chars,
+          spans, config.english_fallback_cost_threshold);
+      const size_t covered_segments = covered.covered_segments;
+      const size_t accumulated_chars = covered.accumulated_chars;
+      const bool contains_high_cost = covered.contains_high_cost;
+      const bool all_free = covered.all_free;
 
       if (accumulated_chars >= needed_chars && covered_segments > 0) {
         const size_t extra_chars = accumulated_chars - needed_chars;
@@ -831,6 +911,7 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
   }
 
   const composer::ComposerData& composer = request.composer();
+  const std::vector<composer::ChunkSpan> spans = composer.GetChunkSpans();
   const size_t base_preedit_offset = request.options().base_preedit_offset;
 
   // Total character length across all conversion segments in composer space.
@@ -901,28 +982,13 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
     }
 
     // Determine how many conversion segments are covered by matched_preedit_chars.
-    size_t covered_segments = 0;
-    size_t accumulated_chars = 0;
-    bool contains_high_cost = false;
-    bool all_free = true;
-
-    for (size_t j = current_seg_idx; j < segments->conversion_segments_size();
-         ++j) {
-      const Segment& seg = segments->conversion_segment(j);
-      accumulated_chars += Util::CharsLen(seg.key());
-      covered_segments++;
-      if (seg.segment_type() != Segment::FREE) {
-        all_free = false;
-      }
-      if (seg.candidates_size() > 0 &&
-          (seg.candidate(0).cost >= config.english_fallback_cost_threshold ||
-           seg.candidate(0).wcost >= config.english_fallback_cost_threshold)) {
-        contains_high_cost = true;
-      }
-      if (accumulated_chars >= matched_preedit_chars) {
-        break;
-      }
-    }
+    const CoveredSegmentsInfo covered = MeasureCoveredSegments(
+        *segments, current_seg_idx, current_preedit_offset,
+        matched_preedit_chars, spans, config.english_fallback_cost_threshold);
+    const size_t covered_segments = covered.covered_segments;
+    const size_t accumulated_chars = covered.accumulated_chars;
+    const bool contains_high_cost = covered.contains_high_cost;
+    const bool all_free = covered.all_free;
 
     // Fallback if the word covers at least one high-cost segment.
     if (accumulated_chars >= matched_preedit_chars && covered_segments > 0) {
