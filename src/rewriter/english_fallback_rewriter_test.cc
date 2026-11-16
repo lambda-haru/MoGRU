@@ -134,6 +134,7 @@ TEST_F(EnglishFallbackRewriterTest, HighCostFallbackMergesSegments) {
   c1->key = "ｒ";
   c1->value = "ｒ";
   c1->cost = 35609;
+  c1->wcost = 16383;
 
   // Segment 2: "げ" (normal cost)
   Segment* seg2 = segments.add_segment();
@@ -166,11 +167,12 @@ TEST_F(EnglishFallbackRewriterTest, HighCostFallbackMergesSegments) {
 
   const Segment& merged_seg = segments.conversion_segment(0);
   EXPECT_EQ(merged_seg.key(), "めｒげ");
-  ASSERT_EQ(merged_seg.candidates_size(), 1);
+  ASSERT_GE(merged_seg.candidates_size(), 2);
   EXPECT_EQ(merged_seg.candidate(0).value, "merge");
   EXPECT_EQ(merged_seg.candidate(0).cost, 6000);
   EXPECT_EQ(merged_seg.candidate(0).lid, pos_matcher_->GetUnknownId());
   EXPECT_EQ(merged_seg.candidate(0).rid, pos_matcher_->GetUnknownId());
+  EXPECT_EQ(merged_seg.candidate(1).value, "目ｒゲ");
 
   const Segment& tail_seg = segments.conversion_segment(1);
   EXPECT_EQ(tail_seg.key(), "する");
@@ -218,6 +220,7 @@ TEST_F(EnglishFallbackRewriterTest, NoMatchingEnglishWord) {
   c0->key = "xyz";
   c0->value = "xyz";
   c0->cost = 35000;  // High cost, but not in dictionary
+  c0->wcost = 16383;
 
   Segment* seg1 = segments.add_segment();
   seg1->set_key("する");
@@ -248,6 +251,7 @@ TEST_F(EnglishFallbackRewriterTest, MinWordLengthFilter) {
   seg0->set_key("in");
   auto* c0 = seg0->add_candidate();
   c0->cost = 35000;
+  c0->wcost = 16383;
 
   Segment* seg1 = segments.add_segment();
   seg1->set_key("する");
@@ -280,7 +284,9 @@ TEST_F(EnglishFallbackRewriterTest, DisabledConfig) {
   seg0->add_candidate()->cost = 5000;
   Segment* seg1 = segments.add_segment();
   seg1->set_key("ｒ");
-  seg1->add_candidate()->cost = 35000;
+  auto* disabled_c1 = seg1->add_candidate();
+  disabled_c1->cost = 35000;
+  disabled_c1->wcost = 16383;
   Segment* seg2 = segments.add_segment();
   seg2->set_key("げ");
   seg2->add_candidate()->cost = 6000;
@@ -312,7 +318,9 @@ TEST_F(EnglishFallbackRewriterTest, LiveConversionToggle) {
   seg0->add_candidate()->cost = 5000;
   Segment* seg1 = segments.add_segment();
   seg1->set_key("ｒ");
-  seg1->add_candidate()->cost = 35000;
+  auto* disabled_c1 = seg1->add_candidate();
+  disabled_c1->cost = 35000;
+  disabled_c1->wcost = 16383;
   Segment* seg2 = segments.add_segment();
   seg2->set_key("げ");
   seg2->add_candidate()->cost = 6000;
@@ -352,12 +360,16 @@ TEST_F(EnglishFallbackRewriterTest, TrailingParticleSplit) {
   // Segment 0: "れぽ"
   Segment* seg0 = segments.add_segment();
   seg0->set_key("れぽ");
-  seg0->add_candidate()->cost = 8485;
+  auto* c0 = seg0->add_candidate();
+  c0->cost = 8485;
+  c0->wcost = 4843;
 
   // Segment 1: "しと"
   Segment* seg1 = segments.add_segment();
   seg1->set_key("しと");
-  seg1->add_candidate()->cost = 6585;
+  auto* c1 = seg1->add_candidate();
+  c1->cost = 6585;
+  c1->wcost = 5335;
 
   // Segment 2: "ｒｙを" (High cost! covers tail of word "ｒｙ" + particle "を")
   Segment* seg2 = segments.add_segment();
@@ -458,6 +470,7 @@ TEST_F(EnglishFallbackRewriterTest, CapitalizedWordPreservesCaseAndAddsLower) {
   c0->key = "Mえｒげ";
   c0->value = "Mえrげ";
   c0->cost = 25000;
+  c0->wcost = 16383;
 
   Segment* seg1 = segments.add_segment();
   seg1->set_key("する");
@@ -500,15 +513,21 @@ TEST_F(EnglishFallbackRewriterTest, CheckResizeSegmentsRequestMergesAndSplits) {
 
   Segment* seg0 = segments.add_segment();
   seg0->set_key("れぽ");
-  seg0->add_candidate()->cost = 8485;
+  auto* c0 = seg0->add_candidate();
+  c0->cost = 8485;
+  c0->wcost = 4843;
 
   Segment* seg1 = segments.add_segment();
   seg1->set_key("しと");
-  seg1->add_candidate()->cost = 6585;
+  auto* c1 = seg1->add_candidate();
+  c1->cost = 6585;
+  c1->wcost = 5335;
 
   Segment* seg2 = segments.add_segment();
   seg2->set_key("ｒｙを");
-  seg2->add_candidate()->cost = 19994;
+  auto* c2 = seg2->add_candidate();
+  c2->cost = 19994;
+  c2->wcost = 17655;
 
   Segment* seg3 = segments.add_segment();
   seg3->set_key("つくる");
@@ -550,6 +569,7 @@ TEST_F(EnglishFallbackRewriterTest, UserResizedShrinkDoesNotRemerge) {
   c0->key = "めｒ";
   c0->value = "めr";
   c0->cost = 20000;
+  c0->wcost = 16383;
 
   Segment* seg1 = segments.add_segment();
   seg1->set_key("げ");
@@ -600,6 +620,7 @@ TEST_F(EnglishFallbackRewriterTest, UserResizedExpandDoesNotSplit) {
   c0->key = "めｒげす";
   c0->value = "目rゲス";
   c0->cost = 22000;
+  c0->wcost = 16383;
 
   Segment* seg1 = segments.add_segment();
   seg1->set_key("る");
@@ -642,6 +663,7 @@ TEST_F(EnglishFallbackRewriterTest,
   c0->key = "めｒげ";
   c0->value = "めrげ";
   c0->cost = 20569;
+  c0->wcost = 17793;
 
   Segment* seg1 = segments.add_segment();
   seg1->set_key("する");
@@ -686,6 +708,7 @@ TEST_F(EnglishFallbackRewriterTest,
   c0->key = "わたしはｂ";
   c0->value = "私はb";
   c0->cost = 20000;
+  c0->wcost = 16383;
 
   // Remaining "らんｃｈ" (FREE) should not match "ranch" because it is a suffix fragment of "branch".
   Segment* seg1 = segments.add_segment();
@@ -695,6 +718,7 @@ TEST_F(EnglishFallbackRewriterTest,
   c1->key = "らんｃｈ";
   c1->value = "らんch";
   c1->cost = 25000;
+  c1->wcost = 16383;
 
   Segment* seg2 = segments.add_segment();
   seg2->set_key("をきる");
@@ -736,6 +760,7 @@ TEST_F(EnglishFallbackRewriterTest, UserConfigEnglishWordsFallback) {
   c0->key = "くべｒねてｓ";
   c0->value = "くべrねてs";
   c0->cost = 25000;
+  c0->wcost = 16383;
 
   Segment* seg1 = segments.add_segment();
   seg1->set_key("が");
@@ -783,6 +808,7 @@ TEST_F(EnglishFallbackRewriterTest, UserEnglishWordsReload) {
     c->key = "ればせ";
     c->value = "ればせ";
     c->cost = 25000;
+    c->wcost = 16383;
 
     const ConversionRequest request =
         ConversionRequestBuilder()
@@ -804,6 +830,7 @@ TEST_F(EnglishFallbackRewriterTest, UserEnglishWordsReload) {
     c->key = "ちぇｒｒｙぴｃｋ";
     c->value = "ちぇrryぴck";
     c->cost = 25000;
+    c->wcost = 16383;
 
     const ConversionRequest request =
         ConversionRequestBuilder()
@@ -829,6 +856,7 @@ TEST_F(EnglishFallbackRewriterTest, UserEnglishWordsReload) {
     c->key = "ちぇｒｒｙぴｃｋ";
     c->value = "ちぇrryぴck";
     c->cost = 25000;
+    c->wcost = 16383;
 
     const ConversionRequest request =
         ConversionRequestBuilder()
@@ -858,6 +886,7 @@ TEST_F(EnglishFallbackRewriterTest, CrossBoundaryDoesNotCorruptMidChunkSplit) {
     c->key = preedit;
     c->value = preedit;
     c->cost = 25000;
+    c->wcost = 16383;
 
     const ConversionRequest request =
         ConversionRequestBuilder()
@@ -912,6 +941,7 @@ TEST_F(EnglishFallbackRewriterTest, FindCrossBoundarySplitOffsetsAllPatterns) {
     c->key = key;
     c->value = key;
     c->cost = 25000;
+    c->wcost = 16383;
 
     const ConversionRequest request =
         ConversionRequestBuilder()
@@ -937,6 +967,7 @@ TEST_F(EnglishFallbackRewriterTest, FindCrossBoundarySplitOffsetsAllPatterns) {
     sc->key = sep_key;
     sc->value = sep_key;
     sc->cost = 25000;
+    sc->wcost = 16383;
 
     const ConversionRequest sep_request =
         ConversionRequestBuilder()
@@ -993,6 +1024,7 @@ TEST_F(EnglishFallbackRewriterTest,
   c->key = key;
   c->value = key;
   c->cost = 25000;
+  c->wcost = 16383;
 
   const ConversionRequest request =
       ConversionRequestBuilder()
@@ -1020,6 +1052,7 @@ TEST_F(EnglishFallbackRewriterTest,
     c->key = key;
     c->value = key;
     c->cost = 25000;
+    c->wcost = 16383;
 
     const ConversionRequest request =
         ConversionRequestBuilder()
@@ -1030,14 +1063,19 @@ TEST_F(EnglishFallbackRewriterTest,
     ASSERT_GE(seg->candidates_size(), 1) << input;
     EXPECT_EQ(seg->candidate(0).value, input) << input;
     for (size_t i = 0; i < seg->candidates_size(); ++i) {
+      // Original Japanese fallback candidates (when distinct from added
+      // English candidates) retain their original attributes.
+      if (i > 0 && seg->candidate(i).value == key) {
+        continue;
+      }
       EXPECT_NE(seg->candidate(i).attributes &
                     converter::Attribute::NO_VARIANTS_EXPANSION,
                 0)
-          << input << " cand=" << i;
+          << input << " cand=" << i << " val=" << seg->candidate(i).value;
       EXPECT_NE(seg->candidate(i).attributes &
                     converter::Attribute::DISABLE_RESCORING,
                 0)
-          << input << " cand=" << i;
+          << input << " cand=" << i << " val=" << seg->candidate(i).value;
     }
   }
 }
@@ -1064,6 +1102,7 @@ TEST_F(EnglishFallbackRewriterTest,
   c0->key = "Aっｐぇ";
   c0->value = "Aっpぇ";
   c0->cost = 25000;
+  c0->wcost = 16383;
 
   Segment* seg1 = segments.add_segment();
   seg1->set_key("Pえ");
@@ -1072,6 +1111,7 @@ TEST_F(EnglishFallbackRewriterTest,
   c1->key = "Pえ";
   c1->value = "Pe";
   c1->cost = 25000;
+  c1->wcost = 16383;
 
   Segment* seg2 = segments.add_segment();
   seg2->set_key("んしｌに");
@@ -1080,6 +1120,7 @@ TEST_F(EnglishFallbackRewriterTest,
   c2->key = "んしｌに";
   c2->value = "ncilに";
   c2->cost = 25000;
+  c2->wcost = 16383;
 
   const ConversionRequest request =
       ConversionRequestBuilder()
@@ -1131,6 +1172,7 @@ TEST_F(EnglishFallbackRewriterTest,
   c0->key = "YおうTうｂ";
   c0->value = "YおうTうb";
   c0->cost = 25000;
+  c0->wcost = 16383;
 
   Segment* seg1 = segments.add_segment();
   seg1->set_key("うに");
@@ -1177,6 +1219,7 @@ TEST_F(EnglishFallbackRewriterTest, BasePreeditOffsetAlignsChunks) {
   c0->key = "Aっ";
   c0->value = "Aっ";
   c0->cost = 25000;
+  c0->wcost = 16383;
 
   Segment* seg1 = segments.add_segment();
   seg1->set_key("ｐぇに");
@@ -1184,6 +1227,7 @@ TEST_F(EnglishFallbackRewriterTest, BasePreeditOffsetAlignsChunks) {
   c1->key = "ｐぇに";
   c1->value = "pぇに";
   c1->cost = 25000;
+  c1->wcost = 16383;
 
   ConversionRequest::Options options;
   options.base_preedit_offset = 3;  // "これは"
@@ -1359,6 +1403,300 @@ TEST_F(EnglishFallbackRewriterTest, CustomRomajiSymbolMappingLowCostFallback) {
   GruPenaltyConfig clean_cfg;
   clean_cfg.enable_english_fallback = true;
   GruConfigManager::SaveConfig(clean_cfg, config_path);
+}
+
+TEST_F(EnglishFallbackRewriterTest, ProtectsHealthyAdjacentJapaneseSegments) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("top");
+  dict.AddWord("now");
+  dict.AddWord("ban");
+  dict.AddWord("word");
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  auto add_seg = [](Segments* segs, absl::string_view key, absl::string_view val,
+                    int32_t cost, int32_t wcost) {
+    Segment* seg = segs->add_segment();
+    seg->set_key(key);
+    auto* c = seg->add_candidate();
+    c->key = std::string(key);
+    c->value = std::string(val);
+    c->cost = cost;
+    c->wcost = wcost;
+  };
+
+  // 1. Healthy multi-kana content segment + 1 high-cost char ("きょうと" + "ｐ")
+  // must never slice "京都" into "京" + "top".
+  {
+    composer::Composer composer = CreateComposer("kyoutop");
+    Segments segments;
+    add_seg(&segments, "きょうと", "京都", 1500, 525);
+    add_seg(&segments, "ｐ", "ｐ", 25000, 16383);
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_FALSE(
+        rewriter.CheckResizeSegmentsRequest(request, segments).has_value());
+    EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "京都");
+  }
+
+  // 2. Smoothly connected particle + 1 trailing high-cost char ("これ|と|ｐ",
+  // "わたし|の|ｗ") must NOT rewrite into "top" / "now".
+  {
+    composer::Composer composer = CreateComposer("koretop");
+    Segments segments;
+    add_seg(&segments, "これ", "これ", 1200, 451);
+    add_seg(&segments, "と", "と", 1400, 0);
+    add_seg(&segments, "ｐ", "ｐ", 25000, 16383);
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_FALSE(
+        rewriter.CheckResizeSegmentsRequest(request, segments).has_value());
+    EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+    EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "と");
+  }
+  {
+    composer::Composer composer = CreateComposer("watashinow");
+    Segments segments;
+    add_seg(&segments, "わたし", "私", 1500, 800);
+    add_seg(&segments, "の", "の", 1200, 0);
+    add_seg(&segments, "ｗ", "ｗ", 25000, 16383);
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+    EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "の");
+  }
+
+  // 3. Low-wcost symbol mapping (AZIK "b" -> ";") followed by healthy Japanese
+  // word (";" + "あん" -> "ban", ";" + "あんな" -> "ban" + "な") must NOT
+  // trigger English fallback.
+  {
+    auto table = std::make_shared<composer::Table>();
+    commands::Request client_request;
+    config::Config default_config;
+    table->InitializeWithRequestAndConfig(client_request, default_config);
+    table->AddRule("b", ";", "");
+    composer::Composer composer(table, client_request, default_config);
+    InsertASCIISequence("bannna", &composer);
+
+    Segments segments;
+    add_seg(&segments, ";", ";", 4000, 2639);
+    add_seg(&segments, "あん", "案", 4000, 3321);
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_FALSE(
+        rewriter.CheckResizeSegmentsRequest(request, segments).has_value());
+    EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+    EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "案");
+  }
+  {
+    auto table = std::make_shared<composer::Table>();
+    commands::Request client_request;
+    config::Config default_config;
+    table->InitializeWithRequestAndConfig(client_request, default_config);
+    table->AddRule("b", ";", "");
+    composer::Composer composer(table, client_request, default_config);
+    InsertASCIISequence("bannnna", &composer);  // ";" + "あんな"
+
+    Segments segments;
+    add_seg(&segments, ";", ";", 4000, 2639);
+    add_seg(&segments, "あんな", "あんな", 3500, 2000);
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_FALSE(
+        rewriter.CheckResizeSegmentsRequest(request, segments).has_value());
+    EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+  }
+
+  // 4. Contrast: real multi-char unknown fragment ("を"(0) + "ｒｄ"(16383))
+  // still triggers "word".
+  {
+    composer::Composer composer = CreateComposer("word");
+    Segments segments;
+    add_seg(&segments, "を", "を", 4000, 0);
+    add_seg(&segments, "ｒｄ", "rd", 25000, 16383);
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+    ASSERT_EQ(segments.conversion_segments_size(), 1);
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "word");
+  }
+
+  // 5. Contrast: real English words whose Romaji substrings match low-wcost
+  // dictionary entries (e.g. "Pencil" -> "P|えんし(wcost=2020)|lに", "and" ->
+  // "あん(0)|d", standalone "top" -> "と(0)|p") must still convert cleanly.
+  {
+    dictionary::EnglishDictionary pencil_dict;
+    pencil_dict.AddWord("Pencil");
+    pencil_dict.AddWord("and");
+    pencil_dict.AddWord("top");
+    EnglishFallbackRewriter multi_rewriter(*pos_matcher_,
+                                           std::move(pencil_dict));
+    {
+      composer::Composer composer = CreateComposer("Pencilni");
+      Segments segments;
+      add_seg(&segments, "P", "P", 43613, 32767);
+      add_seg(&segments, "えんし", "遠視", 13078, 2020);
+      add_seg(&segments, "ｌに", "lに", 36197, 34224);
+      const ConversionRequest request =
+          ConversionRequestBuilder()
+              .SetComposer(composer)
+              .SetRequestType(ConversionRequest::CONVERSION)
+              .Build();
+      EXPECT_TRUE(multi_rewriter.Rewrite(request, &segments));
+      ASSERT_EQ(segments.conversion_segments_size(), 2);
+      EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "Pencil");
+      EXPECT_EQ(segments.conversion_segment(1).key(), "に");
+    }
+    {
+      composer::Composer composer = CreateComposer("and");
+      Segments segments;
+      add_seg(&segments, "あん", "案", 4000, 0);
+      add_seg(&segments, "ｄ", "d", 25000, 32767);
+      const ConversionRequest request =
+          ConversionRequestBuilder()
+              .SetComposer(composer)
+              .SetRequestType(ConversionRequest::CONVERSION)
+              .Build();
+      EXPECT_TRUE(multi_rewriter.Rewrite(request, &segments));
+      ASSERT_EQ(segments.conversion_segments_size(), 1);
+      EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "and");
+    }
+    {
+      composer::Composer composer = CreateComposer("top");
+      Segments segments;
+      add_seg(&segments, "と", "と", 4500, 0);
+      add_seg(&segments, "ｐ", "p", 25000, 32767);
+      const ConversionRequest request =
+          ConversionRequestBuilder()
+              .SetComposer(composer)
+              .SetRequestType(ConversionRequest::CONVERSION)
+              .Build();
+      EXPECT_TRUE(multi_rewriter.Rewrite(request, &segments));
+      ASSERT_EQ(segments.conversion_segments_size(), 1);
+      EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "top");
+    }
+  }
+}
+
+TEST_F(EnglishFallbackRewriterTest, HighTransitionCostLowWCostDoesNotTrigger) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("merge");
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  composer::Composer composer = CreateComposer("meruge");
+  Segments segments;
+  Segment* seg = segments.add_segment();
+  seg->set_key("めるげ");
+  auto* c = seg->add_candidate();
+  c->key = "めるげ";
+  c->value = "メルゲ";
+  c->cost = 25000;   // High transition/path cost
+  c->wcost = 3000;   // Low standalone wcost (< 15000)
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+  EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+  EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "メルゲ");
+}
+
+TEST_F(EnglishFallbackRewriterTest, RewritePreservesOriginalJapaneseCandidates) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("merge");
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  composer::Composer composer = CreateComposer("mergesuru");
+  Segments segments;
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("めｒげ");
+  auto* c0 = seg0->add_candidate();
+  c0->key = "めｒげ";
+  c0->value = "芽ｒゲ";
+  c0->cost = 25000;
+  c0->wcost = 16383;
+  auto* c1 = seg0->add_candidate();
+  c1->key = "めｒげ";
+  c1->value = "めrげ";
+  c1->cost = 26000;
+  c1->wcost = 16383;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("する");
+  auto* c2 = seg1->add_candidate();
+  c2->key = "する";
+  c2->value = "する";
+  c2->cost = 3000;
+  c2->wcost = 0;
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+  EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+  ASSERT_GE(seg0->candidates_size(), 3);
+  EXPECT_EQ(seg0->candidate(0).value, "merge");
+  EXPECT_EQ(seg0->candidate(1).value, "芽ｒゲ");
+  EXPECT_EQ(seg0->candidate(2).value, "めrげ");
+}
+
+TEST_F(EnglishFallbackRewriterTest,
+       FindCrossBoundaryLookaheadSuppressesSpuriousTopMatch) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("top");
+  dict.AddWord("pencil");
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  composer::Composer composer = CreateComposer("topencil");
+  Segments segments;
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("と");
+  auto* c0 = seg0->add_candidate();
+  c0->key = "と";
+  c0->value = "と";
+  c0->cost = 1500;
+  c0->wcost = 0;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("ぺんしｌ");
+  auto* c1 = seg1->add_candidate();
+  c1->key = "ぺんしｌ";
+  c1->value = "ペンしl";
+  c1->cost = 25000;
+  c1->wcost = 16383;
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+  EXPECT_TRUE(EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
+                  request.composer(), segments, request)
+                  .empty());
 }
 
 }  // namespace

@@ -5745,6 +5745,7 @@ TEST_F(EngineConverterTest, CrossBoundaryEnglishFallbackInConvert) {
     cand->value = "をrだぷり";
     cand->content_value = "をrだぷり";
     cand->cost = 30000;
+    cand->wcost = 16383;
   }
 
   Segments separated_segments;
@@ -5757,6 +5758,7 @@ TEST_F(EngineConverterTest, CrossBoundaryEnglishFallbackInConvert) {
     cand0->value = "word";
     cand0->content_value = "word";
     cand0->cost = 25000;
+    cand0->wcost = 16383;
 
     Segment* seg1 = separated_segments.add_segment();
     seg1->set_key("あぷり");
@@ -5814,6 +5816,7 @@ TEST_F(EngineConverterTest, CrossBoundaryEnglishFallbackInLiveConversion) {
     cand->value = "をrだぷり";
     cand->content_value = "をrだぷり";
     cand->cost = 30000;
+    cand->wcost = 16383;
   }
 
   Segments separated_segments;
@@ -5826,6 +5829,7 @@ TEST_F(EngineConverterTest, CrossBoundaryEnglishFallbackInLiveConversion) {
     cand0->value = "word";
     cand0->content_value = "word";
     cand0->cost = 25000;
+    cand0->wcost = 16383;
 
     Segment* seg1 = separated_segments.add_segment();
     seg1->set_key("あぷり");
@@ -5883,6 +5887,7 @@ TEST_F(EngineConverterTest,
     cand->value = "をrだぷり";
     cand->content_value = "をrだぷり";
     cand->cost = 30000;
+    cand->wcost = 16383;
   }
   FillT13Ns(&high_cost_segments, composer_.get());
 
@@ -6038,6 +6043,187 @@ TEST_F(EngineConverterTest,
             Segment::FIXED_VALUE);
   EXPECT_EQ(GetSegments(converter).conversion_segment(1).segment_type(),
             Segment::FREE);
+}
+
+TEST_F(EngineConverterTest, LiveConversionAutoCommitWithCrossBoundaryEnglishFallback) {
+  absl::SetFlag(&FLAGS_enable_live_conversion, true);
+  setenv("MOZC_GRU_ENABLE_ENGLISH_FALLBACK", "true", 1);
+  setenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_ENGLISH_FALLBACK", "true", 1);
+  setenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_PREFIX_FREEZING", "true", 1);
+  setenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_AUTO_COMMIT", "true", 1);
+  setenv("MOZC_GRU_LIVE_CONVERSION_LENGTH_THRESHOLD", "5", 1);
+  setenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS", "0", 1);
+
+  auto mock_converter = std::make_shared<MockConverter>();
+  EngineConverter converter(mock_converter, request_, config_);
+
+  InsertASCIISequence("wordapuri", composer_.get());
+
+  Segments unsplit_segments;
+  {
+    Segment* seg = unsplit_segments.add_segment();
+    seg->set_key("をｒだぷり");
+    converter::Candidate* cand = seg->add_candidate();
+    cand->key = "をｒだぷり";
+    cand->value = "をｒだぷり";
+    cand->content_key = cand->key;
+    cand->content_value = cand->value;
+    cand->cost = 30000;
+    cand->wcost = 16383;
+  }
+
+  Segments split_segments;
+  {
+    Segment* seg0 = split_segments.add_segment();
+    seg0->set_key("をrd");
+    converter::Candidate* cand0 = seg0->add_candidate();
+    cand0->key = "をrd";
+    cand0->value = "word";
+    cand0->content_key = cand0->key;
+    cand0->content_value = cand0->value;
+    cand0->cost = 1000;
+
+    Segment* seg1 = split_segments.add_segment();
+    seg1->set_key("あぷり");
+    converter::Candidate* cand1 = seg1->add_candidate();
+    cand1->key = "あぷり";
+    cand1->value = "アプリ";
+    cand1->content_key = cand1->key;
+    cand1->content_value = cand1->value;
+    cand1->cost = 1000;
+  }
+
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(unsplit_segments), Return(true)))
+      .WillOnce(DoAll(SetArgPointee<1>(split_segments), Return(true)));
+
+  EXPECT_TRUE(converter.Suggest(*composer_));
+
+  {
+    commands::Output output;
+    converter.FillOutput(*composer_, &output);
+    EXPECT_FALSE(output.has_result());
+    std::string combined;
+    for (const auto& seg : output.preedit().segment()) {
+      combined.append(seg.value());
+    }
+    EXPECT_EQ(combined, "wordアプリ");
+  }
+
+  EXPECT_CALL(*mock_converter, CommitSegments(_, _)).WillRepeatedly(Return(true));
+  EXPECT_CALL(*mock_converter, FinishConversion(_, _));
+
+  size_t consumed_chars = 0;
+  std::vector<size_t> split_raw_offsets;
+  EXPECT_TRUE(converter.PopPendingAutoCommit(
+      *composer_, Context::default_instance(), &consumed_chars,
+      &split_raw_offsets));
+  EXPECT_EQ(consumed_chars, 3);
+  EXPECT_EQ(split_raw_offsets, (std::vector<size_t>{4}));
+
+  composer_->SeparateChunksAtRawBoundaries(split_raw_offsets);
+  composer_->DeleteRange(0, consumed_chars);
+  EXPECT_EQ(composer_->GetQueryForPrediction(), "あぷり");
+
+  absl::SetFlag(&FLAGS_enable_live_conversion, false);
+  unsetenv("MOZC_GRU_ENABLE_ENGLISH_FALLBACK");
+  unsetenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_ENGLISH_FALLBACK");
+  unsetenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_PREFIX_FREEZING");
+  unsetenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_AUTO_COMMIT");
+  unsetenv("MOZC_GRU_LIVE_CONVERSION_LENGTH_THRESHOLD");
+  unsetenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS");
+}
+
+TEST_F(EngineConverterTest,
+       LiveConversionShiftTempHalfAsciiPreservesFrozenAndEmptyGuard) {
+  absl::SetFlag(&FLAGS_enable_live_conversion, true);
+  setenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_PREFIX_FREEZING", "true", 1);
+  setenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_AUTO_COMMIT", "false", 1);
+  setenv("MOZC_GRU_LIVE_CONVERSION_LENGTH_THRESHOLD", "6", 1);
+  setenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS", "0", 1);
+
+  auto mock_converter = std::make_shared<MockConverter>();
+  EngineConverter converter(mock_converter, request_, config_);
+
+  // 1. Empty composer + Shift+G (temporary HALF_ASCII) returns Suggest() ==
+  // false so leading English capitals stay in raw composition.
+  InsertASCIISequence("G", composer_.get());
+  ASSERT_EQ(composer_->GetInputMode(), transliteration::HALF_ASCII);
+  ASSERT_EQ(composer_->GetComebackInputMode(), transliteration::HIRAGANA);
+  EXPECT_FALSE(converter.Suggest(*composer_));
+  composer_->Reset();
+
+  // 2. Active hiragana + Shift+G keeps hiragana converted with "G" tail.
+  InsertASCIISequence("waG", composer_.get());
+  ASSERT_EQ(composer_->GetInputMode(), transliteration::HALF_ASCII);
+  ASSERT_EQ(composer_->GetComebackInputMode(), transliteration::HIRAGANA);
+  Segments wa_segments;
+  {
+    Segment* seg = wa_segments.add_segment();
+    seg->set_key("わ");
+    seg->add_candidate()->value = "和";
+  }
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(wa_segments), Return(true)));
+  EXPECT_TRUE(converter.Suggest(*composer_));
+  {
+    commands::Output output;
+    converter.FillOutput(*composer_, &output);
+    std::string combined;
+    for (const auto& seg : output.preedit().segment()) {
+      combined.append(seg.value());
+    }
+    EXPECT_EQ(combined, "和G");
+  }
+  converter.Reset();
+  composer_->Reset();
+
+  // 3. Frozen prefix + backspace back to frozen key + Shift+G keeps live
+  // conversion active and commits "今日はG".
+  InsertASCIISequence("kyouhatenkiga", composer_.get());
+  Segments kyouha_segments;
+  {
+    Segment* seg0 = kyouha_segments.add_segment();
+    seg0->set_key("きょうは");
+    seg0->add_candidate()->value = "今日は";
+    Segment* seg1 = kyouha_segments.add_segment();
+    seg1->set_key("てんきが");
+    seg1->add_candidate()->value = "天気が";
+  }
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(kyouha_segments), Return(true)));
+  EXPECT_TRUE(converter.Suggest(*composer_));
+
+  // Erase active "てんきが" (4 chars) leaving only frozen "きょうは", then type G.
+  composer_->DeleteRange(4, 4);
+  InsertASCIISequence("G", composer_.get());
+  ASSERT_EQ(composer_->GetQueryForPrediction(), "きょうはG");
+  EXPECT_TRUE(converter.Suggest(*composer_));
+  {
+    commands::Output output;
+    converter.FillOutput(*composer_, &output);
+    std::string combined;
+    for (const auto& seg : output.preedit().segment()) {
+      combined.append(seg.value());
+    }
+    EXPECT_EQ(combined, "今日はG");
+  }
+
+  EXPECT_CALL(*mock_converter, CommitSegments(_, _)).WillRepeatedly(Return(true));
+  EXPECT_CALL(*mock_converter, FinishConversion(_, _));
+  converter.CommitPreedit(*composer_, Context::default_instance());
+  {
+    commands::Output output;
+    converter.PopOutput(*composer_, &output);
+    ASSERT_TRUE(output.has_result());
+    EXPECT_EQ(output.result().value(), "今日はG");
+  }
+
+  absl::SetFlag(&FLAGS_enable_live_conversion, false);
+  unsetenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_PREFIX_FREEZING");
+  unsetenv("MOZC_GRU_ENABLE_LIVE_CONVERSION_AUTO_COMMIT");
+  unsetenv("MOZC_GRU_LIVE_CONVERSION_LENGTH_THRESHOLD");
+  unsetenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS");
 }
 
 }  // namespace engine

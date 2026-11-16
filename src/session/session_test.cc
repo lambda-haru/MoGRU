@@ -31,6 +31,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <iterator>
 #include <memory>
 #include <string>
@@ -78,6 +79,7 @@
 #include "transliteration/transliteration.h"
 
 ABSL_DECLARE_FLAG(bool, enable_shift_immediate_japanese_return);
+ABSL_DECLARE_FLAG(bool, enable_live_conversion);
 
 namespace mozc {
 
@@ -10685,6 +10687,7 @@ TEST_F(SessionTest, CrossBoundaryEnglishFallbackSyncAndCommitSegment) {
     cand->value = "をrだぷり";
     cand->content_value = "をrだぷり";
     cand->cost = 30000;
+    cand->wcost = 16383;
     FillT13Ns(CreateConversionRequest(session), &high_cost_segments);
   }
 
@@ -10698,6 +10701,7 @@ TEST_F(SessionTest, CrossBoundaryEnglishFallbackSyncAndCommitSegment) {
     cand0->value = "word";
     cand0->content_value = "word";
     cand0->cost = 25000;
+    cand0->wcost = 16383;
 
     Segment* seg1 = separated_segments.add_segment();
     seg1->set_key("あぷり");
@@ -11007,6 +11011,136 @@ TEST_F(SessionTest, CommaPeriodPunctuationDoesNotFalseTriggerFallback) {
   ASSERT_TRUE(command.output().has_preedit());
   EXPECT_EQ(command.output().preedit().segment_size(), 1);
   EXPECT_EQ(command.output().preedit().segment(0).value(), "tab");
+}
+
+namespace {
+class ScopedEnvVar {
+ public:
+  ScopedEnvVar(const char* name, const char* value) : name_(name) {
+#ifdef _WIN32
+    _putenv_s(name_, value);
+#else
+    ::setenv(name_, value, 1);
+#endif
+  }
+  ~ScopedEnvVar() {
+#ifdef _WIN32
+    _putenv_s(name_, "");
+#else
+    ::unsetenv(name_);
+#endif
+  }
+
+ private:
+  const char* name_;
+};
+}  // namespace
+
+TEST_F(SessionTest,
+       LiveConversionCrossBoundaryAutoCommitSyncsRawSplitAndHandlesNextKey) {
+  const absl::FlagSaver flag_saver;
+  absl::SetFlag(&FLAGS_enable_live_conversion, true);
+  ScopedEnvVar e1("MOZC_GRU_ENABLE_ENGLISH_FALLBACK", "true");
+  ScopedEnvVar e2("MOZC_GRU_ENABLE_LIVE_CONVERSION_ENGLISH_FALLBACK", "true");
+  ScopedEnvVar e3("MOZC_GRU_ENABLE_LIVE_CONVERSION_PREFIX_FREEZING", "true");
+  ScopedEnvVar e4("MOZC_GRU_ENABLE_LIVE_CONVERSION_AUTO_COMMIT", "true");
+  ScopedEnvVar e5("MOZC_GRU_LIVE_CONVERSION_LENGTH_THRESHOLD", "5");
+  ScopedEnvVar e6("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS", "0");
+
+  Session session(*mock_data_engine_);
+  InitSessionToPrecomposition(&session);
+
+  commands::Command command;
+  InsertCharacterChars("wordap", &session, &command);
+  EXPECT_FALSE(command.output().has_result());
+
+  // Typing 'u' gives "をrだぷ", which cross-boundary splits into "をrd" + "あぷ"
+  // (5 active conversion chars >= threshold 5), freezing "word" with
+  // auto_commit_pending_ = true and saving raw split offset 4.
+  InsertCharacterChars("u", &session, &command);
+  ASSERT_TRUE(command.output().has_preedit());
+  EXPECT_FALSE(command.output().has_result());
+  EXPECT_TRUE(absl::StartsWith(GetComposition(command), "word"))
+      << "actual=" << GetComposition(command)
+      << " pred=" << session.context().composer().GetQueryForPrediction();
+
+  // Next keystroke ('r') pops the pending auto-commit ("word"), applies the
+  // deferred raw split at byte 4 before DeleteRange(0, 3), and emits result().
+  InsertCharacterChars("r", &session, &command);
+  ASSERT_TRUE(command.output().has_result())
+      << "actual_comp=" << GetComposition(command)
+      << " pred=" << session.context().composer().GetQueryForPrediction();
+  EXPECT_EQ(command.output().result().value(), "word");
+
+  // Completing "ri" + 'N' leaves "あぷりN" cleanly without corrupting "da".
+  InsertCharacterChars("i", &session, &command);
+  EXPECT_EQ(session.context().composer().GetQueryForPrediction(), "あぷり");
+  command.Clear();
+  ASSERT_TRUE(SendKey("N", &session, &command));
+  EXPECT_EQ(session.context().composer().GetQueryForPrediction(), "あぷりN");
+}
+
+TEST_F(SessionTest,
+       LiveConversionPopAutoCommitWithFalseSuggestDoesNotDropResult) {
+  const absl::FlagSaver flag_saver;
+  absl::SetFlag(&FLAGS_enable_live_conversion, true);
+  ScopedEnvVar e1("MOZC_GRU_ENABLE_LIVE_CONVERSION_PREFIX_FREEZING", "true");
+  ScopedEnvVar e2("MOZC_GRU_ENABLE_LIVE_CONVERSION_AUTO_COMMIT", "true");
+  ScopedEnvVar e3("MOZC_GRU_LIVE_CONVERSION_LENGTH_THRESHOLD", "6");
+  ScopedEnvVar e4("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS", "0");
+
+  Session session(*mock_data_engine_);
+  InitSessionToPrecomposition(&session);
+
+  // "kyouha" ("きょうは", 4 chars) + "12" ("１２", 2 chars) = 6 chars >=
+  // threshold 6 -> freezes front segment "きょうは" with auto_commit_pending_.
+  commands::Command command;
+  InsertCharacterChars("kyouha12", &session, &command);
+  ASSERT_TRUE(command.output().has_preedit());
+  EXPECT_FALSE(command.output().has_result());
+
+  // Next keystroke '3': PopPendingAutoCommit commits front segment and leaves
+  // "１２３" (zero hiragana -> Suggest() returns false). Output(command) must
+  // still emit result() instead of dropping it via OutputComposition().
+  command.Clear();
+  ASSERT_TRUE(SendKey("3", &session, &command));
+  ASSERT_TRUE(command.output().has_result());
+  EXPECT_FALSE(command.output().result().value().empty());
+  EXPECT_EQ(GetComposition(command), "１２３");
+}
+
+TEST_F(SessionTest, LiveConversionShiftTempHalfAsciiAndBackspaceChunkIntegrity) {
+  const absl::FlagSaver flag_saver;
+  absl::SetFlag(&FLAGS_enable_live_conversion, true);
+  ScopedEnvVar e1("MOZC_GRU_ENABLE_ENGLISH_FALLBACK", "true");
+  ScopedEnvVar e2("MOZC_GRU_ENABLE_LIVE_CONVERSION_ENGLISH_FALLBACK", "true");
+  ScopedEnvVar e3("MOZC_GRU_ENABLE_LIVE_CONVERSION_PREFIX_FREEZING", "true");
+  ScopedEnvVar e4("MOZC_GRU_ENABLE_LIVE_CONVERSION_AUTO_COMMIT", "false");
+  ScopedEnvVar e5("MOZC_GRU_LIVE_CONVERSION_LENGTH_THRESHOLD", "4");
+  ScopedEnvVar e6("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS", "0");
+
+  Session session(*mock_data_engine_);
+  InitSessionToPrecomposition(&session);
+
+  // 1. Typing Shift-capitals "NFL" on empty composer does not enter live
+  // conversion.
+  commands::Command command;
+  InsertCharacterChars("NFL", &session, &command);
+  EXPECT_EQ(session.context().state(), ImeContext::COMPOSITION);
+  EXPECT_EQ(GetComposition(command), "NFL");
+
+  command.Clear();
+  ASSERT_TRUE(session.Commit(&command));
+
+  // 2. Unfrozen cross-boundary splits (> frozen_raw_end) must NOT mutate
+  // Session's Composer, so Backspace deletes whole hiragana chunks cleanly.
+  InsertCharacterChars("kyoutowordapuri", &session, &command);
+  command.Clear();
+  ASSERT_TRUE(SendKey("Backspace", &session, &command));
+  command.Clear();
+  ASSERT_TRUE(SendKey("Backspace", &session, &command));
+  EXPECT_EQ(session.context().composer().GetQueryForPrediction(),
+            "きょうとをrだ");
 }
 
 }  // namespace session

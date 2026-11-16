@@ -281,17 +281,140 @@ bool IsSymbolFromAlphaInputSegment(
   return false;
 }
 
+constexpr int32_t kProtectedHealthyWCostThreshold = 4000;
+constexpr int32_t kLowPathCostParticleThreshold = 5000;
+constexpr int32_t kMinSymbolSpanTotalWCost = 10000;
+
+bool IsHighWCostSegment(const Segment& seg, double cost_threshold) {
+  return seg.candidates_size() > 0 &&
+         seg.candidate(0).wcost >= cost_threshold;
+}
+
 bool IsSegmentFallbackEligible(const Segment& seg, size_t seg_preedit_start,
                                size_t seg_preedit_end,
                                const std::vector<composer::ChunkSpan>& spans,
                                double cost_threshold) {
-  if (seg.candidates_size() > 0 &&
-      (seg.candidate(0).cost >= cost_threshold ||
-       seg.candidate(0).wcost >= cost_threshold)) {
+  if (IsHighWCostSegment(seg, cost_threshold)) {
     return true;
   }
   return IsSymbolFromAlphaInputSegment(seg, seg_preedit_start, seg_preedit_end,
                                        spans);
+}
+
+bool BoundarySplitsSingleRomajiChunk(
+    size_t boundary_preedit_pos,
+    const std::vector<composer::ChunkSpan>& spans) {
+  for (const auto& span : spans) {
+    if (!span.is_romaji || span.preedit_len <= 1) {
+      continue;
+    }
+    const size_t span_end = span.preedit_start + span.preedit_len;
+    if (span.preedit_start < boundary_preedit_pos &&
+        boundary_preedit_pos < span_end) {
+      return true;
+    }
+  }
+  return false;
+}
+
+struct SegmentEligibilityMetrics {
+  size_t preedit_start = 0;
+  size_t preedit_len = 0;
+  int32_t cost = 0;
+  int32_t wcost = 0;
+  bool is_free = false;
+  bool is_high_wcost = false;
+  bool is_symbol_eligible = false;
+
+  size_t preedit_end() const { return preedit_start + preedit_len; }
+  bool is_eligible() const { return is_high_wcost || is_symbol_eligible; }
+};
+
+SegmentEligibilityMetrics BuildSegmentMetrics(
+    const Segment& seg, size_t seg_preedit_start,
+    const std::vector<composer::ChunkSpan>& spans, double cost_threshold) {
+  const size_t len = Util::CharsLen(seg.key());
+  SegmentEligibilityMetrics m;
+  m.preedit_start = seg_preedit_start;
+  m.preedit_len = len;
+  if (seg.candidates_size() > 0) {
+    m.cost = seg.candidate(0).cost;
+    m.wcost = seg.candidate(0).wcost;
+  }
+  m.is_free = (seg.segment_type() == Segment::FREE);
+  m.is_high_wcost = IsHighWCostSegment(seg, cost_threshold);
+  m.is_symbol_eligible = IsSymbolFromAlphaInputSegment(
+      seg, seg_preedit_start, seg_preedit_start + len, spans);
+  return m;
+}
+
+bool CanCoverSegmentSpan(const std::vector<SegmentEligibilityMetrics>& covered,
+                         bool has_preceding_segment, size_t leading_chars,
+                         size_t extra_chars,
+                         const std::vector<composer::ChunkSpan>& spans) {
+  if (covered.empty()) {
+    return false;
+  }
+  bool any_eligible = false;
+  bool any_high_wcost = false;
+  int64_t total_wcost = 0;
+  for (const auto& s : covered) {
+    if (s.is_eligible()) {
+      any_eligible = true;
+    }
+    if (s.is_high_wcost) {
+      any_high_wcost = true;
+    }
+    total_wcost += s.wcost;
+  }
+  if (!any_eligible) {
+    return false;
+  }
+  // Never slice mid-segment into a healthy (non-eligible) starting segment.
+  if (leading_chars > 0 && !covered.front().is_eligible()) {
+    return false;
+  }
+  if (covered.size() == 1) {
+    return true;
+  }
+
+  const SegmentEligibilityMetrics& last_seg = covered.back();
+  const bool romaji_chunk_tail_split =
+      (extra_chars > 0 &&
+       BoundarySplitsSingleRomajiChunk(last_seg.preedit_start, spans));
+  // When a multi-segment match truncates the trailing segment (extra_chars > 0),
+  // require that the trailing segment itself is eligible or splits inside a
+  // single Romaji CharChunk bridging into it (e.g. "be" -> "ｂう" + "に").
+  if (extra_chars > 0 && !last_seg.is_eligible() && !romaji_chunk_tail_split) {
+    return false;
+  }
+
+  // Multi-segment fallbacks triggered purely by low-cost custom Romaji symbol
+  // mappings must still accumulate substantial total wcost (blocking ";あん",
+  // "か;", "まけ;" while keeping "ぎてゅ;").
+  if (!any_high_wcost && total_wcost < kMinSymbolSpanTotalWCost) {
+    return false;
+  }
+
+  // Prevent a 2-segment merge from rewriting a smoothly connected low-wcost
+  // single-kana Japanese particle/word following an earlier segment (e.g.,
+  // "これ|と|ｐ", "私|の|ｗ") just because 1 trailing character is eligible,
+  // while still allowing standalone "と|p" ("top") and multi-char prefixes like
+  // "あん|d" ("and") or "あっ|pぇ" ("apple").
+  if (has_preceding_segment && covered.size() == 2 &&
+      !covered[0].is_eligible() && covered[0].preedit_len == 1 &&
+      covered[0].wcost < kProtectedHealthyWCostThreshold &&
+      covered[0].cost < kLowPathCostParticleThreshold && last_seg.is_eligible()) {
+    const size_t used_last_chars =
+        last_seg.preedit_len > extra_chars
+            ? (last_seg.preedit_len - extra_chars)
+            : 0;
+    if (used_last_chars <= 1) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 struct CoveredSegmentsInfo {
@@ -303,26 +426,31 @@ struct CoveredSegmentsInfo {
 
 CoveredSegmentsInfo MeasureCoveredSegments(
     const Segments& segments, size_t start_seg_idx,
-    size_t start_preedit_offset, size_t needed_chars,
+    size_t start_preedit_offset, size_t leading_chars, size_t needed_chars,
     const std::vector<composer::ChunkSpan>& spans, double cost_threshold) {
   CoveredSegmentsInfo info;
+  std::vector<SegmentEligibilityMetrics> covered;
   size_t seg_pos = start_preedit_offset;
   for (size_t j = start_seg_idx; j < segments.conversion_segments_size(); ++j) {
     const Segment& seg = segments.conversion_segment(j);
-    const size_t seg_len = Util::CharsLen(seg.key());
-    info.accumulated_chars += seg_len;
+    SegmentEligibilityMetrics m =
+        BuildSegmentMetrics(seg, seg_pos, spans, cost_threshold);
+    info.accumulated_chars += m.preedit_len;
     info.covered_segments++;
-    if (seg.segment_type() != Segment::FREE) {
+    if (!m.is_free) {
       info.all_free = false;
     }
-    if (IsSegmentFallbackEligible(seg, seg_pos, seg_pos + seg_len, spans,
-                                  cost_threshold)) {
-      info.contains_high_cost = true;
-    }
-    seg_pos += seg_len;
+    seg_pos += m.preedit_len;
+    covered.push_back(m);
     if (info.accumulated_chars >= needed_chars) {
       break;
     }
+  }
+  if (info.accumulated_chars >= needed_chars && !covered.empty()) {
+    const size_t extra_chars = info.accumulated_chars - needed_chars;
+    info.contains_high_cost =
+        CanCoverSegmentSpan(covered, /*has_preceding_segment=*/start_seg_idx > 0,
+                            leading_chars, extra_chars, spans);
   }
   return info;
 }
@@ -367,6 +495,55 @@ bool ShouldTriggerFallbackCommon(
   return false;
 }
 
+void AppendUniqueCandidate(Segment* seg, converter::Candidate cand) {
+  for (size_t i = 0; i < seg->candidates_size(); ++i) {
+    if (seg->candidate(i).value == cand.value) {
+      return;
+    }
+  }
+  *seg->add_candidate() = std::move(cand);
+}
+
+converter::Candidate MakePlainJapaneseCandidate(const std::string& key,
+                                               const std::string& value,
+                                               uint16_t lid, uint16_t rid,
+                                               int32_t cost, int32_t wcost) {
+  converter::Candidate cand;
+  cand.key = key;
+  cand.content_key = key;
+  cand.value = value;
+  cand.content_value = value;
+  cand.cost = cost;
+  cand.wcost = wcost;
+  cand.structure_cost = std::max(0, cost - wcost);
+  cand.lid = lid;
+  cand.rid = rid;
+  cand.converted_segment_count = 1;
+  return cand;
+}
+
+bool TryPopulateCandidatesViaConverter(
+    const ConversionRequest& request, const std::string& key,
+    const ImmutableConverterInterface* immutable_converter, Segment* seg) {
+  if (immutable_converter == nullptr) {
+    return false;
+  }
+  Segments temp_segments;
+  Segment* temp_seg = temp_segments.add_segment();
+  temp_seg->set_key(key);
+  temp_seg->set_segment_type(Segment::FIXED_BOUNDARY);
+  if (!immutable_converter->Convert(request.options(), &temp_segments) ||
+      temp_segments.conversion_segments_size() == 0 ||
+      temp_segments.conversion_segment(0).candidates_size() == 0) {
+    return false;
+  }
+  const Segment& converted = temp_segments.conversion_segment(0);
+  for (size_t k = 0; k < converted.candidates_size(); ++k) {
+    AppendUniqueCandidate(seg, converted.candidate(k));
+  }
+  return true;
+}
+
 void PopulateExtraSegmentCandidates(
     const ConversionRequest& request, const std::string& extra_key,
     uint16_t extra_lid, uint16_t extra_rid,
@@ -376,33 +553,34 @@ void PopulateExtraSegmentCandidates(
   extra_seg->clear_candidates();
   extra_seg->clear_meta_candidates();
 
-  if (immutable_converter != nullptr) {
-    Segments temp_segments;
-    Segment* temp_seg = temp_segments.add_segment();
-    temp_seg->set_key(extra_key);
-    temp_seg->set_segment_type(Segment::FIXED_BOUNDARY);
-    if (immutable_converter->Convert(request.options(), &temp_segments) &&
-        temp_segments.conversion_segments_size() > 0 &&
-        temp_segments.conversion_segment(0).candidates_size() > 0) {
-      const Segment& converted = temp_segments.conversion_segment(0);
-      for (size_t k = 0; k < converted.candidates_size(); ++k) {
-        *extra_seg->add_candidate() = converted.candidate(k);
-      }
-      return;
-    }
+  if (TryPopulateCandidatesViaConverter(request, extra_key, immutable_converter,
+                                        extra_seg)) {
+    return;
   }
 
-  auto* cand = extra_seg->add_candidate();
-  cand->key = extra_key;
-  cand->content_key = extra_key;
-  cand->value = extra_key;
-  cand->content_value = extra_key;
-  cand->cost = 3000;
-  cand->wcost = 2000;
-  cand->structure_cost = 1000;
-  cand->lid = extra_lid;
-  cand->rid = extra_rid;
-  cand->converted_segment_count = 1;
+  *extra_seg->add_candidate() = MakePlainJapaneseCandidate(
+      extra_key, extra_key, extra_lid, extra_rid, /*cost=*/3000, /*wcost=*/2000);
+}
+
+void AppendJapaneseFallbackCandidates(
+    const ConversionRequest& request, const std::string& merged_key,
+    const std::string& fallback_value, uint16_t fallback_lid,
+    uint16_t fallback_rid,
+    const ImmutableConverterInterface* immutable_converter, Segment* seg) {
+  const bool converted = TryPopulateCandidatesViaConverter(
+      request, merged_key, immutable_converter, seg);
+  if (!fallback_value.empty()) {
+    AppendUniqueCandidate(
+        seg, MakePlainJapaneseCandidate(merged_key, fallback_value, fallback_lid,
+                                        fallback_rid, /*cost=*/25000,
+                                        /*wcost=*/16383));
+  }
+  if (!converted && merged_key != fallback_value) {
+    AppendUniqueCandidate(
+        seg, MakePlainJapaneseCandidate(merged_key, merged_key, fallback_lid,
+                                        fallback_rid, /*cost=*/25100,
+                                        /*wcost=*/16383));
+  }
 }
 
 }  // namespace
@@ -655,28 +833,14 @@ std::vector<size_t> EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
     return {};
   }
 
-  struct SegRange {
-    size_t start = 0;
-    size_t end = 0;
-    bool is_free = false;
-    bool is_high_cost = false;
-  };
-  std::vector<SegRange> seg_ranges;
-  seg_ranges.reserve(segments.conversion_segments_size());
+  std::vector<SegmentEligibilityMetrics> seg_metrics;
+  seg_metrics.reserve(segments.conversion_segments_size());
   size_t cur_pos = base_preedit_offset;
   for (size_t i = 0; i < segments.conversion_segments_size(); ++i) {
-    const Segment& seg = segments.conversion_segment(i);
-    const size_t len = Util::CharsLen(seg.key());
-    const bool high_cost = IsSegmentFallbackEligible(
-        seg, cur_pos, cur_pos + len, spans,
-        config.english_fallback_cost_threshold);
-    seg_ranges.push_back(SegRange{
-        .start = cur_pos,
-        .end = cur_pos + len,
-        .is_free = (seg.segment_type() == Segment::FREE),
-        .is_high_cost = high_cost,
-    });
-    cur_pos += len;
+    seg_metrics.push_back(BuildSegmentMetrics(
+        segments.conversion_segment(i), cur_pos, spans,
+        config.english_fallback_cost_threshold));
+    cur_pos += seg_metrics.back().preedit_len;
   }
   const size_t max_seg_preedit_end = cur_pos;
 
@@ -693,24 +857,36 @@ std::vector<size_t> EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
     return {};
   }
 
-  auto span_range_is_free_and_high_cost = [&](size_t start_p, size_t end_p) {
-    bool overlapped = false;
-    bool all_free = true;
-    bool any_high_cost = false;
-    for (const auto& sr : seg_ranges) {
-      if (sr.end <= start_p || sr.start >= end_p) {
+  auto span_range_can_cover = [&](size_t start_p, size_t end_p) {
+    std::vector<SegmentEligibilityMetrics> covered;
+    size_t first_covered_idx = 0;
+    for (size_t i = 0; i < seg_metrics.size(); ++i) {
+      const auto& sm = seg_metrics[i];
+      if (sm.preedit_end() <= start_p || sm.preedit_start >= end_p) {
         continue;
       }
-      overlapped = true;
-      if (!sr.is_free) {
-        all_free = false;
-        break;
+      if (!sm.is_free) {
+        return false;
       }
-      if (sr.is_high_cost) {
-        any_high_cost = true;
+      if (covered.empty()) {
+        first_covered_idx = i;
       }
+      covered.push_back(sm);
     }
-    return overlapped && all_free && any_high_cost;
+    if (covered.empty()) {
+      return false;
+    }
+    const size_t leading_chars =
+        start_p > covered.front().preedit_start
+            ? (start_p - covered.front().preedit_start)
+            : 0;
+    const size_t extra_chars =
+        covered.back().preedit_end() > end_p
+            ? (covered.back().preedit_end() - end_p)
+            : 0;
+    return CanCoverSegmentSpan(covered,
+                               /*has_preceding_segment=*/first_covered_idx > 0,
+                               leading_chars, extra_chars, spans);
   };
 
   std::vector<size_t> split_offsets;
@@ -722,15 +898,16 @@ std::vector<size_t> EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
       continue;
     }
 
-    bool start_in_free_seg = false;
-    for (const auto& sr : seg_ranges) {
-      if (sr.end > spans[idx].preedit_start &&
-          sr.start <= spans[idx].preedit_start) {
-        start_in_free_seg = sr.is_free;
+    bool start_allowed = false;
+    for (const auto& sm : seg_metrics) {
+      if (sm.preedit_end() > spans[idx].preedit_start &&
+          sm.preedit_start <= spans[idx].preedit_start) {
+        const bool mid_segment = (spans[idx].preedit_start > sm.preedit_start);
+        start_allowed = sm.is_free && (!mid_segment || sm.is_eligible());
         break;
       }
     }
-    if (!start_in_free_seg) {
+    if (!start_allowed) {
       ++idx;
       continue;
     }
@@ -751,6 +928,51 @@ std::vector<size_t> EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
     }
 
     const size_t target_raw_end = spans[idx].raw_start + matched_raw_len;
+    // Mirror MatchBestWordAtOffset lookahead: suppress a short spurious match
+    // (e.g. "と"+"p..." -> "top") if a strictly longer word starts strictly
+    // inside the matched span (e.g. "pencil").
+    bool suppressed_by_longer_match = false;
+    {
+      absl::MutexLock lock(dict_state->mutex);
+      auto has_longer_match_at = [&](size_t next_raw) {
+        std::string next_orig;
+        return MatchLongestWordInDictionaries(
+                   dict_state->base_dict, dict_state->user_dict,
+                   absl::string_view(active_raw).substr(next_raw),
+                   config.english_fallback_min_word_length, &next_orig) >
+               matched_raw_len;
+      };
+      for (size_t k = idx;
+           k < active_span_end && spans[k].raw_start < target_raw_end; ++k) {
+        if (k > idx && has_longer_match_at(spans[k].raw_start)) {
+          suppressed_by_longer_match = true;
+          break;
+        }
+        if (!spans[k].is_romaji && spans[k].preedit_len == spans[k].raw_len) {
+          const size_t limit = std::min(
+              spans[k].raw_start + spans[k].raw_len, target_raw_end);
+          for (size_t pos = std::max(spans[k].raw_start,
+                                     spans[idx].raw_start + 1);
+               pos < limit; ++pos) {
+            if ((static_cast<unsigned char>(active_raw[pos]) & 0xC0) == 0x80) {
+              continue;
+            }
+            if (has_longer_match_at(pos)) {
+              suppressed_by_longer_match = true;
+              break;
+            }
+          }
+          if (suppressed_by_longer_match) {
+            break;
+          }
+        }
+      }
+    }
+    if (suppressed_by_longer_match) {
+      ++idx;
+      continue;
+    }
+
     size_t j = idx;
     while (j < active_span_end &&
            spans[j].raw_start + spans[j].raw_len < target_raw_end) {
@@ -764,7 +986,7 @@ std::vector<size_t> EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
     const size_t chunk_raw_end = spans[j].raw_start + spans[j].raw_len;
     if (spans[j].raw_start < target_raw_end &&
         target_raw_end < chunk_raw_end && spans[j].is_romaji) {
-      if (span_range_is_free_and_high_cost(
+      if (span_range_can_cover(
               spans[idx].preedit_start,
               spans[j].preedit_start + spans[j].preedit_len)) {
         split_offsets.push_back(target_raw_end);
@@ -851,8 +1073,15 @@ EnglishFallbackRewriter::CheckResizeSegmentsRequestInternal(
     }
 
     bool advanced_exact_match = false;
+    const bool cur_seg_eligible = IsSegmentFallbackEligible(
+        cur_seg, current_preedit_offset, current_preedit_offset + cur_seg_len,
+        spans, config.english_fallback_cost_threshold);
+    // Never slice mid-segment into a healthy (non-eligible) starting segment.
+    const size_t p_end =
+        cur_seg_eligible ? (current_preedit_offset + cur_seg_len)
+                         : (current_preedit_offset + 1);
     for (size_t p = std::max(current_preedit_offset, skip_until_preedit_offset);
-         p < current_preedit_offset + cur_seg_len; ++p) {
+         p < p_end; ++p) {
       std::string matched_word;
       std::string matched_original_word;
       size_t matched_preedit_chars = 0;
@@ -867,8 +1096,8 @@ EnglishFallbackRewriter::CheckResizeSegmentsRequestInternal(
       const size_t needed_chars = leading_chars + matched_preedit_chars;
 
       const CoveredSegmentsInfo covered = MeasureCoveredSegments(
-          segments, current_seg_idx, current_preedit_offset, needed_chars,
-          spans, config.english_fallback_cost_threshold);
+          segments, current_seg_idx, current_preedit_offset, leading_chars,
+          needed_chars, spans, config.english_fallback_cost_threshold);
       const size_t covered_segments = covered.covered_segments;
       const size_t accumulated_chars = covered.accumulated_chars;
       const bool contains_high_cost = covered.contains_high_cost;
@@ -1001,7 +1230,7 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
 
     // Determine how many conversion segments are covered by matched_preedit_chars.
     const CoveredSegmentsInfo covered = MeasureCoveredSegments(
-        *segments, current_seg_idx, current_preedit_offset,
+        *segments, current_seg_idx, current_preedit_offset, /*leading_chars=*/0,
         matched_preedit_chars, spans, config.english_fallback_cost_threshold);
     const size_t covered_segments = covered.covered_segments;
     const size_t accumulated_chars = covered.accumulated_chars;
@@ -1025,13 +1254,40 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
       }
 
       if (contains_high_cost) {
+        const Segment& first_seg = segments->conversion_segment(current_seg_idx);
+        const Segment& last_seg_ref = segments->conversion_segment(last_seg_idx);
+        const uint16_t fallback_lid =
+            first_seg.candidates_size() > 0 ? first_seg.candidate(0).lid
+                                            : unknown_id_;
+        const uint16_t fallback_rid =
+            last_seg_ref.candidates_size() > 0 ? last_seg_ref.candidate(0).rid
+                                               : unknown_id_;
+
         std::string merged_key;
         for (size_t j = 0; j < covered_segments - 1; ++j) {
           merged_key += segments->conversion_segment(current_seg_idx + j).key();
         }
 
         if (extra_chars == 0) {
-          merged_key += segments->conversion_segment(last_seg_idx).key();
+          merged_key += last_seg_ref.key();
+
+          std::vector<converter::Candidate> saved_candidates;
+          std::string concat_fallback_value;
+          if (covered_segments == 1) {
+            saved_candidates.reserve(first_seg.candidates_size());
+            for (size_t k = 0; k < first_seg.candidates_size(); ++k) {
+              saved_candidates.push_back(first_seg.candidate(k));
+            }
+          } else {
+            for (size_t j = 0; j < covered_segments; ++j) {
+              const Segment& covered_seg =
+                  segments->conversion_segment(current_seg_idx + j);
+              concat_fallback_value +=
+                  covered_seg.candidates_size() > 0
+                      ? covered_seg.candidate(0).value
+                      : covered_seg.key();
+            }
+          }
 
           Segment* seg = segments->mutable_conversion_segment(current_seg_idx);
           seg->set_key(merged_key);
@@ -1040,8 +1296,14 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
             seg->clear_meta_candidates();
           }
           AddEnglishCandidates(matched_word, matched_original_word, merged_key, seg);
-
-          if (covered_segments > 1) {
+          if (covered_segments == 1) {
+            for (auto& orig_cand : saved_candidates) {
+              AppendUniqueCandidate(seg, std::move(orig_cand));
+            }
+          } else {
+            AppendJapaneseFallbackCandidates(
+                request, merged_key, concat_fallback_value, fallback_lid,
+                fallback_rid, immutable_converter_, seg);
             const size_t raw_idx =
                 segments->history_segments_size() + current_seg_idx;
             segments->erase_segments(raw_idx + 1, covered_segments - 1);
@@ -1049,20 +1311,19 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
         } else {
           // The last segment covers the tail of the English word plus trailing
           // characters (e.g. "ryを" -> "ry" + "を").
-          const Segment& last_seg = segments->conversion_segment(last_seg_idx);
-          const size_t last_seg_len = Util::CharsLen(last_seg.key());
+          const size_t last_seg_len = Util::CharsLen(last_seg_ref.key());
           const size_t used_chars = last_seg_len - extra_chars;
 
           const std::string used_key =
-              std::string(Util::Utf8SubString(last_seg.key(), 0, used_chars));
+              std::string(Util::Utf8SubString(last_seg_ref.key(), 0, used_chars));
           const std::string extra_key = std::string(
-              Util::Utf8SubString(last_seg.key(), used_chars, extra_chars));
+              Util::Utf8SubString(last_seg_ref.key(), used_chars, extra_chars));
           merged_key += used_key;
 
           uint16_t extra_lid = 0, extra_rid = 0;
-          if (last_seg.candidates_size() > 0) {
-            extra_lid = last_seg.candidate(0).lid;
-            extra_rid = last_seg.candidate(0).rid;
+          if (last_seg_ref.candidates_size() > 0) {
+            extra_lid = last_seg_ref.candidate(0).lid;
+            extra_rid = last_seg_ref.candidate(0).rid;
           }
 
           const size_t raw_start_idx =
@@ -1075,6 +1336,9 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
           seg->clear_meta_candidates();
           AddEnglishCandidates(matched_word, matched_original_word, merged_key,
                                seg);
+          AppendJapaneseFallbackCandidates(
+              request, merged_key, merged_key, fallback_lid, fallback_rid,
+              immutable_converter_, seg);
 
           Segment* extra_seg = nullptr;
           if (covered_segments == 1) {

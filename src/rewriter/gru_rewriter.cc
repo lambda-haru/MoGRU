@@ -1251,26 +1251,72 @@ bool GruRewriter::Focus(Segments* segments, size_t segment_index,
   return modified;
 }
 
-std::optional<RewriterInterface::ResizeSegmentsRequest> GruRewriter::CheckResizeSegmentsRequest(
-    const ConversionRequest& request,
-    const Segments& segments) const {
+namespace {
+
+std::optional<RewriterInterface::ResizeSegmentsRequest> BuildResizeSegmentsRequest(
+    size_t segment_index, const std::vector<uint8_t>& new_sizes) {
+  RewriterInterface::ResizeSegmentsRequest resize_req;
+  if (new_sizes.size() > resize_req.segment_sizes.size()) {
+    return std::nullopt;
+  }
+  resize_req.segment_index = segment_index;
+  for (size_t i = 0; i < new_sizes.size(); ++i) {
+    resize_req.segment_sizes[i] = new_sizes[i];
+  }
+  return resize_req;
+}
+
+std::string SegmentTopText(const Segment& seg) {
+  if (seg.candidates_size() > 0) {
+    return seg.candidate(0).value;
+  }
+  return std::string(seg.key());
+}
+
+}  // namespace
+
+bool GruRewriter::CanCheckConversionResegmentation(
+    const ConversionRequest& request, const Segments& segments,
+    const bool allow_when_resized) const {
   if (!absl::GetFlag(FLAGS_enable_gru_rewriter)) {
-    return std::nullopt;
+    return false;
   }
-
   if (request.options().skip_slow_rewriters) {
-    return std::nullopt;
+    return false;
   }
-
-  if (segments.resized()) {
-    return std::nullopt;
+  if (!allow_when_resized && segments.resized()) {
+    return false;
   }
-
   if (segments.conversion_segments_size() == 0) {
+    return false;
+  }
+  if (request.request_type() != ConversionRequest::CONVERSION) {
+    return false;
+  }
+  return true;
+}
+
+std::optional<GruPenaltyConfig> GruRewriter::PrepareResegmentationConfig()
+    const {
+  if (immutable_converter_ == nullptr) {
     return std::nullopt;
   }
+  const GruPenaltyConfig penalty_config = GetPenaltyConfig();
+  if (!penalty_config.enable_gru_rewriter ||
+      !penalty_config.enable_resegmentation) {
+    return std::nullopt;
+  }
+  if (!EnsureInitialized()) {
+    return std::nullopt;
+  }
+  return penalty_config;
+}
 
-  if (request.request_type() != ConversionRequest::CONVERSION) {
+std::optional<RewriterInterface::ResizeSegmentsRequest>
+GruRewriter::CheckResizeSegmentsRequest(const ConversionRequest& request,
+                                        const Segments& segments) const {
+  if (!CanCheckConversionResegmentation(request, segments,
+                                        /*allow_when_resized=*/false)) {
     return std::nullopt;
   }
 
@@ -1302,39 +1348,76 @@ std::optional<RewriterInterface::ResizeSegmentsRequest> GruRewriter::CheckResize
     }
   }
 
-  if (immutable_converter_ == nullptr) {
-    return std::nullopt;
-  }
-
-  const GruPenaltyConfig penalty_config = GetPenaltyConfig();
-  if (!penalty_config.enable_gru_rewriter ||
-      !penalty_config.enable_resegmentation) {
-    return std::nullopt;
-  }
-
-  if (!EnsureInitialized()) {
+  const std::optional<GruPenaltyConfig> penalty_config =
+      PrepareResegmentationConfig();
+  if (!penalty_config.has_value()) {
     return std::nullopt;
   }
 
   const std::string hist_prefix = GetHistoryPrefix(&request, segments);
-  const double alpha = penalty_config.gru_score_weight;
+  const double alpha = penalty_config->gru_score_weight;
   const size_t start_seg_idx = segments.history_segments_size();
 
   auto result = EvaluateResegmentation(
-      segments, start_seg_idx, hist_prefix, penalty_config, alpha);
+      segments, start_seg_idx, hist_prefix, *penalty_config, alpha);
   if (!result.has_value()) {
     return std::nullopt;
   }
 
-  ResizeSegmentsRequest resize_req;
-  resize_req.segment_index = 0;
-  if (result->new_sizes.size() > resize_req.segment_sizes.size()) {
+  return BuildResizeSegmentsRequest(0, result->new_sizes);
+}
+
+std::optional<RewriterInterface::ResizeSegmentsRequest>
+GruRewriter::CheckAdditionalResizeSegmentsRequest(
+    const ConversionRequest& request, const Segments& segments) const {
+  if (!CanCheckConversionResegmentation(request, segments,
+                                        /*allow_when_resized=*/true)) {
     return std::nullopt;
   }
-  for (size_t i = 0; i < result->new_sizes.size(); ++i) {
-    resize_req.segment_sizes[i] = result->new_sizes[i];
+
+  const std::optional<GruPenaltyConfig> penalty_config =
+      PrepareResegmentationConfig();
+  if (!penalty_config.has_value()) {
+    return std::nullopt;
   }
-  return resize_req;
+
+  const double alpha = penalty_config->gru_score_weight;
+  std::string running_prefix = GetHistoryPrefix(&request, segments);
+  const size_t history_size = segments.history_segments_size();
+  const size_t total_size = segments.segments_size();
+
+  auto is_resegmentable_free = [](const Segment& seg) {
+    return seg.segment_type() == Segment::FREE && !ShouldBypassSegment(seg);
+  };
+
+  for (size_t idx = history_size; idx < total_size;) {
+    const Segment& seg = segments.segment(idx);
+    if (!is_resegmentable_free(seg)) {
+      running_prefix.append(SegmentTopText(seg));
+      ++idx;
+      continue;
+    }
+
+    const size_t span_start = idx;
+    while (idx < total_size && is_resegmentable_free(segments.segment(idx))) {
+      ++idx;
+    }
+    const size_t span_end = idx;
+
+    auto result = EvaluateResegmentation(
+        segments, span_start, running_prefix, *penalty_config, alpha,
+        static_cast<size_t>(-1), 0, span_end);
+    if (result.has_value()) {
+      return BuildResizeSegmentsRequest(span_start - history_size,
+                                        result->new_sizes);
+    }
+
+    for (size_t j = span_start; j < span_end; ++j) {
+      running_prefix.append(SegmentTopText(segments.segment(j)));
+    }
+  }
+
+  return std::nullopt;
 }
 
 std::optional<GruRewriter::ResegmentResult> GruRewriter::EvaluateResegmentation(
@@ -1344,12 +1427,13 @@ std::optional<GruRewriter::ResegmentResult> GruRewriter::EvaluateResegmentation(
     const GruPenaltyConfig& penalty_config,
     double alpha,
     size_t focused_seg_idx,
-    int focused_cand_idx) const {
+    int focused_cand_idx,
+    size_t end_seg_idx) const {
   if (immutable_converter_ == nullptr) {
     return std::nullopt;
   }
 
-  const size_t num_total = segments.segments_size();
+  const size_t num_total = std::min(end_seg_idx, segments.segments_size());
   if (start_seg_idx >= num_total) {
     return std::nullopt;
   }
@@ -1442,6 +1526,7 @@ std::optional<GruRewriter::ResegmentResult> GruRewriter::EvaluateResegmentation(
   for (int i = 0; i < sim_seg.candidates_size(); ++i) {
     const Segment::Candidate& cand = sim_seg.candidate(i);
     std::vector<uint8_t> cand_sizes;
+    size_t cand_sizes_sum = 0;
     for (const auto& inner : cand.inner_segments()) {
       const size_t len = Util::CharsLen(inner.GetKey());
       if (len == 0 || len > 255) {
@@ -1449,8 +1534,9 @@ std::optional<GruRewriter::ResegmentResult> GruRewriter::EvaluateResegmentation(
         break;
       }
       cand_sizes.push_back(static_cast<uint8_t>(len));
+      cand_sizes_sum += len;
     }
-    if (cand_sizes.empty()) {
+    if (cand_sizes.empty() || cand_sizes_sum != total_char_len) {
       continue;
     }
 

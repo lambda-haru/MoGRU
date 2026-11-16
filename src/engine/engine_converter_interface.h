@@ -36,6 +36,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "absl/strings/string_view.h"
 #include "composer/composer.h"
@@ -214,10 +215,13 @@ class EngineConverterInterface {
 
   // Checks and executes pending auto-commit of frozen segments in live conversion.
   // Returns true if auto-commit was performed, setting *consumed_key_chars to the
-  // number of key characters to delete from Composer.
-  virtual bool PopPendingAutoCommit(const composer::Composer& composer,
-                                    const commands::Context& context,
-                                    size_t* consumed_key_chars) {
+  // number of key characters to delete from Composer and optionally returning
+  // any frozen raw chunk split boundaries via *out_split_raw_offsets so
+  // Composer can separate chunks before deleting key characters.
+  virtual bool PopPendingAutoCommit(
+      const composer::Composer& composer, const commands::Context& context,
+      size_t* consumed_key_chars,
+      std::vector<size_t>* out_split_raw_offsets = nullptr) {
     return false;
   }
 

@@ -196,9 +196,10 @@ class EngineConverter : public EngineConverterInterface {
   void CommitHead(size_t count, const composer::Composer& composer,
                   size_t* consumed_key_size) override;
 
-  bool PopPendingAutoCommit(const composer::Composer& composer,
-                            const commands::Context& context,
-                            size_t* consumed_key_chars) override;
+  bool PopPendingAutoCommit(
+      const composer::Composer& composer, const commands::Context& context,
+      size_t* consumed_key_chars,
+      std::vector<size_t>* out_split_raw_offsets = nullptr) override;
 
   // Reverts the last "Commit" operation
   void Revert() override;
@@ -401,8 +402,9 @@ class EngineConverter : public EngineConverterInterface {
   // excluded trailing hiragana), and tail from `composer`.
   static bool BuildLiveConversionKeyAndTail(
       const composer::Composer& composer, absl::string_view frozen_key,
-      int32_t excluded_hiragana_chars, std::string* out_pred_key,
-      std::string* out_active_key, std::string* out_tail);
+      int32_t excluded_hiragana_chars, bool is_temp_half_ascii,
+      std::string* out_pred_key, std::string* out_active_key,
+      std::string* out_tail);
 
   // Re-runs StartConversion on a temporary chunk-separated Composer copy when
   // high-cost cross-boundary English matches are detected. If `is_live` is
@@ -475,6 +477,7 @@ class EngineConverter : public EngineConverterInterface {
   std::string live_conversion_tail_;
   std::vector<Segment> live_conversion_frozen_segments_;
   std::string live_conversion_frozen_key_;
+  std::vector<size_t> live_conversion_frozen_split_offsets_;
   bool auto_commit_pending_ = false;
 
   // Conversion accuracy tracking state.

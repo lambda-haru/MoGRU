@@ -88,6 +88,10 @@ class GruRewriter : public RewriterInterface {
       const ConversionRequest& request,
       const Segments& segments) const override;
 
+  std::optional<ResizeSegmentsRequest> CheckAdditionalResizeSegmentsRequest(
+      const ConversionRequest& request,
+      const Segments& segments) const override;
+
   void Finish(const ConversionRequest& request,
               const Segments& segments) override;
 
@@ -125,6 +129,11 @@ class GruRewriter : public RewriterInterface {
       const GruPenaltyConfig& root_config) const
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
+  bool CanCheckConversionResegmentation(const ConversionRequest& request,
+                                        const Segments& segments,
+                                        bool allow_when_resized) const;
+  std::optional<GruPenaltyConfig> PrepareResegmentationConfig() const;
+
   std::optional<ResegmentResult> EvaluateResegmentation(
       const Segments& segments,
       size_t start_seg_idx,
@@ -132,7 +141,8 @@ class GruRewriter : public RewriterInterface {
       const GruPenaltyConfig& penalty_config,
       double alpha,
       size_t focused_seg_idx = static_cast<size_t>(-1),
-      int focused_cand_idx = 0) const;
+      int focused_cand_idx = 0,
+      size_t end_seg_idx = static_cast<size_t>(-1)) const;
 
   bool RerankSegmentsWithBeamSearch(
       Segments* segments,

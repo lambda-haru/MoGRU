@@ -929,6 +929,116 @@ TEST(GruRewriterResegmentTest, FocusTriggerResegmentWhenBetterCandidateFound) {
   EXPECT_EQ(segments.segment(3).key_len(), 2);  // "ぬぐ"
 }
 
+TEST(GruRewriterResegmentTest,
+     CheckAdditionalResizeSegmentsRequestResegmentsFreeJapaneseSpanAfterEnglish) {
+  absl::SetFlag(&FLAGS_enable_gru_rewriter, true);
+  absl::SetFlag(&FLAGS_enable_gru_resegmentation, true);
+  absl::SetFlag(&FLAGS_gru_resegment_cost_threshold, 200);
+
+  StubImmutableConverter stub_converter;
+  stub_converter.convert_fn_ = [](const ConversionOptions& options,
+                                  Segments* segments) {
+    if (segments->conversion_segments_size() < 2) return false;
+    // Target FREE span starts after the preceding FIXED_VALUE segment(s).
+    Segment* seg = segments->mutable_segment(segments->segments_size() - 1);
+    EXPECT_EQ(seg->key(), "ここではきものをぬぐ");
+    seg->clear_candidates();
+
+    converter::Candidate* cand0 = seg->add_candidate();
+    cand0->key = "ここではきものをぬぐ";
+    cand0->value = "ここでは着物を脱ぐ";
+    cand0->content_key = cand0->key;
+    cand0->content_value = cand0->value;
+    cand0->cost = 3000;
+    cand0->inner_segment_boundary = {
+        *converter::EncodeLengths(12, 12, 12, 12),
+        *converter::EncodeLengths(12, 9, 12, 9),
+        *converter::EncodeLengths(6, 6, 6, 6),
+    };
+
+    converter::Candidate* cand1 = seg->add_candidate();
+    cand1->key = "ここではきものをぬぐ";
+    cand1->value = "ここで履物を脱ぐ";
+    cand1->content_key = cand1->key;
+    cand1->content_value = cand1->value;
+    cand1->cost = 1000;
+    cand1->inner_segment_boundary = {
+        *converter::EncodeLengths(9, 9, 9, 9),
+        *converter::EncodeLengths(15, 9, 15, 9),
+        *converter::EncodeLengths(6, 6, 6, 6),
+    };
+    return true;
+  };
+
+  GruRewriter rewriter(&stub_converter);
+  rewriter.Reload();
+
+  ConversionRequest request;
+  Segments segments;
+
+  // Segment 0 was already fixed as an English word before GruRewriter ran,
+  // marking segments.resized(true). A trailing FIXED_BOUNDARY English segment
+  // also follows the FREE Japanese span.
+  Segment* eng0 = segments.add_segment();
+  eng0->set_key("ｗおｒｄ");
+  eng0->set_segment_type(Segment::FIXED_BOUNDARY);
+  AddCandidate("ｗおｒｄ", "word", 1000, eng0);
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("ここでは");
+  AddCandidate("ここでは", "ここでは", 1000, seg1);
+
+  Segment* seg2 = segments.add_segment();
+  seg2->set_key("きものを");
+  AddCandidate("きものを", "着物を", 1000, seg2);
+
+  Segment* seg3 = segments.add_segment();
+  seg3->set_key("ぬぐ");
+  AddCandidate("ぬぐ", "脱ぐ", 1000, seg3);
+
+  Segment* eng4 = segments.add_segment();
+  eng4->set_key("てｓｔ");
+  eng4->set_segment_type(Segment::FIXED_BOUNDARY);
+  AddCandidate("てｓｔ", "test", 1000, eng4);
+
+  segments.set_resized(true);
+
+  EXPECT_EQ(rewriter.CheckResizeSegmentsRequest(request, segments),
+            std::nullopt);
+
+  auto add_req =
+      rewriter.CheckAdditionalResizeSegmentsRequest(request, segments);
+  ASSERT_TRUE(add_req.has_value());
+  EXPECT_EQ(add_req->segment_index, 1);
+  EXPECT_EQ(add_req->segment_sizes[0], 3);
+  EXPECT_EQ(add_req->segment_sizes[1], 5);
+  EXPECT_EQ(add_req->segment_sizes[2], 2);
+  EXPECT_EQ(add_req->segment_sizes[3], 0);
+
+  // Applying Resize only resizes the FREE span [1..3], leaving eng0 and eng4
+  // untouched as FIXED_BOUNDARY segments.
+  std::vector<uint8_t> new_sizes;
+  for (uint8_t s : add_req->segment_sizes) {
+    if (s == 0) break;
+    new_sizes.push_back(s);
+  }
+  ASSERT_TRUE(segments.Resize(add_req->segment_index, new_sizes));
+  ASSERT_EQ(segments.conversion_segments_size(), 5);
+  EXPECT_EQ(segments.conversion_segment(0).key(), "ｗおｒｄ");
+  EXPECT_EQ(segments.conversion_segment(0).segment_type(),
+            Segment::FIXED_BOUNDARY);
+  EXPECT_EQ(segments.conversion_segment(1).key(), "ここで");
+  EXPECT_EQ(segments.conversion_segment(2).key(), "はきものを");
+  EXPECT_EQ(segments.conversion_segment(3).key(), "ぬぐ");
+  EXPECT_EQ(segments.conversion_segment(4).key(), "てｓｔ");
+  EXPECT_EQ(segments.conversion_segment(4).segment_type(),
+            Segment::FIXED_BOUNDARY);
+
+  // After all FREE Japanese spans are resized, no additional resize is needed.
+  EXPECT_EQ(rewriter.CheckAdditionalResizeSegmentsRequest(request, segments),
+            std::nullopt);
+}
+
 TEST_F(GruRewriterTest, OnlineLearningImprovesRankingAndPersists) {
   absl::SetFlag(&FLAGS_gru_model_path, "");
   absl::SetFlag(&FLAGS_gru_chardata_path, "");

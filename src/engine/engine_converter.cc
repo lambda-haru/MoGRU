@@ -79,6 +79,35 @@ namespace {
 using ::mozc::commands::Request;
 using ::mozc::config::Config;
 
+bool IsTemporaryHalfAsciiMode(const composer::Composer& composer) {
+  return composer.GetInputMode() == transliteration::HALF_ASCII &&
+         composer.GetComebackInputMode() == transliteration::HIRAGANA;
+}
+
+const composer::Composer* ApplyRawSplitOffsetsIfAny(
+    const composer::Composer& composer,
+    const std::vector<size_t>& split_offsets,
+    std::optional<composer::Composer>* storage) {
+  if (split_offsets.empty()) {
+    return &composer;
+  }
+  storage->emplace(composer);
+  (*storage)->SeparateChunksAtRawBoundaries(split_offsets);
+  return &(**storage);
+}
+
+void AppendSortedUniqueOffsets(
+    std::vector<size_t>* target, const std::vector<size_t>& additions,
+    size_t max_inclusive_offset = std::numeric_limits<size_t>::max()) {
+  for (size_t offset : additions) {
+    if (offset > 0 && offset <= max_inclusive_offset) {
+      target->push_back(offset);
+    }
+  }
+  std::sort(target->begin(), target->end());
+  target->erase(std::unique(target->begin(), target->end()), target->end());
+}
+
 absl::string_view GetCandidateShortcuts(
     config::Config::SelectionShortcut selection_shortcut) {
   // Keyboard shortcut for candidates.
@@ -177,13 +206,21 @@ bool EngineConverter::ConvertInternal(
   live_conversion_presented_ = false;
   conversion_segment_resized_ = false;
 
+  std::vector<size_t> saved_frozen_split_offsets =
+      std::move(live_conversion_frozen_split_offsets_);
+
   live_conversion_active_ = false;
   live_conversion_key_.clear();
   live_conversion_tail_.clear();
   live_conversion_frozen_segments_.clear();
   live_conversion_frozen_key_.clear();
+  live_conversion_frozen_split_offsets_.clear();
   auto_commit_pending_ = false;
   pending_separated_raw_offsets_.clear();
+
+  std::optional<composer::Composer> effective_composer_storage;
+  const composer::Composer* effective_composer = ApplyRawSplitOffsetsIfAny(
+      composer, saved_frozen_split_offsets, &effective_composer_storage);
 
   DCHECK(request_);
   DCHECK(config_);
@@ -193,7 +230,7 @@ bool EngineConverter::ConvertInternal(
   const ConversionRequest::Options base_options = options;
   const ConversionRequest conversion_request =
       ConversionRequestBuilder()
-          .SetComposer(composer)
+          .SetComposer(*effective_composer)
           .SetRequestView(*request_)
           .SetContextView(context)
           .SetConfigView(*config_)
@@ -208,10 +245,14 @@ bool EngineConverter::ConvertInternal(
 
   if (allow_cross_boundary_fallback) {
     TryCrossBoundaryEnglishFallback(
-        composer, context, conversion_request, base_options,
+        *effective_composer, context, conversion_request, base_options,
         /*is_live=*/false, /*excluded_hiragana_chars=*/0,
         /*out_pred_key=*/nullptr, /*out_tail=*/nullptr,
         &pending_separated_raw_offsets_);
+  }
+  if (!saved_frozen_split_offsets.empty()) {
+    AppendSortedUniqueOffsets(&pending_separated_raw_offsets_,
+                              saved_frozen_split_offsets);
   }
 
   segment_index_ = 0;
@@ -546,6 +587,8 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
   std::vector<Segment> saved_frozen_segments =
       std::move(live_conversion_frozen_segments_);
   std::string saved_frozen_key = std::move(live_conversion_frozen_key_);
+  std::vector<size_t> saved_frozen_split_offsets =
+      std::move(live_conversion_frozen_split_offsets_);
   bool saved_auto_commit_pending = auto_commit_pending_;
 
   // Normalize the current state by resetting the previous state.
@@ -563,30 +606,44 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
       config::GruConfigManager::IsLiveConversionEnabled(true)) {
     live_conversion_frozen_segments_ = std::move(saved_frozen_segments);
     live_conversion_frozen_key_ = std::move(saved_frozen_key);
+    live_conversion_frozen_split_offsets_ =
+        std::move(saved_frozen_split_offsets);
     auto_commit_pending_ = saved_auto_commit_pending;
+    const bool is_temp_half_ascii = IsTemporaryHalfAsciiMode(composer);
     if (composer.Empty() ||
-        composer.GetInputMode() != transliteration::HIRAGANA ||
+        (composer.GetInputMode() != transliteration::HIRAGANA &&
+         !is_temp_half_ascii) ||
         composer.GetOutputMode() != transliteration::HIRAGANA ||
         composer.GetCursor() != composer.GetLength()) {
       return false;
     }
 
+    std::optional<composer::Composer> effective_composer_storage;
+    const composer::Composer* effective_composer = ApplyRawSplitOffsetsIfAny(
+        composer, live_conversion_frozen_split_offsets_,
+        &effective_composer_storage);
+
     const int32_t excluded_hiragana_chars =
         config::GruConfigManager::GetLiveConversionExcludedHiraganaCharacters(0);
     if (!live_conversion_frozen_segments_.empty()) {
-      const std::string check_pred = composer.GetQueryForPrediction();
+      const std::string check_pred =
+          effective_composer->GetQueryForPrediction();
       if (!check_pred.starts_with(live_conversion_frozen_key_)) {
         live_conversion_frozen_segments_.clear();
         live_conversion_frozen_key_.clear();
+        live_conversion_frozen_split_offsets_.clear();
         auto_commit_pending_ = false;
+        effective_composer_storage.reset();
+        effective_composer = &composer;
       }
     }
     std::string pred_key;
     std::string active_key;
     std::string tail;
-    if (!BuildLiveConversionKeyAndTail(composer, live_conversion_frozen_key_,
-                                       excluded_hiragana_chars, &pred_key,
-                                       &active_key, &tail)) {
+    if (!BuildLiveConversionKeyAndTail(
+            *effective_composer, live_conversion_frozen_key_,
+            excluded_hiragana_chars, is_temp_half_ascii, &pred_key, &active_key,
+            &tail)) {
       if (pred_key.empty()) {
         return false;
       }
@@ -615,7 +672,7 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
     DCHECK(config_);
     const ConversionRequest live_request =
         ConversionRequestBuilder()
-            .SetComposer(composer)
+            .SetComposer(*effective_composer)
             .SetRequestView(*request_)
             .SetContextView(context)
             .SetConfigView(*config_)
@@ -630,10 +687,11 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
       return false;
     }
 
-    const bool cross_boundary_separated = TryCrossBoundaryEnglishFallback(
-        composer, context, live_request, base_live_options,
+    std::vector<size_t> step_split_offsets;
+    TryCrossBoundaryEnglishFallback(
+        *effective_composer, context, live_request, base_live_options,
         /*is_live=*/true, excluded_hiragana_chars, &pred_key, &tail,
-        /*out_split_offsets=*/nullptr);
+        &step_split_offsets);
 
     const bool prefix_freezing_enabled =
         config::GruConfigManager::IsLiveConversionPrefixFreezingEnabled(true);
@@ -642,9 +700,12 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
     const int32_t threshold =
         config::GruConfigManager::GetLiveConversionLengthThreshold(24);
 
-    if (!cross_boundary_separated &&
-        (prefix_freezing_enabled || auto_commit_enabled) &&
-        Util::CharsLen(active_key) >= static_cast<size_t>(threshold) &&
+    size_t active_conv_chars = 0;
+    for (const Segment& seg : segments_.conversion_segments()) {
+      active_conv_chars += seg.key_len();
+    }
+    if ((prefix_freezing_enabled || auto_commit_enabled) &&
+        active_conv_chars >= static_cast<size_t>(threshold) &&
         segments_.conversion_segments_size() >= 2) {
       const size_t k = CalculateFrontHalfSegmentsCount(segments_);
       if (k > 0 && k < segments_.conversion_segments_size()) {
@@ -654,6 +715,26 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
           live_conversion_frozen_segments_.push_back(std::move(frozen_seg));
         }
         segments_.erase_segments(segments_.history_segments_size(), k);
+
+        if (!step_split_offsets.empty()) {
+          std::optional<composer::Composer> post_step_storage;
+          const composer::Composer* post_step_composer =
+              ApplyRawSplitOffsetsIfAny(*effective_composer, step_split_offsets,
+                                         &post_step_storage);
+          const size_t frozen_preedit_chars =
+              Util::CharsLen(live_conversion_frozen_key_);
+          size_t frozen_raw_end = 0;
+          for (const composer::ChunkSpan& span :
+               post_step_composer->GetChunkSpans()) {
+            if (span.preedit_len > 0 &&
+                span.preedit_start + span.preedit_len <= frozen_preedit_chars) {
+              frozen_raw_end =
+                  std::max(frozen_raw_end, span.raw_start + span.raw_len);
+            }
+          }
+          AppendSortedUniqueOffsets(&live_conversion_frozen_split_offsets_,
+                                    step_split_offsets, frozen_raw_end);
+        }
 
         if (auto_commit_enabled) {
           auto_commit_pending_ = true;
@@ -792,6 +873,7 @@ bool EngineConverter::Predict(const composer::Composer& composer,
   live_conversion_tail_.clear();
   live_conversion_frozen_segments_.clear();
   live_conversion_frozen_key_.clear();
+  live_conversion_frozen_split_offsets_.clear();
   auto_commit_pending_ = false;
 
   // Initialize the segments and conversion_request for prediction
@@ -1125,7 +1207,11 @@ void EngineConverter::CommitSegmentsInternal(const composer::Composer& composer,
 void EngineConverter::CommitPreedit(const composer::Composer& composer,
                                     const commands::Context& context) {
   if (live_conversion_active_) {
-    const std::string conv_key = composer.GetQueryForConversion();
+    std::optional<composer::Composer> effective_composer_storage;
+    const composer::Composer* effective_composer = ApplyRawSplitOffsetsIfAny(
+        composer, live_conversion_frozen_split_offsets_,
+        &effective_composer_storage);
+    const std::string conv_key = effective_composer->GetQueryForConversion();
     // If a trailing 'n' was resolved to 'ん' by GetQueryForConversion()
     // (e.g. "kan" -> pred_key="か", conv_key="かん"), re-run conversion with
     // the full conversion key before committing.
@@ -1146,7 +1232,7 @@ void EngineConverter::CommitPreedit(const composer::Composer& composer,
         segments_.clear_conversion_segments();
         const ConversionRequest live_request =
             ConversionRequestBuilder()
-                .SetComposer(composer)
+                .SetComposer(*effective_composer)
                 .SetRequestView(*request_)
                 .SetContextView(context)
                 .SetConfigView(*config_)
@@ -1157,7 +1243,7 @@ void EngineConverter::CommitPreedit(const composer::Composer& composer,
             segments_.conversion_segments_size() > 0) {
           std::string sep_conv_key;
           if (TryCrossBoundaryEnglishFallback(
-                  composer, context, live_request, base_live_options,
+                  *effective_composer, context, live_request, base_live_options,
                   /*is_live=*/false, /*excluded_hiragana_chars=*/0,
                   &sep_conv_key, /*out_tail=*/nullptr,
                   /*out_split_offsets=*/nullptr) &&
@@ -1241,7 +1327,7 @@ void EngineConverter::CommitPreedit(const composer::Composer& composer,
       SetRequestType(ConversionRequest::CONVERSION, finish_options);
       const ConversionRequest conversion_request =
           ConversionRequestBuilder()
-              .SetComposer(composer)
+              .SetComposer(*effective_composer)
               .SetRequestView(*request_)
               .SetContextView(context)
               .SetConfigView(*config_)
@@ -1751,6 +1837,7 @@ void EngineConverter::ResetState() {
   live_conversion_tail_.clear();
   live_conversion_frozen_segments_.clear();
   live_conversion_frozen_key_.clear();
+  live_conversion_frozen_split_offsets_.clear();
   auto_commit_pending_ = false;
   live_conversion_presented_ = false;
   conversion_segment_resized_ = false;
@@ -1768,11 +1855,13 @@ void EngineConverter::SyncComposerAfterConversion(
 
 bool EngineConverter::BuildLiveConversionKeyAndTail(
     const composer::Composer& composer, absl::string_view frozen_key,
-    int32_t excluded_hiragana_chars, std::string* out_pred_key,
-    std::string* out_active_key, std::string* out_tail) {
+    int32_t excluded_hiragana_chars, bool is_temp_half_ascii,
+    std::string* out_pred_key, std::string* out_active_key,
+    std::string* out_tail) {
   const std::string pred_key = composer.GetQueryForPrediction();
   if (pred_key.empty() ||
-      !Util::ContainsScriptType(pred_key, Util::HIRAGANA)) {
+      (!Util::ContainsScriptType(pred_key, Util::HIRAGANA) &&
+       frozen_key.empty())) {
     out_pred_key->clear();
     out_active_key->clear();
     out_tail->clear();
@@ -1791,6 +1880,18 @@ bool EngineConverter::BuildLiveConversionKeyAndTail(
   std::string active_key = pred_key;
   if (!frozen_key.empty() && pred_key.starts_with(frozen_key)) {
     active_key = pred_key.substr(frozen_key.size());
+  }
+
+  if (is_temp_half_ascii && !active_key.empty()) {
+    size_t ascii_start = active_key.size();
+    while (ascii_start > 0 &&
+           static_cast<unsigned char>(active_key[ascii_start - 1]) < 0x80) {
+      --ascii_start;
+    }
+    if (ascii_start < active_key.size()) {
+      tail = absl::StrCat(active_key.substr(ascii_start), tail);
+      active_key.resize(ascii_start);
+    }
   }
 
   if (excluded_hiragana_chars > 0 && !active_key.empty()) {
@@ -1857,10 +1958,11 @@ bool EngineConverter::TryCrossBoundaryEnglishFallback(
   std::string sep_active_key;
   std::string sep_tail;
   if (is_live) {
-    if (!BuildLiveConversionKeyAndTail(separated_composer,
-                                       live_conversion_frozen_key_,
-                                       excluded_hiragana_chars, &sep_pred_key,
-                                       &sep_active_key, &sep_tail)) {
+    if (!BuildLiveConversionKeyAndTail(
+            separated_composer, live_conversion_frozen_key_,
+            excluded_hiragana_chars,
+            IsTemporaryHalfAsciiMode(separated_composer), &sep_pred_key,
+            &sep_active_key, &sep_tail)) {
       return false;
     }
     builder.SetOptions(std::move(sep_options));
@@ -2732,9 +2834,13 @@ size_t EngineConverter::CalculateFrontHalfSegmentsCount(
 bool EngineConverter::PopPendingAutoCommit(
     const composer::Composer& composer,
     const commands::Context& context,
-    size_t* consumed_key_chars) {
+    size_t* consumed_key_chars,
+    std::vector<size_t>* out_split_raw_offsets) {
   if (consumed_key_chars) {
     *consumed_key_chars = 0;
+  }
+  if (out_split_raw_offsets) {
+    out_split_raw_offsets->clear();
   }
   if (!auto_commit_pending_ || live_conversion_frozen_segments_.empty()) {
     return false;
@@ -2796,8 +2902,12 @@ bool EngineConverter::PopPendingAutoCommit(
         total_segs, total_chars, committed_key, committed_value, stats_path);
   }
 
+  if (out_split_raw_offsets) {
+    *out_split_raw_offsets = std::move(live_conversion_frozen_split_offsets_);
+  }
   live_conversion_frozen_segments_.clear();
   live_conversion_frozen_key_.clear();
+  live_conversion_frozen_split_offsets_.clear();
   auto_commit_pending_ = false;
 
   return true;

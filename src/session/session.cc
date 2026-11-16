@@ -1560,15 +1560,22 @@ bool Session::InsertCharacter(commands::Command* command) {
   }
 
   size_t auto_commit_key_chars = 0;
-  if (context_->mutable_converter()->PopPendingAutoCommit(
+  std::vector<size_t> auto_commit_split_offsets;
+  const bool popped_auto_commit =
+      context_->mutable_converter()->PopPendingAutoCommit(
           context_->composer(), command->input().context(),
-          &auto_commit_key_chars)) {
+          &auto_commit_key_chars, &auto_commit_split_offsets);
+  if (popped_auto_commit) {
+    if (!auto_commit_split_offsets.empty()) {
+      context_->mutable_composer()->SeparateChunksAtRawBoundaries(
+          auto_commit_split_offsets);
+    }
     if (auto_commit_key_chars > 0) {
       context_->mutable_composer()->DeleteRange(0, auto_commit_key_chars);
     }
   }
 
-  if (Suggest(command->input())) {
+  if (Suggest(command->input()) || popped_auto_commit) {
     Output(command);
     return true;
   }
