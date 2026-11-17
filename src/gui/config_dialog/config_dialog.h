@@ -84,6 +84,8 @@ class ConfigDialog : public QDialog, private Ui::ConfigDialog {
   virtual void CheckGruConfigFileModified();
   virtual void RefreshConversionStatsUi();
   virtual void ResetConversionStats();
+  virtual void RefreshAutoAlphaStatusUi();
+  virtual void ResetAutoAlpha();
   virtual void OnGruProfileChanged(int index);
   virtual void AddGruProfile();
   virtual void DeleteGruProfile();
@@ -122,6 +124,7 @@ class ConfigDialog : public QDialog, private Ui::ConfigDialog {
       keymapname_sessionkeymap_map_;
   std::string gru_config_path_;
   int64_t gru_config_mtime_ = 0;
+  int64_t alpha_state_mtime_ = 0;
   QTimer* gru_config_watch_timer_ = nullptr;
   GruPenaltyConfig cached_gru_config_;
   std::string current_dialog_profile_ = "default";

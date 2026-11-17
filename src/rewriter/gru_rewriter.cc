@@ -31,9 +31,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -70,6 +72,8 @@ ABSL_FLAG(bool, show_gru_score, true,
           "Show GRU score in candidate description.");
 ABSL_FLAG(double, gru_score_weight, 800.0,
           "Weight for GRU score combining with Viterbi cost.");
+ABSL_FLAG(bool, enable_gru_auto_alpha, true,
+          "Enable hybrid online + context-aware automatic alpha adjustment.");
 ABSL_FLAG(double, gru_katakana_multiplier, 1.3,
           "Score multiplier for all-katakana candidates (>= 1.0 penalizes).");
 ABSL_FLAG(double, gru_hiragana_multiplier, 1.1,
@@ -195,6 +199,8 @@ std::string GetHistoryPrefix(const ConversionRequest* request,
   return prefix;
 }
 
+constexpr size_t kMaxPrefixChars = 32;
+
 gruscorer::GruContext ComputePrefixContext(
     const gruscorer::GruModel& model,
     const charindex::CharIndex& indexer,
@@ -204,7 +210,6 @@ gruscorer::GruContext ComputePrefixContext(
   if (full.empty()) {
     return gruscorer::GruContext();
   }
-  constexpr size_t kMaxPrefixChars = 32;
   const size_t prefix_chars = Util::CharsLen(full);
   if (prefix_chars > kMaxPrefixChars) {
     full = std::string(Util::Utf8SubString(
@@ -215,16 +220,174 @@ gruscorer::GruContext ComputePrefixContext(
 
 struct CandidateScore {
   const Segment::Candidate* cand_ptr = nullptr;
+  int32_t viterbi_cost = 0;
   double combined_cost = 0.0;
   float gru_score = 0.0f;
   PenaltyType penalty_type = PenaltyType::NONE;
   double penalty_val = 0.0;
+  bool within_cost_diff = true;
   bool is_best = false;
 };
+
+size_t ComputeEffectivePrefixChars(const std::string& hist_prefix,
+                                   const std::string& current_prefix) {
+  return std::min(kMaxPrefixChars,
+                  Util::CharsLen(hist_prefix) + Util::CharsLen(current_prefix));
+}
+
+double ComputeDynamicAlpha(double alpha_base,
+                           size_t prefix_char_len,
+                           const std::vector<CandidateScore>& candidates,
+                           size_t max_stat_cands,
+                           bool enable_auto_alpha) {
+  if (!enable_auto_alpha || !std::isfinite(alpha_base) || alpha_base <= 0.0) {
+    return alpha_base;
+  }
+
+  const size_t clipped_ctx = std::min(prefix_char_len, kMaxPrefixChars);
+  const double ctx_ratio = std::min(1.0, static_cast<double>(clipped_ctx) / 16.0);
+  const double delta_ctx = -0.15 + 0.30 * ctx_ratio;
+
+  double min_mozc_cost = std::numeric_limits<double>::infinity();
+  double second_mozc_cost = std::numeric_limits<double>::infinity();
+  double max_gru_score = -std::numeric_limits<double>::infinity();
+  double second_gru_score = -std::numeric_limits<double>::infinity();
+  double max_non_emoji_gru = -std::numeric_limits<double>::infinity();
+  double second_non_emoji_gru = -std::numeric_limits<double>::infinity();
+  size_t valid_count = 0;
+  size_t valid_non_emoji_count = 0;
+
+  const size_t limit = std::min(candidates.size(), max_stat_cands);
+  for (size_t i = 0; i < limit; ++i) {
+    const CandidateScore& c = candidates[i];
+    if (!c.within_cost_diff) continue;
+    ++valid_count;
+
+    const double mozc_cost = static_cast<double>(c.viterbi_cost) + c.penalty_val;
+    if (mozc_cost < min_mozc_cost) {
+      second_mozc_cost = min_mozc_cost;
+      min_mozc_cost = mozc_cost;
+    } else if (mozc_cost < second_mozc_cost) {
+      second_mozc_cost = mozc_cost;
+    }
+
+    const double gs = static_cast<double>(c.gru_score);
+    if (gs > max_gru_score) {
+      second_gru_score = max_gru_score;
+      max_gru_score = gs;
+    } else if (gs > second_gru_score) {
+      second_gru_score = gs;
+    }
+
+    if (c.penalty_type != PenaltyType::EMOJI) {
+      ++valid_non_emoji_count;
+      if (gs > max_non_emoji_gru) {
+        second_non_emoji_gru = max_non_emoji_gru;
+        max_non_emoji_gru = gs;
+      } else if (gs > second_non_emoji_gru) {
+        second_non_emoji_gru = gs;
+      }
+    }
+  }
+
+  double delta_vit = 0.0;
+  double delta_gru = 0.0;
+  if (valid_count >= 2 && std::isfinite(second_mozc_cost)) {
+    const double gap_vit = std::max(0.0, second_mozc_cost - min_mozc_cost);
+    if (gap_vit <= 1000.0) {
+      delta_vit = 0.25 * (1.0 - gap_vit / 1000.0);
+    } else {
+      delta_vit = -0.25 * std::min(1.0, (gap_vit - 1000.0) / 1500.0);
+    }
+  }
+
+  const double ref_max_gs =
+      (valid_non_emoji_count >= 2) ? max_non_emoji_gru : max_gru_score;
+  const double ref_second_gs =
+      (valid_non_emoji_count >= 2) ? second_non_emoji_gru : second_gru_score;
+  const size_t ref_count =
+      (valid_non_emoji_count >= 2) ? valid_non_emoji_count : valid_count;
+
+  if (ref_count >= 2 && std::isfinite(ref_max_gs) &&
+      std::isfinite(ref_second_gs)) {
+    const double spread = std::max(0.0, ref_max_gs - ref_second_gs);
+    double spread_term = 0.0;
+    if (spread < 0.15) {
+      spread_term = -0.10 * (1.0 - spread / 0.15);
+    } else if (spread > 0.40) {
+      spread_term = 0.20 * std::min(1.0, (spread - 0.40) / 1.20);
+    }
+    double oov_damp = 0.0;
+    if (ref_max_gs < -6.0) {
+      oov_damp = -0.25 * std::min(1.0, (-6.0 - ref_max_gs) / 4.0);
+    }
+    delta_gru = std::clamp(spread_term + oov_damp, -0.30, 0.20);
+  } else if (valid_count == 1 && std::isfinite(max_gru_score) &&
+             max_gru_score < -6.0) {
+    delta_gru = -0.25 * std::min(1.0, (-6.0 - max_gru_score) / 4.0);
+  }
+
+  const double mult = std::clamp(1.0 + delta_ctx + delta_vit + delta_gru, 0.5, 1.5);
+  return alpha_base * mult;
+}
+
+std::vector<CandidateScore> EvaluateSegmentCandidates(
+    const gruscorer::GruModel& model,
+    const charindex::CharIndex& indexer,
+    const Segment& seg,
+    const gruscorer::GruContext& context,
+    size_t prefix_char_len,
+    size_t max_eval,
+    size_t max_stat_cands,
+    int32_t ref_min_cost,
+    const GruPenaltyConfig& penalty_config,
+    double alpha_base,
+    bool enable_auto_alpha,
+    double* out_alpha_eff) {
+  const size_t num_eval = std::min(seg.candidates_size(), max_eval);
+  std::vector<CandidateScore> scored;
+  scored.reserve(num_eval);
+
+  for (size_t i = 0; i < num_eval; ++i) {
+    const auto& cand = seg.candidate(i);
+    const bool is_emoji = IsCandidateEmoji(indexer, cand);
+    const float gru_score =
+        ScoreCandidateWithContext(model, indexer, cand, context, penalty_config);
+    const PenaltyResult penalty_res =
+        CalculatePenalty(cand, is_emoji, penalty_config);
+    const bool within = (cand.cost <= ref_min_cost + kMaxCostDiff);
+
+    CandidateScore cs;
+    cs.cand_ptr = &cand;
+    cs.viterbi_cost = cand.cost;
+    cs.gru_score = gru_score;
+    cs.penalty_type = penalty_res.type;
+    cs.penalty_val = penalty_res.penalty;
+    cs.within_cost_diff = within;
+    scored.push_back(cs);
+  }
+
+  const double alpha_eff = ComputeDynamicAlpha(
+      alpha_base, prefix_char_len, scored, max_stat_cands, enable_auto_alpha);
+  if (out_alpha_eff != nullptr) {
+    *out_alpha_eff = alpha_eff;
+  }
+
+  for (auto& cs : scored) {
+    double eval = static_cast<double>(cs.viterbi_cost) -
+                  (alpha_eff * cs.gru_score) + cs.penalty_val;
+    if (!cs.within_cost_diff) {
+      eval += 1e9;
+    }
+    cs.combined_cost = eval;
+  }
+  return scored;
+}
 
 void UpdateCandidateDescription(Segment::Candidate* cand,
                                 float gru_score,
                                 double combined_cost,
+                                double effective_alpha,
                                 PenaltyType penalty_type,
                                 double penalty_val,
                                 bool is_promoted) {
@@ -237,7 +400,8 @@ void UpdateCandidateDescription(Segment::Candidate* cand,
 
   std::string tag = (penalty_type == PenaltyType::EMOJI)
       ? absl::StrFormat("GRU:EMOJI[E:%.0f]", combined_cost)
-      : absl::StrFormat("GRU:%.2f%s[E:%.0f]", gru_score, penalty_tag, combined_cost);
+      : absl::StrFormat("GRU:%.2f%s[E:%.0f][α:%.0f]", gru_score, penalty_tag,
+                        combined_cost, effective_alpha);
   if (is_promoted) {
     tag += "*";
   }
@@ -262,6 +426,7 @@ void UpdateCandidateDescription(Segment::Candidate* cand,
 // Ensures that the candidate marked with is_best (if any) is placed at index 0.
 bool SortSegmentCandidates(Segment* seg,
                            std::vector<CandidateScore> scored,
+                           double effective_alpha,
                            bool show_score) {
   if (scored.empty()) return false;
 
@@ -298,7 +463,8 @@ bool SortSegmentCandidates(Segment* seg,
     const bool is_promoted = (i == 0 && cand != original_top);
     if (show_score) {
       UpdateCandidateDescription(cand, scored[i].gru_score, scored[i].combined_cost,
-                                 scored[i].penalty_type, scored[i].penalty_val, is_promoted);
+                                 effective_alpha, scored[i].penalty_type,
+                                 scored[i].penalty_val, is_promoted);
     }
   }
 
@@ -342,6 +508,7 @@ GruPenaltyConfig GruRewriter::GetPenaltyConfig() const {
     base.gru_chardata_path = absl::GetFlag(FLAGS_gru_chardata_path);
     base.gru_user_model_path = absl::GetFlag(FLAGS_gru_user_model_path);
     base.gru_score_weight = absl::GetFlag(FLAGS_gru_score_weight);
+    base.enable_auto_alpha = absl::GetFlag(FLAGS_enable_gru_auto_alpha);
     base.show_gru_score = absl::GetFlag(FLAGS_show_gru_score);
     base.katakana_multiplier = absl::GetFlag(FLAGS_gru_katakana_multiplier);
     base.hiragana_multiplier = absl::GetFlag(FLAGS_gru_hiragana_multiplier);
@@ -370,6 +537,8 @@ GruPenaltyConfig GruRewriter::GetPenaltyConfig() const {
               << ", enable_gru_rewriter=" << penalty_config_.enable_gru_rewriter
               << ", enable_live_conversion=" << penalty_config_.enable_live_conversion
               << ", gru_score_weight=" << penalty_config_.gru_score_weight
+              << ", enable_auto_alpha=" << penalty_config_.enable_auto_alpha
+              << ", alpha_base=" << alpha_base_
               << ", show_gru_score=" << penalty_config_.show_gru_score
               << ", katakana_multiplier=" << penalty_config_.katakana_multiplier
               << ", hiragana_multiplier=" << penalty_config_.hiragana_multiplier
@@ -377,9 +546,125 @@ GruPenaltyConfig GruRewriter::GetPenaltyConfig() const {
               << ", emoji_penalty=" << penalty_config_.emoji_penalty
               << ", enable_instant_mode=" << penalty_config_.enable_instant_mode
               << ", instant_learning_rate=" << penalty_config_.instant_learning_rate;
+  } else {
+    CheckAlphaStateFileExternalChangeLocked();
   }
 
   return penalty_config_;
+}
+
+double GruRewriter::GetEffectiveBaseAlphaLocked(
+    const GruPenaltyConfig& config) const {
+  if (!absl::GetFlag(FLAGS_enable_gru_auto_alpha) ||
+      !config.enable_auto_alpha ||
+      config.gru_score_weight <= 0.0) {
+    return config.gru_score_weight;
+  }
+  return alpha_base_;
+}
+
+void GruRewriter::SyncAlphaStateOnProfileLocked(
+    bool profile_or_path_changed) const {
+  const double anchor = penalty_config_.gru_score_weight;
+  const std::string target_alpha_path =
+      config::GruConfigManager::ResolveProfileAlphaStateFilePath(active_profile_);
+
+  if (profile_or_path_changed || alpha_state_path_ != target_alpha_path) {
+    alpha_state_path_ = target_alpha_path;
+    has_alpha_revert_snapshot_ = false;
+    if (anchor > 0.0 && !alpha_state_path_.empty()) {
+      const config::GruAlphaState state =
+          config::GruConfigManager::LoadAlphaState(
+              active_profile_, anchor, alpha_state_path_);
+      alpha_base_ = state.alpha_base;
+      alpha_anchor_ = anchor;
+      alpha_update_count_ = state.update_count;
+      const int64_t disk_mtime =
+          config::GruConfigManager::GetFileMtime(alpha_state_path_);
+      if (disk_mtime != 0 && state.update_count == 0) {
+        config::GruConfigManager::ResetAlphaState(active_profile_,
+                                                  alpha_state_path_);
+        last_alpha_mtime_ = 0;
+        loaded_has_alpha_state_ = false;
+      } else {
+        last_alpha_mtime_ = disk_mtime;
+        loaded_has_alpha_state_ = (disk_mtime != 0 && state.update_count > 0);
+      }
+    } else {
+      alpha_base_ = anchor;
+      alpha_anchor_ = anchor;
+      alpha_update_count_ = 0;
+      last_alpha_mtime_ = 0;
+      loaded_has_alpha_state_ = false;
+    }
+    return;
+  }
+
+  if (std::abs(alpha_anchor_ - anchor) > 1e-4) {
+    alpha_base_ = anchor;
+    alpha_anchor_ = anchor;
+    alpha_update_count_ = 0;
+    has_alpha_revert_snapshot_ = false;
+    loaded_has_alpha_state_ = false;
+    last_alpha_mtime_ = 0;
+    if (!alpha_state_path_.empty()) {
+      config::GruConfigManager::ResetAlphaState(active_profile_,
+                                                alpha_state_path_);
+    }
+  }
+}
+
+void GruRewriter::CheckAlphaStateFileExternalChangeLocked() const {
+  if (alpha_state_path_.empty()) {
+    return;
+  }
+  const int64_t cur_mtime =
+      config::GruConfigManager::GetFileMtime(alpha_state_path_);
+  if (loaded_has_alpha_state_ && cur_mtime == 0) {
+    alpha_base_ = penalty_config_.gru_score_weight;
+    alpha_anchor_ = penalty_config_.gru_score_weight;
+    alpha_update_count_ = 0;
+    has_alpha_revert_snapshot_ = false;
+    loaded_has_alpha_state_ = false;
+    last_alpha_mtime_ = 0;
+  } else if (cur_mtime != 0 && cur_mtime != last_alpha_mtime_) {
+    const config::GruAlphaState state =
+        config::GruConfigManager::LoadAlphaState(
+            active_profile_, penalty_config_.gru_score_weight, alpha_state_path_);
+    alpha_base_ = state.alpha_base;
+    alpha_anchor_ = state.anchor_alpha;
+    alpha_update_count_ = state.update_count;
+    has_alpha_revert_snapshot_ = false;
+    loaded_has_alpha_state_ = (state.update_count > 0);
+    last_alpha_mtime_ = cur_mtime;
+  }
+}
+
+bool GruRewriter::PrepareRuntimeTuning(const commands::Context* context,
+                                       GruPenaltyConfig* out_config,
+                                       double* out_alpha_base,
+                                       bool* out_enable_auto_alpha) const {
+  GruPenaltyConfig cfg = GetPenaltyConfig();
+  if (!cfg.enable_gru_rewriter) {
+    return false;
+  }
+  if (!EnsureInitialized()) {
+    return false;
+  }
+  absl::MutexLock l(mutex_);
+  CheckAndApplyAppProfileLocked(context);
+  if (out_config != nullptr) {
+    *out_config = penalty_config_;
+  }
+  if (out_alpha_base != nullptr) {
+    *out_alpha_base = GetEffectiveBaseAlphaLocked(penalty_config_);
+  }
+  if (out_enable_auto_alpha != nullptr) {
+    *out_enable_auto_alpha = absl::GetFlag(FLAGS_enable_gru_auto_alpha) &&
+                             penalty_config_.enable_auto_alpha &&
+                             penalty_config_.gru_score_weight > 0.0;
+  }
+  return true;
 }
 
 void GruRewriter::CheckAndApplyAppProfileLocked(
@@ -419,6 +704,7 @@ bool GruRewriter::SwitchProfileLocked(
           : config::GruConfigManager::ResolveProfileUserModelFilePath(
                 effective_profile, root_config.gru_user_model_path);
 
+  bool profile_or_path_changed = false;
   if (active_profile_ != effective_profile || user_model_path_ != target_user_model_path) {
     if (model_ && unsaved_updates_count_ > 0 && !user_model_path_.empty()) {
       model_->SaveModel(user_model_path_);
@@ -427,6 +713,7 @@ bool GruRewriter::SwitchProfileLocked(
 
     active_profile_ = effective_profile;
     user_model_path_ = target_user_model_path;
+    profile_or_path_changed = true;
 
     if (model_ && model_->is_loaded()) {
       loaded_has_user_model_ = model_->SwapUserWeights(user_model_path_);
@@ -435,6 +722,7 @@ bool GruRewriter::SwitchProfileLocked(
                 << "' with user model " << user_model_path_;
     }
   }
+  SyncAlphaStateOnProfileLocked(profile_or_path_changed);
   return true;
 }
 
@@ -546,16 +834,173 @@ bool GruRewriter::Reload() {
     loaded_model_path_.clear();
     user_model_path_.clear();
     config_file_path_.clear();
+    alpha_state_path_.clear();
     last_config_mtime_ = 0;
+    last_alpha_mtime_ = 0;
     last_config_check_time_ = absl::InfinitePast();
     last_revert_id_ = 0;
     unsaved_updates_count_ = 0;
     loaded_has_user_model_ = false;
+    loaded_has_alpha_state_ = false;
+    has_alpha_revert_snapshot_ = false;
     model_.reset();
     indexer_.reset();
   }
   (void)GetPenaltyConfig();
   return EnsureInitialized();
+}
+
+bool GruRewriter::UpdateAlphaOnFinishLocked(
+    const Segments& segments,
+    const std::string& hist_prefix,
+    const GruPenaltyConfig& penalty_config) const {
+  if (!model_ || !model_->is_loaded() || !indexer_) {
+    return false;
+  }
+  const double anchor_alpha = penalty_config.gru_score_weight;
+  if (!std::isfinite(anchor_alpha) || anchor_alpha <= 0.0) {
+    return false;
+  }
+
+  prev_alpha_base_ = alpha_base_;
+  prev_alpha_update_count_ = alpha_update_count_;
+  has_alpha_revert_snapshot_ = false;
+
+  const size_t start_seg_idx = segments.history_segments_size();
+  const size_t num_total = segments.segments_size();
+  const size_t num_target =
+      (num_total > start_seg_idx) ? (num_total - start_seg_idx) : 0;
+  const size_t stat_limit =
+      (num_target > 1) ? kMaxCandidatesPerSegmentForBeam : kMaxCandidateEvaluation;
+
+  std::string accum_text;
+  double total_delta = 0.0;
+  bool any_signal = false;
+
+  for (size_t i = start_seg_idx; i < num_total; ++i) {
+    const Segment& seg = segments.segment(i);
+    if (seg.candidates_size() == 0 || seg.segment_type() != Segment::FIXED_VALUE) {
+      continue;
+    }
+    const Segment::Candidate& chosen = seg.candidate(0);
+    const std::string chosen_val = chosen.value;
+
+    const bool skip_seg =
+        IsSymbolSegment(seg) || IsEnglishFallbackSegment(seg) ||
+        seg.candidates_size() <= 1 ||
+        ((chosen.attributes & (converter::Attribute::NO_HISTORY_LEARNING |
+                               converter::Attribute::COMMAND_CANDIDATE)) != 0);
+    if (skip_seg) {
+      accum_text.append(chosen_val);
+      continue;
+    }
+
+    const size_t num_eval = std::min(seg.candidates_size(), kMaxCandidateEvaluation);
+    int32_t min_cost = chosen.cost;
+    for (size_t j = 1; j < num_eval; ++j) {
+      min_cost = std::min(min_cost, seg.candidate(j).cost);
+    }
+    if (chosen.cost > min_cost + kMaxCostDiff) {
+      accum_text.append(chosen_val);
+      continue;
+    }
+
+    const gruscorer::GruContext seg_ctx =
+        ComputePrefixContext(*model_, *indexer_, hist_prefix, accum_text);
+    const size_t prefix_len = ComputeEffectivePrefixChars(hist_prefix, accum_text);
+
+    double alpha_eff = alpha_base_;
+    std::vector<CandidateScore> scored = EvaluateSegmentCandidates(
+        *model_, *indexer_, seg, seg_ctx, prefix_len, num_eval, stat_limit,
+        min_cost, penalty_config, alpha_base_, /*enable_auto_alpha=*/true,
+        &alpha_eff);
+
+    size_t best_rival_idx = 0;
+    bool found_rival = false;
+    for (size_t j = 1; j < scored.size(); ++j) {
+      if (!scored[j].within_cost_diff) {
+        continue;
+      }
+      if (!found_rival || scored[j].combined_cost < scored[best_rival_idx].combined_cost) {
+        best_rival_idx = j;
+        found_rival = true;
+      }
+    }
+
+    if (!found_rival) {
+      accum_text.append(chosen_val);
+      continue;
+    }
+
+    const CandidateScore& c_star = scored[0];
+    const CandidateScore& c_rival = scored[best_rival_idx];
+    const double m = alpha_eff / alpha_base_;
+    const double margin_cur = c_rival.combined_cost - c_star.combined_cost;
+    const double delta_s =
+        static_cast<double>(c_star.gru_score) - static_cast<double>(c_rival.gru_score);
+
+    const bool was_reranked =
+        (chosen.attributes & converter::Attribute::RERANKED) != 0;
+    constexpr double kErrTargetMargin = 200.0;
+    constexpr double kPosTargetMargin = 200.0;
+    constexpr double kErrStepRate = 0.50;
+    constexpr double kPosStepRate = 0.20;
+    constexpr double kPaReg = 0.25;
+
+    if (was_reranked || margin_cur < 0.0) {
+      const double loss = std::max(0.0, kErrTargetMargin - margin_cur);
+      if (loss > 0.0 && std::abs(delta_s) > 1e-4) {
+        const double eff_ds = m * delta_s;
+        total_delta += kErrStepRate * (loss * eff_ds) / (eff_ds * eff_ds + kPaReg);
+        any_signal = true;
+      }
+    } else {
+      const double mozc_cost_star =
+          static_cast<double>(c_star.viterbi_cost) + c_star.penalty_val;
+      const double mozc_cost_rival =
+          static_cast<double>(c_rival.viterbi_cost) + c_rival.penalty_val;
+      const bool gru_overruled_viterbi =
+          (mozc_cost_star > mozc_cost_rival) && (delta_s > 1e-4);
+      if (gru_overruled_viterbi && margin_cur < kPosTargetMargin) {
+        const double loss = kPosTargetMargin - margin_cur;
+        const double eff_ds = m * delta_s;
+        total_delta += kPosStepRate * (loss * eff_ds) / (eff_ds * eff_ds + kPaReg);
+        any_signal = true;
+      }
+    }
+
+    accum_text.append(chosen_val);
+  }
+
+  if (!any_signal) {
+    return false;
+  }
+
+  constexpr double kAnchorPullRate = 0.005;
+  total_delta -= kAnchorPullRate * (alpha_base_ - anchor_alpha);
+
+  const double max_step = 0.04 * anchor_alpha;
+  total_delta = std::clamp(total_delta, -max_step, max_step);
+
+  alpha_base_ = config::GruConfigManager::ClampAutoAlphaBase(
+      alpha_base_ + total_delta, anchor_alpha);
+  alpha_anchor_ = anchor_alpha;
+  ++alpha_update_count_;
+  has_alpha_revert_snapshot_ = true;
+
+  if (!alpha_state_path_.empty()) {
+    config::GruAlphaState state;
+    state.alpha_base = alpha_base_;
+    state.anchor_alpha = alpha_anchor_;
+    state.update_count = alpha_update_count_;
+    if (config::GruConfigManager::SaveAlphaState(
+            active_profile_, state, alpha_state_path_)) {
+      loaded_has_alpha_state_ = true;
+      last_alpha_mtime_ =
+          config::GruConfigManager::GetFileMtime(alpha_state_path_);
+    }
+  }
+  return true;
 }
 
 void GruRewriter::Finish(const ConversionRequest& request,
@@ -657,17 +1102,24 @@ void GruRewriter::Finish(const ConversionRequest& request,
     }
   }
 
-  if (!absl::GetFlag(FLAGS_enable_gru_online_learning)) {
-    return;
-  }
   if (request.incognito_mode()) {
     return;
   }
   if (request.config().history_learning_level() != config::Config::DEFAULT_HISTORY) {
     return;
   }
-  if (!penalty_config.enable_online_learning ||
-      penalty_config.online_learning_rate <= 0.0) {
+
+  const bool run_weight_learning =
+      absl::GetFlag(FLAGS_enable_gru_online_learning) &&
+      penalty_config.enable_online_learning &&
+      penalty_config.online_learning_rate > 0.0;
+  const bool run_auto_alpha =
+      absl::GetFlag(FLAGS_enable_gru_auto_alpha) &&
+      penalty_config.enable_auto_alpha &&
+      !penalty_config.enable_instant_mode &&
+      penalty_config.gru_score_weight > 0.0;
+
+  if (!run_weight_learning && !run_auto_alpha) {
     return;
   }
   if (!EnsureInitialized()) {
@@ -683,7 +1135,8 @@ void GruRewriter::Finish(const ConversionRequest& request,
       continue;
     }
     const Segment::Candidate& cand = seg.candidate(0);
-    if (cand.attributes & converter::Attribute::NO_HISTORY_LEARNING) {
+    if (cand.attributes & (converter::Attribute::NO_HISTORY_LEARNING |
+                           converter::Attribute::COMMAND_CANDIDATE)) {
       return;
     }
     committed_text.append(cand.value);
@@ -702,69 +1155,122 @@ void GruRewriter::Finish(const ConversionRequest& request,
   const std::string hist_prefix = GetHistoryPrefix(&request, segments);
 
   absl::MutexLock l(mutex_);
+  CheckAndApplyAppProfileLocked(&request.context());
+  const GruPenaltyConfig effective_config = penalty_config_;
   if (!model_ || !model_->is_loaded() || !indexer_) {
     return;
   }
 
-  const gruscorer::GruContext init_ctx =
-      ComputePrefixContext(*model_, *indexer_, hist_prefix, "");
+  const bool eff_run_auto_alpha =
+      absl::GetFlag(FLAGS_enable_gru_auto_alpha) &&
+      effective_config.enable_auto_alpha &&
+      !effective_config.enable_instant_mode &&
+      effective_config.gru_score_weight > 0.0;
+  const bool eff_run_weight_learning =
+      absl::GetFlag(FLAGS_enable_gru_online_learning) &&
+      effective_config.enable_online_learning &&
+      effective_config.online_learning_rate > 0.0;
 
-  gruscorer::TrainConfig train_cfg;
-  if (penalty_config.enable_instant_mode) {
-    train_cfg.instant_mode = true;
-    train_cfg.mode = gruscorer::TrainMode::kOutputOnly;
-    train_cfg.learning_rate = static_cast<float>(penalty_config.instant_learning_rate);
-    train_cfg.max_weight_delta = static_cast<float>(penalty_config.instant_max_weight_delta);
-    train_cfg.max_grad_norm = std::max(1.0f, train_cfg.learning_rate * 2.0f);
-    train_cfg.weight_decay = static_cast<float>(penalty_config.online_learning_weight_decay);
-  } else {
-    train_cfg.instant_mode = false;
-    if (penalty_config.online_learning_mode == "full" ||
-        penalty_config.online_learning_mode == "full_bptt") {
-      train_cfg.mode = gruscorer::TrainMode::kFullBptt;
-    } else {
-      train_cfg.mode = gruscorer::TrainMode::kOutputOnly;
-    }
-    train_cfg.learning_rate =
-        static_cast<float>(penalty_config.online_learning_rate);
-    train_cfg.weight_decay =
-        static_cast<float>(penalty_config.online_learning_weight_decay);
-    train_cfg.max_grad_norm = 1.0f;
-    train_cfg.max_weight_delta = 0.0f;
+  // Evaluate candidate scores with pre-update model weights before online training.
+  bool alpha_updated = false;
+  if (eff_run_auto_alpha) {
+    alpha_updated = UpdateAlphaOnFinishLocked(segments, hist_prefix, effective_config);
   }
 
-  model_->TrainOnStringWithContext(*indexer_, committed_text, init_ctx, train_cfg);
-  last_revert_id_ = segments.revert_id();
-  ++unsaved_updates_count_;
+  if (eff_run_weight_learning) {
+    const gruscorer::GruContext init_ctx =
+        ComputePrefixContext(*model_, *indexer_, hist_prefix, "");
 
-  const bool should_save_immediately = penalty_config.enable_instant_mode;
-  if ((should_save_immediately ||
-       (penalty_config.online_learning_save_interval > 0 &&
-        unsaved_updates_count_ >= penalty_config.online_learning_save_interval)) &&
-      !user_model_path_.empty()) {
-    if (model_->SaveModel(user_model_path_)) {
-      unsaved_updates_count_ = 0;
-      loaded_has_user_model_ = true;
+    gruscorer::TrainConfig train_cfg;
+    if (effective_config.enable_instant_mode) {
+      train_cfg.instant_mode = true;
+      train_cfg.mode = gruscorer::TrainMode::kOutputOnly;
+      train_cfg.learning_rate = static_cast<float>(effective_config.instant_learning_rate);
+      train_cfg.max_weight_delta = static_cast<float>(effective_config.instant_max_weight_delta);
+      train_cfg.max_grad_norm = std::max(1.0f, train_cfg.learning_rate * 2.0f);
+      train_cfg.weight_decay = static_cast<float>(effective_config.online_learning_weight_decay);
+    } else {
+      train_cfg.instant_mode = false;
+      if (effective_config.online_learning_mode == "full" ||
+          effective_config.online_learning_mode == "full_bptt") {
+        train_cfg.mode = gruscorer::TrainMode::kFullBptt;
+      } else {
+        train_cfg.mode = gruscorer::TrainMode::kOutputOnly;
+      }
+      train_cfg.learning_rate =
+          static_cast<float>(effective_config.online_learning_rate);
+      train_cfg.weight_decay =
+          static_cast<float>(effective_config.online_learning_weight_decay);
+      train_cfg.max_grad_norm = 1.0f;
+      train_cfg.max_weight_delta = 0.0f;
     }
+
+    model_->TrainOnStringWithContext(*indexer_, committed_text, init_ctx, train_cfg);
+    ++unsaved_updates_count_;
+
+    const bool should_save_immediately = effective_config.enable_instant_mode;
+    if ((should_save_immediately ||
+         (effective_config.online_learning_save_interval > 0 &&
+          unsaved_updates_count_ >= effective_config.online_learning_save_interval)) &&
+        !user_model_path_.empty()) {
+      if (model_->SaveModel(user_model_path_)) {
+        unsaved_updates_count_ = 0;
+        loaded_has_user_model_ = true;
+      }
+    }
+  }
+
+  if (alpha_updated || eff_run_weight_learning) {
+    last_revert_id_ = segments.revert_id();
   }
 }
 
 void GruRewriter::Revert(const Segments& segments) {
   absl::MutexLock l(mutex_);
-  if (!model_ || !model_->is_loaded() || !model_->has_revert_snapshot()) {
-    return;
-  }
   if (segments.revert_id() != 0 && segments.revert_id() != last_revert_id_) {
     return;
   }
-  if (model_->RevertLastTrainStep()) {
-    last_revert_id_ = 0;
-    if (unsaved_updates_count_ > 0) {
-      --unsaved_updates_count_;
-    } else if (!user_model_path_.empty() &&
-               std::filesystem::exists(user_model_path_)) {
-      model_->SaveModel(user_model_path_);
+
+  bool any_reverted = false;
+  if (model_ && model_->is_loaded() && model_->has_revert_snapshot()) {
+    if (model_->RevertLastTrainStep()) {
+      any_reverted = true;
+      if (unsaved_updates_count_ > 0) {
+        --unsaved_updates_count_;
+      } else if (!user_model_path_.empty() &&
+                 std::filesystem::exists(user_model_path_)) {
+        model_->SaveModel(user_model_path_);
+      }
     }
+  }
+
+  if (has_alpha_revert_snapshot_) {
+    alpha_base_ = prev_alpha_base_;
+    alpha_update_count_ = prev_alpha_update_count_;
+    has_alpha_revert_snapshot_ = false;
+    any_reverted = true;
+    if (!alpha_state_path_.empty()) {
+      if (alpha_update_count_ == 0) {
+        config::GruConfigManager::ResetAlphaState(active_profile_,
+                                                  alpha_state_path_);
+        loaded_has_alpha_state_ = false;
+        last_alpha_mtime_ = 0;
+      } else {
+        config::GruAlphaState state;
+        state.alpha_base = alpha_base_;
+        state.anchor_alpha = alpha_anchor_;
+        state.update_count = alpha_update_count_;
+        if (config::GruConfigManager::SaveAlphaState(
+                active_profile_, state, alpha_state_path_)) {
+          last_alpha_mtime_ =
+              config::GruConfigManager::GetFileMtime(alpha_state_path_);
+        }
+      }
+    }
+  }
+
+  if (any_reverted) {
+    last_revert_id_ = 0;
   }
 }
 
@@ -791,6 +1297,13 @@ void GruRewriter::Clear() {
   last_revert_id_ = 0;
   loaded_has_user_model_ = false;
 
+  alpha_base_ = penalty_config_.gru_score_weight;
+  alpha_anchor_ = penalty_config_.gru_score_weight;
+  alpha_update_count_ = 0;
+  has_alpha_revert_snapshot_ = false;
+  loaded_has_alpha_state_ = false;
+  last_alpha_mtime_ = 0;
+
   const std::string target_path =
       user_model_path_.empty()
           ? config::GruConfigManager::ResolveUserModelFilePath(
@@ -799,6 +1312,9 @@ void GruRewriter::Clear() {
   if (!target_path.empty() && std::filesystem::exists(target_path)) {
     std::error_code ec;
     std::filesystem::remove(target_path, ec);
+  }
+  if (!alpha_state_path_.empty()) {
+    config::GruConfigManager::ResetAlphaState(active_profile_, alpha_state_path_);
   }
 }
 
@@ -816,28 +1332,21 @@ bool GruRewriter::Rewrite(const ConversionRequest& request,
     return false;
   }
 
-  GruPenaltyConfig penalty_config = GetPenaltyConfig();
-  if (!penalty_config.enable_gru_rewriter) {
+  GruPenaltyConfig penalty_config;
+  double alpha_base = 800.0;
+  bool enable_auto_alpha = true;
+  if (!PrepareRuntimeTuning(&request.context(), &penalty_config, &alpha_base,
+                            &enable_auto_alpha)) {
     return false;
-  }
-
-  if (!EnsureInitialized()) {
-    return false;
-  }
-
-  {
-    absl::MutexLock l(mutex_);
-    CheckAndApplyAppProfileLocked(&request.context());
-    penalty_config = penalty_config_;
   }
 
   const std::string hist_prefix = GetHistoryPrefix(&request, *segments);
-  const double alpha = penalty_config.gru_score_weight;
   const bool show_score = penalty_config.show_gru_score;
 
   const size_t start_seg_idx = segments->history_segments_size();
   const bool modified = RerankSegmentsWithBeamSearch(
-      segments, start_seg_idx, hist_prefix, penalty_config, alpha, show_score);
+      segments, start_seg_idx, hist_prefix, penalty_config, alpha_base,
+      enable_auto_alpha, show_score);
 
   // Inline MoGRU command candidate suggestion:
   // Must NEVER be suggested during Live Conversion (to prevent auto-commit/conversion),
@@ -944,7 +1453,8 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
     size_t start_seg_idx,
     const std::string& prefix_context,
     const GruPenaltyConfig& penalty_config,
-    double alpha,
+    double alpha_base,
+    bool enable_auto_alpha,
     bool show_score) const {
   if (segments == nullptr || start_seg_idx >= segments->segments_size()) {
     return false;
@@ -963,6 +1473,7 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
     }
     const gruscorer::GruContext init_context =
         ComputePrefixContext(*model_, *indexer_, prefix_context, "");
+    const size_t prefix_len = ComputeEffectivePrefixChars(prefix_context, "");
 
     if (seg->candidates_size() <= 1) {
       if (seg->candidates_size() == 1 && show_score) {
@@ -970,40 +1481,27 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
         if (IsAlphabetCandidate(*cand)) {
           return false;
         }
-        const bool is_emoji = IsCandidateEmoji(*indexer_, *cand);
-        const float s =
-            ScoreCandidateWithContext(*model_, *indexer_, *cand, init_context,
-                                      penalty_config);
-        const PenaltyResult penalty_res =
-            CalculatePenalty(*cand, is_emoji, penalty_config);
-        double eval = static_cast<double>(cand->cost) - (alpha * s) + penalty_res.penalty;
-        UpdateCandidateDescription(cand, s, eval, penalty_res.type, penalty_res.penalty, false);
+        double alpha_eff = alpha_base;
+        std::vector<CandidateScore> scored = EvaluateSegmentCandidates(
+            *model_, *indexer_, *seg, init_context, prefix_len, 1, 1,
+            cand->cost, penalty_config, alpha_base, enable_auto_alpha,
+            &alpha_eff);
+        if (!scored.empty()) {
+          UpdateCandidateDescription(cand, scored[0].gru_score,
+                                     scored[0].combined_cost, alpha_eff,
+                                     scored[0].penalty_type,
+                                     scored[0].penalty_val, false);
+        }
       }
       return false;
     }
 
     const int32_t top_cost = seg->candidate(0).cost;
-    const size_t num_eval = std::min(seg->candidates_size(), kMaxCandidateEvaluation);
-
-    std::vector<CandidateScore> scored;
-    scored.reserve(num_eval);
-
-    for (size_t i = 0; i < num_eval; ++i) {
-      const auto& cand = seg->candidate(i);
-      const bool is_emoji = IsCandidateEmoji(*indexer_, cand);
-      const float gru_score =
-          ScoreCandidateWithContext(*model_, *indexer_, cand, init_context,
-                                    penalty_config);
-      const PenaltyResult penalty_res =
-          CalculatePenalty(cand, is_emoji, penalty_config);
-
-      double combined_cost = static_cast<double>(cand.cost) - (alpha * gru_score) + penalty_res.penalty;
-      if (cand.cost > top_cost + kMaxCostDiff) {
-        combined_cost += 1e9;
-      }
-
-      scored.push_back({&cand, combined_cost, gru_score, penalty_res.type, penalty_res.penalty, false});
-    }
+    double alpha_eff = alpha_base;
+    std::vector<CandidateScore> scored = EvaluateSegmentCandidates(
+        *model_, *indexer_, *seg, init_context, prefix_len,
+        kMaxCandidateEvaluation, kMaxCandidateEvaluation, top_cost,
+        penalty_config, alpha_base, enable_auto_alpha, &alpha_eff);
 
     auto best_it = std::min_element(
         scored.begin(), scored.end(),
@@ -1014,7 +1512,7 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
       best_it->is_best = true;
     }
 
-    return SortSegmentCandidates(seg, std::move(scored), show_score);
+    return SortSegmentCandidates(seg, std::move(scored), alpha_eff, show_score);
   }
 
   // Multi-segment beam search optimization
@@ -1043,23 +1541,31 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
             : std::min(seg0.candidates_size(), kMaxCandidatesPerSegmentForBeam);
     const gruscorer::GruContext init_context =
         ComputePrefixContext(*model_, *indexer_, prefix_context, "");
+    const size_t prefix_len = ComputeEffectivePrefixChars(prefix_context, "");
 
-    for (size_t j = 0; j < num_eval; ++j) {
-      const auto& cand = seg0.candidate(j);
-      if (cand.cost > top_cost + kMaxCostDiff) continue;
-
-      const bool is_emoji =
-          !bypass_seg0 && IsCandidateEmoji(*indexer_, cand);
-      const float score =
-          bypass_seg0 ? 0.0f
-                      : ScoreCandidateWithContext(*model_, *indexer_, cand,
-                                                  init_context, penalty_config);
-      const PenaltyResult penalty_res =
-          CalculatePenalty(cand, is_emoji, penalty_config);
-
-      double eval = static_cast<double>(cand.cost) - (alpha * score) + penalty_res.penalty;
-
-      beam.push_back({{j}, cand.value, cand.cost, score, eval, is_emoji});
+    if (bypass_seg0) {
+      for (size_t j = 0; j < num_eval; ++j) {
+        const auto& cand = seg0.candidate(j);
+        if (cand.cost > top_cost + kMaxCostDiff) continue;
+        const PenaltyResult penalty_res =
+            CalculatePenalty(cand, /*is_emoji=*/false, penalty_config);
+        const double eval =
+            static_cast<double>(cand.cost) + penalty_res.penalty;
+        beam.push_back({{j}, cand.value, cand.cost, 0.0f, eval, false});
+      }
+    } else {
+      double alpha_eff = alpha_base;
+      std::vector<CandidateScore> scored = EvaluateSegmentCandidates(
+          *model_, *indexer_, seg0, init_context, prefix_len, num_eval,
+          kMaxCandidatesPerSegmentForBeam, top_cost, penalty_config, alpha_base,
+          enable_auto_alpha, &alpha_eff);
+      for (size_t j = 0; j < scored.size(); ++j) {
+        if (!scored[j].within_cost_diff) continue;
+        const auto& cand = seg0.candidate(j);
+        const bool is_emoji = (scored[j].penalty_type == PenaltyType::EMOJI);
+        beam.push_back({{j}, cand.value, cand.cost, scored[j].gru_score,
+                        scored[j].combined_cost, is_emoji});
+      }
     }
 
     std::sort(beam.begin(), beam.end(),
@@ -1084,30 +1590,48 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
     next_beam.reserve(beam.size() * num_eval);
 
     for (const auto& path : beam) {
+      if (bypass_seg) {
+        for (size_t j = 0; j < num_eval; ++j) {
+          const auto& cand = seg.candidate(j);
+          if (cand.cost > top_cost + kMaxCostDiff) continue;
+          const PenaltyResult penalty_res =
+              CalculatePenalty(cand, path.has_emoji, penalty_config);
+          const double cand_eval =
+              static_cast<double>(cand.cost) + penalty_res.penalty;
+          std::vector<size_t> new_indices = path.indices;
+          new_indices.push_back(j);
+          next_beam.push_back({std::move(new_indices), path.text + cand.value,
+                               path.total_viterbi_cost + cand.cost, 0.0f,
+                               path.eval_score + cand_eval, path.has_emoji});
+        }
+        continue;
+      }
+
       const gruscorer::GruContext path_ctx =
           ComputePrefixContext(*model_, *indexer_, prefix_context, path.text);
-      for (size_t j = 0; j < num_eval; ++j) {
+      const size_t prefix_len =
+          ComputeEffectivePrefixChars(prefix_context, path.text);
+      double alpha_eff = alpha_base;
+      std::vector<CandidateScore> scored = EvaluateSegmentCandidates(
+          *model_, *indexer_, seg, path_ctx, prefix_len, num_eval,
+          kMaxCandidatesPerSegmentForBeam, top_cost, penalty_config, alpha_base,
+          enable_auto_alpha, &alpha_eff);
+
+      for (size_t j = 0; j < scored.size(); ++j) {
+        if (!scored[j].within_cost_diff) continue;
         const auto& cand = seg.candidate(j);
-        if (cand.cost > top_cost + kMaxCostDiff) continue;
-
         const bool is_emoji =
-            path.has_emoji || (!bypass_seg && IsCandidateEmoji(*indexer_, cand));
-        const float cand_score =
-            bypass_seg ? 0.0f
-                       : ScoreCandidateWithContext(*model_, *indexer_, cand,
-                                                   path_ctx, penalty_config);
-        const int32_t new_viterbi = path.total_viterbi_cost + cand.cost;
-
-        const PenaltyResult penalty_res =
-            CalculatePenalty(cand, is_emoji, penalty_config);
-        double cand_eval = static_cast<double>(cand.cost) - (alpha * cand_score) + penalty_res.penalty;
-        double total_eval = path.eval_score + cand_eval;
-
+            path.has_emoji || (scored[j].penalty_type == PenaltyType::EMOJI);
+        double cand_eval = scored[j].combined_cost;
+        if (path.has_emoji && scored[j].penalty_type != PenaltyType::EMOJI) {
+          cand_eval += penalty_config.emoji_penalty;
+        }
         std::vector<size_t> new_indices = path.indices;
         new_indices.push_back(j);
-
         next_beam.push_back({std::move(new_indices), path.text + cand.value,
-                             new_viterbi, cand_score, total_eval, is_emoji});
+                             path.total_viterbi_cost + cand.cost,
+                             scored[j].gru_score, path.eval_score + cand_eval,
+                             is_emoji});
       }
     }
 
@@ -1140,32 +1664,20 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
     const size_t best_cand_idx = (rel_idx < best_path.indices.size()) ? best_path.indices[rel_idx] : 0;
     const gruscorer::GruContext seg_ctx =
         ComputePrefixContext(*model_, *indexer_, prefix_context, accum_text);
+    const size_t prefix_len =
+        ComputeEffectivePrefixChars(prefix_context, accum_text);
 
     const int32_t top_cost = seg->candidate(0).cost;
-    const size_t num_eval = std::min(seg->candidates_size(), kMaxCandidateEvaluation);
-
-    std::vector<CandidateScore> scored;
-    scored.reserve(num_eval);
-
-    for (size_t j = 0; j < num_eval; ++j) {
-      const auto& cand = seg->candidate(j);
-      const bool is_emoji = IsCandidateEmoji(*indexer_, cand);
-      const float score =
-          ScoreCandidateWithContext(*model_, *indexer_, cand, seg_ctx,
-                                    penalty_config);
-      const PenaltyResult penalty_res =
-          CalculatePenalty(cand, is_emoji, penalty_config);
-
-      double eval = static_cast<double>(cand.cost) - (alpha * score) + penalty_res.penalty;
-      if (cand.cost > top_cost + kMaxCostDiff) {
-        eval += 1e9;
-      }
-
-      const bool is_best = (j == best_cand_idx);
-      scored.push_back({&cand, eval, score, penalty_res.type, penalty_res.penalty, is_best});
+    double alpha_eff = alpha_base;
+    std::vector<CandidateScore> scored = EvaluateSegmentCandidates(
+        *model_, *indexer_, *seg, seg_ctx, prefix_len, kMaxCandidateEvaluation,
+        kMaxCandidatesPerSegmentForBeam, top_cost, penalty_config, alpha_base,
+        enable_auto_alpha, &alpha_eff);
+    if (best_cand_idx < scored.size()) {
+      scored[best_cand_idx].is_best = true;
     }
 
-    if (SortSegmentCandidates(seg, std::move(scored), show_score)) {
+    if (SortSegmentCandidates(seg, std::move(scored), alpha_eff, show_score)) {
       any_modified = true;
     }
 
@@ -1196,16 +1708,14 @@ bool GruRewriter::Focus(Segments* segments, size_t segment_index,
     return false;
   }
 
-  const GruPenaltyConfig penalty_config = GetPenaltyConfig();
-  if (!penalty_config.enable_gru_rewriter) {
+  GruPenaltyConfig penalty_config;
+  double alpha_base = 800.0;
+  bool enable_auto_alpha = true;
+  if (!PrepareRuntimeTuning(nullptr, &penalty_config, &alpha_base,
+                            &enable_auto_alpha)) {
     return false;
   }
 
-  if (!EnsureInitialized()) {
-    return false;
-  }
-
-  const double alpha = penalty_config.gru_score_weight;
   const bool show_score = penalty_config.show_gru_score;
 
   // Build prefix text up to segment_index, incorporating the chosen candidate.
@@ -1223,8 +1733,8 @@ bool GruRewriter::Focus(Segments* segments, size_t segment_index,
   // 1. Resegment subsequent segments if enabled and supported.
   if (penalty_config.enable_resegmentation && immutable_converter_ != nullptr) {
     auto reseg_result = EvaluateResegmentation(
-        *segments, next_segment_index, prefix_text, penalty_config, alpha,
-        segment_index, candidate_index);
+        *segments, next_segment_index, prefix_text, penalty_config, alpha_base,
+        enable_auto_alpha, segment_index, candidate_index);
     if (reseg_result.has_value()) {
       MOZC_VLOG(1) << "GruRewriter::Focus triggered resegmentation: diff="
                    << reseg_result->score_diff;
@@ -1247,7 +1757,8 @@ bool GruRewriter::Focus(Segments* segments, size_t segment_index,
 
   // 2. Rerank subsequent segments based on the chosen candidate prefix.
   modified |= RerankSegmentsWithBeamSearch(
-      segments, next_segment_index, prefix_text, penalty_config, alpha, show_score);
+      segments, next_segment_index, prefix_text, penalty_config, alpha_base,
+      enable_auto_alpha, show_score);
   return modified;
 }
 
@@ -1296,17 +1807,17 @@ bool GruRewriter::CanCheckConversionResegmentation(
   return true;
 }
 
-std::optional<GruPenaltyConfig> GruRewriter::PrepareResegmentationConfig()
-    const {
+std::optional<GruPenaltyConfig> GruRewriter::PrepareResegmentationConfig(
+    const commands::Context* context,
+    double* out_alpha_base,
+    bool* out_enable_auto_alpha) const {
   if (immutable_converter_ == nullptr) {
     return std::nullopt;
   }
-  const GruPenaltyConfig penalty_config = GetPenaltyConfig();
-  if (!penalty_config.enable_gru_rewriter ||
+  GruPenaltyConfig penalty_config;
+  if (!PrepareRuntimeTuning(context, &penalty_config, out_alpha_base,
+                            out_enable_auto_alpha) ||
       !penalty_config.enable_resegmentation) {
-    return std::nullopt;
-  }
-  if (!EnsureInitialized()) {
     return std::nullopt;
   }
   return penalty_config;
@@ -1348,18 +1859,21 @@ GruRewriter::CheckResizeSegmentsRequest(const ConversionRequest& request,
     }
   }
 
+  double alpha_base = 800.0;
+  bool enable_auto_alpha = true;
   const std::optional<GruPenaltyConfig> penalty_config =
-      PrepareResegmentationConfig();
+      PrepareResegmentationConfig(&request.context(), &alpha_base,
+                                  &enable_auto_alpha);
   if (!penalty_config.has_value()) {
     return std::nullopt;
   }
 
   const std::string hist_prefix = GetHistoryPrefix(&request, segments);
-  const double alpha = penalty_config->gru_score_weight;
   const size_t start_seg_idx = segments.history_segments_size();
 
   auto result = EvaluateResegmentation(
-      segments, start_seg_idx, hist_prefix, *penalty_config, alpha);
+      segments, start_seg_idx, hist_prefix, *penalty_config, alpha_base,
+      enable_auto_alpha);
   if (!result.has_value()) {
     return std::nullopt;
   }
@@ -1375,13 +1889,15 @@ GruRewriter::CheckAdditionalResizeSegmentsRequest(
     return std::nullopt;
   }
 
+  double alpha_base = 800.0;
+  bool enable_auto_alpha = true;
   const std::optional<GruPenaltyConfig> penalty_config =
-      PrepareResegmentationConfig();
+      PrepareResegmentationConfig(&request.context(), &alpha_base,
+                                  &enable_auto_alpha);
   if (!penalty_config.has_value()) {
     return std::nullopt;
   }
 
-  const double alpha = penalty_config->gru_score_weight;
   std::string running_prefix = GetHistoryPrefix(&request, segments);
   const size_t history_size = segments.history_segments_size();
   const size_t total_size = segments.segments_size();
@@ -1405,8 +1921,8 @@ GruRewriter::CheckAdditionalResizeSegmentsRequest(
     const size_t span_end = idx;
 
     auto result = EvaluateResegmentation(
-        segments, span_start, running_prefix, *penalty_config, alpha,
-        static_cast<size_t>(-1), 0, span_end);
+        segments, span_start, running_prefix, *penalty_config, alpha_base,
+        enable_auto_alpha, static_cast<size_t>(-1), 0, span_end);
     if (result.has_value()) {
       return BuildResizeSegmentsRequest(span_start - history_size,
                                         result->new_sizes);
@@ -1426,6 +1942,7 @@ std::optional<GruRewriter::ResegmentResult> GruRewriter::EvaluateResegmentation(
     const std::string& prefix_context,
     const GruPenaltyConfig& penalty_config,
     double alpha,
+    bool enable_auto_alpha,
     size_t focused_seg_idx,
     int focused_cand_idx,
     size_t end_seg_idx) const {
@@ -1561,8 +2078,13 @@ std::optional<GruRewriter::ResegmentResult> GruRewriter::EvaluateResegmentation(
     }
   }
 
+  double effective_threshold = penalty_config.resegment_threshold;
+  if (enable_auto_alpha && penalty_config.gru_score_weight > 0.0 && alpha > 0.0) {
+    effective_threshold *= (alpha / penalty_config.gru_score_weight);
+  }
+
   if (best_sizes != default_sizes &&
-      (default_eval_score - best_eval_score) >= penalty_config.resegment_threshold) {
+      (default_eval_score - best_eval_score) >= effective_threshold) {
     return ResegmentResult{std::move(best_sizes), default_eval_score - best_eval_score};
   }
 

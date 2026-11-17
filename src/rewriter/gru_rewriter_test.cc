@@ -75,11 +75,20 @@ class GruRewriterTest : public mozc::testing::TestWithTempUserProfile {
     }
     config::GruConfigManager::InvalidateConfigCache();
     absl::SetFlag(&FLAGS_enable_gru_rewriter, true);
+    absl::SetFlag(&FLAGS_enable_gru_auto_alpha, true);
+    absl::SetFlag(&FLAGS_gru_score_weight, 800.0);
+    for (const char* prof : {"default", "business", "coding", "casual", "creative", "instant"}) {
+      config::GruConfigManager::ResetAlphaState(prof);
+    }
     rewriter_ = std::make_unique<GruRewriter>();
   }
 
   void TearDown() override {
+    for (const char* prof : {"default", "business", "coding", "casual", "creative", "instant"}) {
+      config::GruConfigManager::ResetAlphaState(prof);
+    }
     absl::SetFlag(&FLAGS_gru_config_path, "");
+    absl::SetFlag(&FLAGS_enable_gru_auto_alpha, true);
     config::GruConfigManager::InvalidateConfigCache();
     TestWithTempUserProfile::TearDown();
   }
@@ -2172,6 +2181,418 @@ TEST_F(GruRewriterTest,
     EXPECT_EQ(seg1->candidate(0).value, "いい天気");
     EXPECT_NE(seg1->candidate(0).description.find("GRU:"), std::string::npos);
   }
+
+  std::filesystem::remove(test_config, ec);
+  absl::SetFlag(&FLAGS_gru_config_path, "");
+}
+
+TEST_F(GruRewriterTest, AutoAlphaConfigRoundTripAndScaleInvariantBounds) {
+  // Scale-invariant clamping must hold cleanly across tiny, default, and huge anchors.
+  EXPECT_DOUBLE_EQ(config::GruConfigManager::ClampAutoAlphaBase(100.0, 800.0), 200.0);
+  EXPECT_DOUBLE_EQ(config::GruConfigManager::ClampAutoAlphaBase(3000.0, 800.0), 2000.0);
+  EXPECT_DOUBLE_EQ(config::GruConfigManager::ClampAutoAlphaBase(5.0, 50.0), 12.5);
+  EXPECT_DOUBLE_EQ(config::GruConfigManager::ClampAutoAlphaBase(500.0, 50.0), 125.0);
+  EXPECT_DOUBLE_EQ(config::GruConfigManager::ClampAutoAlphaBase(500.0, 10000.0), 2500.0);
+  EXPECT_DOUBLE_EQ(config::GruConfigManager::ClampAutoAlphaBase(30000.0, 10000.0), 25000.0);
+  EXPECT_DOUBLE_EQ(config::GruConfigManager::ClampAutoAlphaBase(500.0, 0.0), 0.0);
+
+  // Round-trip enable_auto_alpha in gru_config.ini (root + profile override).
+  const std::string test_config = FileUtil::JoinPath(
+      std::filesystem::temp_directory_path().string(),
+      "gru_auto_alpha_roundtrip.ini");
+  std::error_code ec;
+  std::filesystem::remove(test_config, ec);
+
+  GruPenaltyConfig saved;
+  saved.enable_auto_alpha = false;
+  GruPenaltyConfig coding_prof = saved;
+  coding_prof.current_profile = "coding";
+  coding_prof.enable_auto_alpha = true;
+  saved.profiles["coding"] = coding_prof;
+
+  ASSERT_TRUE(config::GruConfigManager::SaveConfig(saved, test_config));
+  const GruPenaltyConfig loaded = config::GruConfigManager::LoadConfig(test_config);
+  EXPECT_FALSE(loaded.enable_auto_alpha);
+  EXPECT_TRUE(config::GruConfigManager::GetEffectiveProfileConfig(loaded, "coding")
+                  .enable_auto_alpha);
+
+  // Profile alpha state persistence, anchor mismatch reset, and DeleteProfile cleanup.
+  const std::string alpha_path =
+      config::GruConfigManager::ResolveProfileAlphaStateFilePath("customalpha");
+  ASSERT_FALSE(alpha_path.empty());
+  config::GruAlphaState st;
+  st.alpha_base = 1050.0;
+  st.anchor_alpha = 800.0;
+  st.update_count = 7;
+  ASSERT_TRUE(config::GruConfigManager::SaveAlphaState("customalpha", st, alpha_path));
+  EXPECT_TRUE(std::filesystem::exists(alpha_path));
+
+  const config::GruAlphaState loaded_st =
+      config::GruConfigManager::LoadAlphaState("customalpha", 800.0, alpha_path);
+  EXPECT_NEAR(loaded_st.alpha_base, 1050.0, 1e-4);
+  EXPECT_NEAR(loaded_st.anchor_alpha, 800.0, 1e-4);
+  EXPECT_EQ(loaded_st.update_count, 7);
+
+  // If user changed gru_score_weight to 1200.0, LoadAlphaState resets back to 1200.0.
+  const config::GruAlphaState reset_on_anchor_change =
+      config::GruConfigManager::LoadAlphaState("customalpha", 1200.0, alpha_path);
+  EXPECT_NEAR(reset_on_anchor_change.alpha_base, 1200.0, 1e-4);
+  EXPECT_EQ(reset_on_anchor_change.update_count, 0);
+
+  GruPenaltyConfig root_for_del;
+  config::GruConfigManager::AddProfile(&root_for_del, "customalpha");
+  EXPECT_TRUE(config::GruConfigManager::DeleteProfile(
+      &root_for_del, "customalpha", /*remove_data_files=*/true));
+  EXPECT_FALSE(std::filesystem::exists(alpha_path));
+
+  std::filesystem::remove(test_config, ec);
+}
+
+TEST_F(GruRewriterTest, DynamicAlphaScalesWithContextAndViterbiCloseness) {
+  const std::string test_config = FileUtil::JoinPath(
+      std::filesystem::temp_directory_path().string(),
+      "gru_dynamic_alpha_config.ini");
+  std::error_code ec;
+  std::filesystem::remove(test_config, ec);
+
+  auto write_cfg = [&](bool auto_alpha) {
+    GruPenaltyConfig cfg;
+    cfg.enable_gru_rewriter = true;
+    cfg.show_gru_score = true;
+    cfg.gru_score_weight = 800.0;
+    cfg.enable_auto_alpha = auto_alpha;
+    ASSERT_TRUE(config::GruConfigManager::SaveConfig(cfg, test_config));
+  };
+
+  auto extract_alpha = [](const std::string& desc) -> double {
+    const size_t pos = desc.find("[α:");
+    if (pos == std::string::npos) return -1.0;
+    const size_t start = pos + std::string("[α:").size();
+    const size_t end = desc.find(']', start);
+    if (end == std::string::npos) return -1.0;
+    double val = -1.0;
+    if (!absl::SimpleAtod(desc.substr(start, end - start), &val)) return -1.0;
+    return val;
+  };
+
+  // 1. With enable_auto_alpha = false, effective alpha must stay strictly at 800.
+  write_cfg(false);
+  absl::SetFlag(&FLAGS_gru_config_path, test_config);
+  ASSERT_TRUE(rewriter_->Reload());
+  {
+    ConversionRequest request;
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("きかい");
+    AddCandidate("きかい", "機会", 1000, seg);
+    AddCandidate("きかい", "機械", 1000, seg);
+    rewriter_->Rewrite(request, &segments);
+    EXPECT_NEAR(extract_alpha(seg->candidate(0).description), 800.0, 1.0);
+  }
+
+  // 2. With enable_auto_alpha = true:
+  //    - No context + huge Viterbi gap -> reduced alpha (< 800)
+  //    - Long context (>= 16 chars) + tied Viterbi costs -> boosted alpha (> 800)
+  write_cfg(true);
+  std::filesystem::last_write_time(
+      test_config,
+      std::filesystem::last_write_time(test_config) + std::chrono::seconds(2),
+      ec);
+  ASSERT_TRUE(rewriter_->Reload());
+
+  double alpha_low = 0.0;
+  {
+    ConversionRequest request;
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("きょうは");
+    AddCandidate("きょうは", "今日は", 1000, seg);
+    AddCandidate("きょうは", "教派", 4500, seg);  // huge Viterbi gap
+    rewriter_->Rewrite(request, &segments);
+    alpha_low = extract_alpha(seg->candidate(0).description);
+    EXPECT_GE(alpha_low, 400.0);
+    EXPECT_LT(alpha_low, 800.0);
+  }
+
+  double alpha_high = 0.0;
+  {
+    commands::Context ctx;
+    // 18 chars of Japanese context (>= 16 chars full context ramp)
+    ctx.set_preceding_text("最新の人工知能技術を用いた産業用の");
+    ConversionRequest request =
+        ConversionRequestBuilder().SetContext(ctx).Build();
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("きかい");
+    AddCandidate("きかい", "機会", 1000, seg);
+    AddCandidate("きかい", "機械", 1000, seg);  // tied Viterbi cost
+    rewriter_->Rewrite(request, &segments);
+    alpha_high = extract_alpha(seg->candidate(0).description);
+    EXPECT_GT(alpha_high, 800.0);
+    EXPECT_LE(alpha_high, 1200.0);
+  }
+  EXPECT_GT(alpha_high, alpha_low);
+
+  std::filesystem::remove(test_config, ec);
+  absl::SetFlag(&FLAGS_gru_config_path, "");
+}
+
+TEST_F(GruRewriterTest, AutoAlphaOnlineUpdateDirectionRevertAndPersistence) {
+  const std::string test_config = FileUtil::JoinPath(
+      std::filesystem::temp_directory_path().string(),
+      "gru_auto_alpha_online.ini");
+  std::error_code ec;
+  std::filesystem::remove(test_config, ec);
+
+  auto write_cfg = [&](double weight, bool instant) {
+    GruPenaltyConfig cfg;
+    cfg.enable_gru_rewriter = true;
+    cfg.gru_score_weight = weight;
+    cfg.enable_auto_alpha = true;
+    cfg.enable_online_learning = false;  // Verify independence from GRU weight training
+    cfg.enable_instant_mode = instant;
+    ASSERT_TRUE(config::GruConfigManager::SaveConfig(cfg, test_config));
+  };
+
+  write_cfg(800.0, false);
+  absl::SetFlag(&FLAGS_gru_config_path, test_config);
+  ASSERT_TRUE(rewriter_->Reload());
+  EXPECT_NEAR(rewriter_->alpha_base(), 800.0, 1e-4);
+  EXPECT_EQ(rewriter_->alpha_update_count(), 0);
+
+  // Helper to measure candidate GRU scores in current model.
+  auto get_scores = [&](const std::string& prefix,
+                        const std::string& cand_a,
+                        const std::string& cand_b) -> std::pair<float, float> {
+    commands::Context ctx;
+    if (!prefix.empty()) ctx.set_preceding_text(prefix);
+    ConversionRequest req = ConversionRequestBuilder().SetContext(ctx).Build();
+    Segments segs;
+    Segment* s = segs.add_segment();
+    s->set_key("きかい");
+    AddCandidate("きかい", cand_a, 1000, s);
+    AddCandidate("きかい", cand_b, 1000, s);
+    rewriter_->Rewrite(req, &segs);
+    auto parse_s = [](const std::string& desc) -> float {
+      const size_t p = desc.find("GRU:");
+      if (p == std::string::npos) return 0.0f;
+      const size_t b = desc.find('[', p);
+      float v = 0.0f;
+      (void)absl::SimpleAtof(desc.substr(p + 4, b - (p + 4)), &v);
+      return v;
+    };
+    float sa = 0.0f, sb = 0.0f;
+    for (size_t i = 0; i < s->candidates_size(); ++i) {
+      if (s->candidate(i).value == cand_a) sa = parse_s(s->candidate(i).description);
+      if (s->candidate(i).value == cand_b) sb = parse_s(s->candidate(i).description);
+    }
+    return {sa, sb};
+  };
+
+  // Pick a pair where one candidate genuinely has higher GRU score than the other.
+  const auto [s_kikai, s_kiakai] = get_scores("最新の", "機械", "奇怪");
+  const std::string higher_gru_cand = (s_kikai >= s_kiakai) ? "機械" : "奇怪";
+  const std::string lower_gru_cand = (s_kikai >= s_kiakai) ? "奇怪" : "機械";
+  ASSERT_GT(std::abs(s_kikai - s_kiakai), 1e-3f);
+
+  commands::Context ctx;
+  ctx.set_preceding_text("最新の");
+  ConversionRequest request = ConversionRequestBuilder().SetContext(ctx).Build();
+
+  // 1. Agreement case: chosen candidate wins on BOTH Viterbi and GRU -> NO update.
+  {
+    Segments segs;
+    Segment* s = segs.add_segment();
+    s->set_key("きかい");
+    s->set_segment_type(Segment::FIXED_VALUE);
+    AddCandidate("きかい", higher_gru_cand, 1000, s);  // Best Viterbi + Best GRU
+    AddCandidate("きかい", lower_gru_cand, 2500, s);   // Worse Viterbi + Worse GRU
+    segs.set_revert_id(101);
+    rewriter_->Finish(request, segs);
+    EXPECT_NEAR(rewriter_->alpha_base(), 800.0, 1e-4);
+    EXPECT_EQ(rewriter_->alpha_update_count(), 0);
+  }
+
+  // 2. Error where GRU liked chosen cand MORE, but Viterbi cost beat it -> alpha_base INCREASES.
+  {
+    Segments segs;
+    Segment* s = segs.add_segment();
+    s->set_key("きかい");
+    s->set_segment_type(Segment::FIXED_VALUE);
+    AddCandidate("きかい", higher_gru_cand, 3500, s);  // Chosen by user
+    AddCandidate("きかい", lower_gru_cand, 1000, s);   // Had lower combined_cost at alpha=800
+    s->mutable_candidate(0)->attributes |= converter::Attribute::RERANKED;
+    segs.set_revert_id(102);
+    rewriter_->Finish(request, segs);
+  }
+  const double after_inc = rewriter_->alpha_base();
+  EXPECT_GT(after_inc, 800.0);
+  EXPECT_LE(after_inc, 800.0 + 0.04 * 800.0 + 1e-4);
+  EXPECT_EQ(rewriter_->alpha_update_count(), 1);
+
+  // 3. Revert must restore exact baseline alpha_base (800.0) and count (0).
+  {
+    Segments rev;
+    rev.set_revert_id(102);
+    rewriter_->Revert(rev);
+  }
+  EXPECT_NEAR(rewriter_->alpha_base(), 800.0, 1e-4);
+  EXPECT_EQ(rewriter_->alpha_update_count(), 0);
+
+  // 4. Re-apply increase, verify persistence across Reload().
+  {
+    Segments segs;
+    Segment* s = segs.add_segment();
+    s->set_key("きかい");
+    s->set_segment_type(Segment::FIXED_VALUE);
+    AddCandidate("きかい", higher_gru_cand, 3500, s);
+    AddCandidate("きかい", lower_gru_cand, 1000, s);
+    s->mutable_candidate(0)->attributes |= converter::Attribute::RERANKED;
+    segs.set_revert_id(103);
+    rewriter_->Finish(request, segs);
+  }
+  const double persisted_alpha = rewriter_->alpha_base();
+  EXPECT_GT(persisted_alpha, 800.0);
+  ASSERT_TRUE(rewriter_->Reload());
+  EXPECT_NEAR(rewriter_->alpha_base(), persisted_alpha, 1e-3);
+  EXPECT_EQ(rewriter_->alpha_update_count(), 1);
+
+  // 5. Error where GRU over-promoted rival over user's lower-cost choice -> alpha_base DECREASES.
+  {
+    Segments segs;
+    Segment* s = segs.add_segment();
+    s->set_key("きかい");
+    s->set_segment_type(Segment::FIXED_VALUE);
+    AddCandidate("きかい", lower_gru_cand, 1000, s);   // Chosen by user (lower Viterbi cost)
+    AddCandidate("きかい", higher_gru_cand, 1100, s);  // Rival that GRU promoted
+    s->mutable_candidate(0)->attributes |= converter::Attribute::RERANKED;
+    segs.set_revert_id(104);
+    rewriter_->Finish(request, segs);
+  }
+  EXPECT_LT(rewriter_->alpha_base(), persisted_alpha);
+  EXPECT_EQ(rewriter_->alpha_update_count(), 2);
+
+  // 6. Instant mode must pause alpha_base updates.
+  const double before_instant = rewriter_->alpha_base();
+  write_cfg(800.0, true);
+  std::filesystem::last_write_time(
+      test_config,
+      std::filesystem::last_write_time(test_config) + std::chrono::seconds(2),
+      ec);
+  ASSERT_TRUE(rewriter_->Reload());
+  {
+    Segments segs;
+    Segment* s = segs.add_segment();
+    s->set_key("きかい");
+    s->set_segment_type(Segment::FIXED_VALUE);
+    AddCandidate("きかい", higher_gru_cand, 3500, s);
+    AddCandidate("きかい", lower_gru_cand, 1000, s);
+    s->mutable_candidate(0)->attributes |= converter::Attribute::RERANKED;
+    segs.set_revert_id(105);
+    rewriter_->Finish(request, segs);
+  }
+  EXPECT_NEAR(rewriter_->alpha_base(), before_instant, 1e-3);
+
+  // 7. Manual gru_score_weight change in gru_config.ini must reset alpha_base to new anchor.
+  write_cfg(1500.0, false);
+  std::filesystem::last_write_time(
+      test_config,
+      std::filesystem::last_write_time(test_config) + std::chrono::seconds(4),
+      ec);
+  ASSERT_TRUE(rewriter_->Reload());
+  EXPECT_NEAR(rewriter_->alpha_base(), 1500.0, 1e-3);
+  EXPECT_EQ(rewriter_->alpha_update_count(), 0);
+
+  std::filesystem::remove(test_config, ec);
+  absl::SetFlag(&FLAGS_gru_config_path, "");
+}
+
+TEST_F(GruRewriterTest, AutoAlphaProportionalResegmentThresholdScaling) {
+  const std::string test_config = FileUtil::JoinPath(
+      std::filesystem::temp_directory_path().string(),
+      "gru_auto_alpha_reseg.ini");
+  std::error_code ec;
+  std::filesystem::remove(test_config, ec);
+
+  GruPenaltyConfig cfg;
+  cfg.enable_gru_rewriter = true;
+  cfg.enable_resegmentation = true;
+  cfg.resegment_threshold = 600.0;
+  cfg.gru_score_weight = 800.0;
+  cfg.enable_auto_alpha = true;
+  ASSERT_TRUE(config::GruConfigManager::SaveConfig(cfg, test_config));
+
+  // Persist learned alpha_base = 1600.0 (2.0x anchor 800.0) -> effective threshold = 1200.0.
+  config::GruAlphaState st;
+  st.alpha_base = 1600.0;
+  st.anchor_alpha = 800.0;
+  st.update_count = 5;
+  ASSERT_TRUE(config::GruConfigManager::SaveAlphaState("default", st));
+
+  absl::SetFlag(&FLAGS_gru_config_path, test_config);
+
+  int cand1_cost = 2100;
+  StubImmutableConverter stub_converter;
+  stub_converter.convert_fn_ = [&](const ConversionOptions& options, Segments* segments) {
+    if (segments->conversion_segments_size() == 0) return false;
+    Segment* seg = segments->mutable_conversion_segment(0);
+    seg->clear_candidates();
+
+    // Candidate 0 matches default text/sizes ("ここでは着物を脱ぐ") with cost 3000.
+    converter::Candidate* cand0 = seg->add_candidate();
+    cand0->key = "ここではきものをぬぐ";
+    cand0->value = "ここでは着物を脱ぐ";
+    cand0->content_key = cand0->key;
+    cand0->content_value = cand0->value;
+    cand0->cost = 3000;
+    cand0->inner_segment_boundary = {
+        *converter::EncodeLengths(12, 12, 12, 12),
+        *converter::EncodeLengths(12, 9, 12, 9),
+        *converter::EncodeLengths(6, 6, 6, 6)};
+
+    // Use identical text "ここでは着物を脱ぐ" (27 value bytes) with [3, 5, 2] key lengths
+    // ("ここで" 9B -> "ここで" 9B, "はきものを" 15B -> "は着物を" 12B, "ぬぐ" 6B -> "脱ぐ" 6B)
+    // so GRU score diff = 0 and (default_eval - best_eval) == (3000 - cand1_cost).
+    converter::Candidate* cand1 = seg->add_candidate();
+    cand1->key = "ここではきものをぬぐ";
+    cand1->value = "ここでは着物を脱ぐ";
+    cand1->content_key = cand1->key;
+    cand1->content_value = cand1->value;
+    cand1->cost = cand1_cost;
+    cand1->inner_segment_boundary = {
+        *converter::EncodeLengths(9, 9, 9, 9),
+        *converter::EncodeLengths(15, 12, 15, 12),
+        *converter::EncodeLengths(6, 6, 6, 6)};
+    return true;
+  };
+
+  GruRewriter reseg_rewriter(&stub_converter);
+  ASSERT_TRUE(reseg_rewriter.Reload());
+  EXPECT_NEAR(reseg_rewriter.alpha_base(), 1600.0, 1e-3);
+
+  ConversionRequest request;
+  Segments segments;
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("ここでは");
+  AddCandidate("ここでは", "ここでは", 1000, seg0);
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("きものを");
+  AddCandidate("きものを", "着物を", 1000, seg1);
+  Segment* seg2 = segments.add_segment();
+  seg2->set_key("ぬぐ");
+  AddCandidate("ぬぐ", "脱ぐ", 1000, seg2);
+
+  // Improvement = 3000 - 2100 = 900 (< scaled threshold 1200, >= unscaled 600): must NOT trigger.
+  EXPECT_EQ(reseg_rewriter.CheckResizeSegmentsRequest(request, segments),
+            std::nullopt);
+
+  // Improvement = 3000 - 1700 = 1300 (>= scaled threshold 1200): MUST trigger.
+  cand1_cost = 1700;
+  auto req = reseg_rewriter.CheckResizeSegmentsRequest(request, segments);
+  ASSERT_TRUE(req.has_value());
+  EXPECT_EQ(req->segment_sizes[0], 3);
+  EXPECT_EQ(req->segment_sizes[1], 5);
+  EXPECT_EQ(req->segment_sizes[2], 2);
 
   std::filesystem::remove(test_config, ec);
   absl::SetFlag(&FLAGS_gru_config_path, "");

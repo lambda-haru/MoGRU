@@ -30,9 +30,12 @@
 #include "config/gru_config.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -839,6 +842,10 @@ bool GruConfigManager::DeleteProfile(
     if (!model_path.empty()) {
       std::filesystem::remove(model_path, ec);
     }
+    const std::string alpha_path = ResolveProfileAlphaStateFilePath(prof);
+    if (!alpha_path.empty()) {
+      std::filesystem::remove(alpha_path, ec);
+    }
     for (const char* uri :
          {"user://segment.db", "user://boundary.db", "user://.history.db"}) {
       const std::string db_path = ResolveProfileHistoryFileName(uri, prof);
@@ -870,6 +877,7 @@ GruPenaltyConfig GruConfigManager::GetEffectiveProfileConfig(
   if (it_builtin != builtin.end()) {
     const auto& p = it_builtin->second;
     eff.gru_score_weight = p.gru_score_weight;
+    eff.enable_auto_alpha = p.enable_auto_alpha;
     eff.katakana_multiplier = p.katakana_multiplier;
     eff.hiragana_multiplier = p.hiragana_multiplier;
     eff.hiragana_length_power = p.hiragana_length_power;
@@ -895,6 +903,7 @@ GruPenaltyConfig GruConfigManager::GetEffectiveProfileConfig(
   if (it_custom != root_config.profiles.end()) {
     const auto& p = it_custom->second;
     if (p.gru_score_weight != 0.0) eff.gru_score_weight = p.gru_score_weight;
+    eff.enable_auto_alpha = p.enable_auto_alpha;
     eff.katakana_multiplier = p.katakana_multiplier;
     eff.hiragana_multiplier = p.hiragana_multiplier;
     eff.hiragana_length_power = p.hiragana_length_power;
@@ -1134,6 +1143,10 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       "# - Viterbi コストと GRU 対数尤度スコアを結合する重み係数です。\n"
       "gru_score_weight = %.1f\n"
       "\n"
+      "# 【GRU スコア重み (Alpha) 自動調整の有効化】 (初期値: true)\n"
+      "# - 確定フィードバックから基準 α を学習し、文脈・確信度に応じて文節ごとに動的微調整します。\n"
+      "enable_auto_alpha = %s\n"
+      "\n"
       "# 【変換候補の説明欄への GRU スコア表示】 (初期値: true)\n"
       "# - true: 候補リストに GRU スコア (GRU:...) を表示, false: 非表示\n"
       "show_gru_score = %s\n"
@@ -1263,6 +1276,7 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       config.gru_chardata_path,
       config.gru_user_model_path,
       config.gru_score_weight,
+      config.enable_auto_alpha ? "true" : "false",
       config.show_gru_score ? "true" : "false",
       config.katakana_multiplier,
       config.hiragana_multiplier,
@@ -1325,6 +1339,10 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
     result += absl::StrFormat("\n[profile.%s]\n", name);
     if (p.gru_score_weight != config.gru_score_weight) {
       result += absl::StrFormat("gru_score_weight = %.1f\n", p.gru_score_weight);
+    }
+    if (p.enable_auto_alpha != config.enable_auto_alpha) {
+      result += absl::StrFormat("enable_auto_alpha = %s\n",
+                                p.enable_auto_alpha ? "true" : "false");
     }
     if (p.katakana_multiplier != config.katakana_multiplier) {
       result += absl::StrFormat("katakana_multiplier = %.2f\n", p.katakana_multiplier);
@@ -1496,6 +1514,11 @@ void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
     append_content +=
         "\n# 【GRU スコア重み係数 (Alpha)】 (初期値: 800.0)\n"
         "gru_score_weight = 800.0\n";
+  }
+  if (content.find("enable_auto_alpha") == std::string::npos) {
+    append_content +=
+        "\n# 【GRU スコア重み (Alpha) 自動調整の有効化】 (初期値: true)\n"
+        "enable_auto_alpha = true\n";
   }
   if (content.find("show_gru_score") == std::string::npos) {
     append_content +=
@@ -1728,6 +1751,11 @@ void ApplyConfigKeyValue(GruPenaltyConfig* config,
   if (key == "show_gru_score") {
     bool b = true;
     if (absl::SimpleAtob(val, &b)) config->show_gru_score = b;
+    return;
+  }
+  if (key == "enable_auto_alpha") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->enable_auto_alpha = b;
     return;
   }
   if (key == "enable_resegmentation") {
@@ -2009,6 +2037,10 @@ void GruConfigManager::ApplyEnvOverrides(GruPenaltyConfig* config) {
   if (const char* e = std::getenv("MOZC_GRU_SCORE_WEIGHT")) {
     double d = 0.0;
     if (absl::SimpleAtod(e, &d)) config->gru_score_weight = d;
+  }
+  if (const char* e = std::getenv("MOZC_GRU_ENABLE_AUTO_ALPHA")) {
+    bool b = true;
+    if (absl::SimpleAtob(e, &b)) config->enable_auto_alpha = b;
   }
   if (const char* e = std::getenv("MOZC_GRU_SHOW_SCORE")) {
     bool b = true;
@@ -2662,6 +2694,264 @@ bool GruConfigManager::IsShiftImmediateJapaneseReturnEnabled(
     has_cached = true;
   }
   return cached_value;
+}
+
+namespace {
+
+absl::Mutex& GetAlphaStateMutex() {
+  static absl::NoDestructor<absl::Mutex> mutex;
+  return *mutex;
+}
+
+std::string GetAlphaTimestampString() {
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t t = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_buf;
+#if defined(_WIN32)
+  localtime_s(&tm_buf, &t);
+#else
+  localtime_r(&t, &tm_buf);
+#endif
+  std::ostringstream oss;
+  oss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
+  return oss.str();
+}
+
+std::string NormalizeAlphaProfileName(absl::string_view profile_name) {
+  const std::string sanitized = GruConfigManager::SanitizeProfileName(profile_name);
+  return (sanitized.empty() || sanitized == "default") ? "default" : sanitized;
+}
+
+std::string ResolveAlphaTargetPath(const std::string& profile_name,
+                                   const std::string& explicit_path) {
+  if (!explicit_path.empty()) {
+    return ExpandTilde(explicit_path);
+  }
+  return GruConfigManager::ResolveProfileAlphaStateFilePath(profile_name);
+}
+
+bool ParseAlphaStateJson(absl::string_view json, GruAlphaState* out) {
+  if (out == nullptr) return false;
+  GruAlphaState parsed;
+  bool has_alpha_base = false;
+  bool has_anchor_alpha = false;
+
+  for (absl::string_view line : absl::StrSplit(json, '\n')) {
+    line = absl::StripAsciiWhitespace(line);
+    if (line.empty()) continue;
+    const size_t colon_pos = line.find(':');
+    if (colon_pos == absl::string_view::npos) continue;
+
+    absl::string_view key_part =
+        absl::StripAsciiWhitespace(line.substr(0, colon_pos));
+    absl::string_view val_part =
+        absl::StripAsciiWhitespace(line.substr(colon_pos + 1));
+    while (!val_part.empty() &&
+           (val_part.back() == ',' || val_part.back() == '}')) {
+      val_part.remove_suffix(1);
+      val_part = absl::StripAsciiWhitespace(val_part);
+    }
+
+    const absl::string_view key =
+        absl::StripSuffix(absl::StripPrefix(key_part, "\""), "\"");
+    const absl::string_view val_str =
+        absl::StripSuffix(absl::StripPrefix(val_part, "\""), "\"");
+
+    if (key == "alpha_base") {
+      double d = 0.0;
+      if (absl::SimpleAtod(val_str, &d) && std::isfinite(d)) {
+        parsed.alpha_base = d;
+        has_alpha_base = true;
+      }
+    } else if (key == "anchor_alpha") {
+      double d = 0.0;
+      if (absl::SimpleAtod(val_str, &d) && std::isfinite(d)) {
+        parsed.anchor_alpha = d;
+        has_anchor_alpha = true;
+      }
+    } else if (key == "update_count") {
+      uint64_t u = 0;
+      if (absl::SimpleAtoi(val_str, &u)) {
+        parsed.update_count = u;
+      }
+    } else if (key == "last_updated") {
+      parsed.last_updated = std::string(val_str);
+    }
+  }
+
+  if (!has_alpha_base || !has_anchor_alpha) {
+    return false;
+  }
+  *out = parsed;
+  return true;
+}
+
+}  // namespace
+
+std::string GruConfigManager::ResolveProfileAlphaStateFilePath(
+    const std::string& profile_name,
+    const std::string& explicit_dir) {
+  const std::string prof = NormalizeAlphaProfileName(profile_name);
+  const std::string filename =
+      (prof == "default") ? "gru_alpha.json" : ("gru_alpha_" + prof + ".json");
+
+  if (!explicit_dir.empty()) {
+    return FileUtil::JoinPath(ExpandTilde(explicit_dir), filename);
+  }
+  if (IsInTestEnvironment()) {
+    const std::string test_profile_dir = SystemUtil::GetUserProfileDirectory();
+    if (!test_profile_dir.empty()) {
+      std::error_code ec;
+      if (std::filesystem::exists(test_profile_dir, ec) ||
+          std::filesystem::create_directories(test_profile_dir, ec)) {
+        return FileUtil::JoinPath(test_profile_dir, filename);
+      }
+    }
+    if (const char* test_tmpdir = std::getenv("TEST_TMPDIR")) {
+      if (test_tmpdir[0] != '\0') {
+        return FileUtil::JoinPath(test_tmpdir, filename);
+      }
+    }
+    return "";
+  }
+
+  MigrateLegacyFilesOnce();
+  const auto dirs = GetUserProfileCandidateDirs();
+  std::error_code ec;
+  for (const auto& dir : dirs) {
+    const std::string p = FileUtil::JoinPath(dir, filename);
+    if (std::filesystem::exists(p, ec)) {
+      return p;
+    }
+  }
+  if (!dirs.empty()) {
+    return FileUtil::JoinPath(dirs.front(), filename);
+  }
+  return "";
+}
+
+double GruConfigManager::ClampAutoAlphaBase(double alpha_base,
+                                            double anchor_alpha) {
+  if (!std::isfinite(anchor_alpha) || anchor_alpha <= 0.0) {
+    return 0.0;
+  }
+  if (!std::isfinite(alpha_base)) {
+    return anchor_alpha;
+  }
+  return std::clamp(alpha_base, 0.25 * anchor_alpha, 2.5 * anchor_alpha);
+}
+
+GruAlphaState GruConfigManager::LoadAlphaState(
+    const std::string& profile_name,
+    double anchor_alpha,
+    const std::string& explicit_path) {
+  GruAlphaState fallback;
+  fallback.alpha_base = anchor_alpha;
+  fallback.anchor_alpha = anchor_alpha;
+  fallback.update_count = 0;
+
+  if (!std::isfinite(anchor_alpha) || anchor_alpha <= 0.0) {
+    return fallback;
+  }
+
+  const std::string path = ResolveAlphaTargetPath(profile_name, explicit_path);
+  if (path.empty()) {
+    return fallback;
+  }
+
+  absl::MutexLock lock(GetAlphaStateMutex());
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) {
+    return fallback;
+  }
+
+  std::ifstream ifs(path);
+  if (!ifs.is_open()) {
+    return fallback;
+  }
+  std::stringstream ss;
+  ss << ifs.rdbuf();
+
+  GruAlphaState parsed;
+  if (!ParseAlphaStateJson(ss.str(), &parsed)) {
+    return fallback;
+  }
+  if (parsed.anchor_alpha <= 0.0 ||
+      std::abs(parsed.anchor_alpha - anchor_alpha) > 1e-4) {
+    return fallback;
+  }
+
+  parsed.alpha_base = ClampAutoAlphaBase(parsed.alpha_base, anchor_alpha);
+  parsed.anchor_alpha = anchor_alpha;
+  return parsed;
+}
+
+bool GruConfigManager::SaveAlphaState(const std::string& profile_name,
+                                      const GruAlphaState& state,
+                                      const std::string& explicit_path) {
+  if (!std::isfinite(state.anchor_alpha) || state.anchor_alpha <= 0.0) {
+    return false;
+  }
+  const std::string path = ResolveAlphaTargetPath(profile_name, explicit_path);
+  if (path.empty()) {
+    return false;
+  }
+
+  const std::string prof = NormalizeAlphaProfileName(profile_name);
+  const double clamped_base =
+      ClampAutoAlphaBase(state.alpha_base, state.anchor_alpha);
+  const std::string ts =
+      state.last_updated.empty() ? GetAlphaTimestampString() : state.last_updated;
+  const std::string json = absl::StrFormat(
+      "{\n"
+      "  \"version\": 1,\n"
+      "  \"profile\": \"%s\",\n"
+      "  \"alpha_base\": %.4f,\n"
+      "  \"anchor_alpha\": %.4f,\n"
+      "  \"update_count\": %u,\n"
+      "  \"last_updated\": \"%s\"\n"
+      "}\n",
+      prof, clamped_base, state.anchor_alpha, state.update_count, ts);
+
+  absl::MutexLock lock(GetAlphaStateMutex());
+  std::error_code ec;
+  const std::filesystem::path p(path);
+  if (p.has_parent_path()) {
+    std::filesystem::create_directories(p.parent_path(), ec);
+  }
+
+  const std::string tmp_path = path + ".tmp";
+  {
+    std::ofstream ofs(tmp_path, std::ios::trunc);
+    if (!ofs.is_open()) {
+      return false;
+    }
+    ofs << json;
+    ofs.flush();
+    if (!ofs.good()) {
+      return false;
+    }
+  }
+  std::filesystem::rename(tmp_path, path, ec);
+  if (ec) {
+    std::filesystem::remove(tmp_path, ec);
+    return false;
+  }
+  return true;
+}
+
+bool GruConfigManager::ResetAlphaState(const std::string& profile_name,
+                                       const std::string& explicit_path) {
+  const std::string path = ResolveAlphaTargetPath(profile_name, explicit_path);
+  if (path.empty()) {
+    return true;
+  }
+  absl::MutexLock lock(GetAlphaStateMutex());
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) {
+    return true;
+  }
+  return std::filesystem::remove(path, ec);
 }
 
 }  // namespace config

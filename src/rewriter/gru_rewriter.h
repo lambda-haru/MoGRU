@@ -50,6 +50,7 @@ ABSL_DECLARE_FLAG(bool, enable_gru_online_learning);
 ABSL_DECLARE_FLAG(int32_t, gru_resegment_cost_threshold);
 ABSL_DECLARE_FLAG(bool, show_gru_score);
 ABSL_DECLARE_FLAG(double, gru_score_weight);
+ABSL_DECLARE_FLAG(bool, enable_gru_auto_alpha);
 ABSL_DECLARE_FLAG(double, gru_katakana_multiplier);
 ABSL_DECLARE_FLAG(double, gru_hiragana_multiplier);
 ABSL_DECLARE_FLAG(double, gru_hiragana_length_power);
@@ -114,6 +115,16 @@ class GruRewriter : public RewriterInterface {
     return penalty_config_;
   }
 
+  double alpha_base() const {
+    absl::MutexLock l(mutex_);
+    return alpha_base_;
+  }
+
+  uint64_t alpha_update_count() const {
+    absl::MutexLock l(mutex_);
+    return alpha_update_count_;
+  }
+
  private:
   struct ResegmentResult {
     std::vector<uint8_t> new_sizes;
@@ -122,6 +133,20 @@ class GruRewriter : public RewriterInterface {
 
   bool EnsureInitialized() const;
   GruPenaltyConfig GetPenaltyConfig() const;
+  bool PrepareRuntimeTuning(const commands::Context* context,
+                            GruPenaltyConfig* out_config,
+                            double* out_alpha_base,
+                            bool* out_enable_auto_alpha) const;
+  double GetEffectiveBaseAlphaLocked(const GruPenaltyConfig& config) const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+  void SyncAlphaStateOnProfileLocked(bool profile_or_path_changed) const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+  void CheckAlphaStateFileExternalChangeLocked() const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+  bool UpdateAlphaOnFinishLocked(const Segments& segments,
+                                 const std::string& hist_prefix,
+                                 const GruPenaltyConfig& penalty_config) const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
   void CheckAndApplyAppProfileLocked(const commands::Context* context) const
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
   bool SwitchProfileLocked(
@@ -132,7 +157,10 @@ class GruRewriter : public RewriterInterface {
   bool CanCheckConversionResegmentation(const ConversionRequest& request,
                                         const Segments& segments,
                                         bool allow_when_resized) const;
-  std::optional<GruPenaltyConfig> PrepareResegmentationConfig() const;
+  std::optional<GruPenaltyConfig> PrepareResegmentationConfig(
+      const commands::Context* context,
+      double* out_alpha_base = nullptr,
+      bool* out_enable_auto_alpha = nullptr) const;
 
   std::optional<ResegmentResult> EvaluateResegmentation(
       const Segments& segments,
@@ -140,6 +168,7 @@ class GruRewriter : public RewriterInterface {
       const std::string& prefix_context,
       const GruPenaltyConfig& penalty_config,
       double alpha,
+      bool enable_auto_alpha,
       size_t focused_seg_idx = static_cast<size_t>(-1),
       int focused_cand_idx = 0,
       size_t end_seg_idx = static_cast<size_t>(-1)) const;
@@ -149,7 +178,8 @@ class GruRewriter : public RewriterInterface {
       size_t start_seg_idx,
       const std::string& prefix_context,
       const GruPenaltyConfig& penalty_config,
-      double alpha,
+      double alpha_base,
+      bool enable_auto_alpha,
       bool show_score) const;
 
   mutable absl::Mutex mutex_;
@@ -168,6 +198,16 @@ class GruRewriter : public RewriterInterface {
   mutable int32_t unsaved_updates_count_ ABSL_GUARDED_BY(mutex_) = 0;
   mutable bool loaded_has_user_model_ ABSL_GUARDED_BY(mutex_) = false;
   mutable bool is_initialized_ ABSL_GUARDED_BY(mutex_) = false;
+
+  mutable double alpha_base_ ABSL_GUARDED_BY(mutex_) = 800.0;
+  mutable double alpha_anchor_ ABSL_GUARDED_BY(mutex_) = 800.0;
+  mutable uint64_t alpha_update_count_ ABSL_GUARDED_BY(mutex_) = 0;
+  mutable std::string alpha_state_path_ ABSL_GUARDED_BY(mutex_);
+  mutable int64_t last_alpha_mtime_ ABSL_GUARDED_BY(mutex_) = 0;
+  mutable bool loaded_has_alpha_state_ ABSL_GUARDED_BY(mutex_) = false;
+  mutable bool has_alpha_revert_snapshot_ ABSL_GUARDED_BY(mutex_) = false;
+  mutable double prev_alpha_base_ ABSL_GUARDED_BY(mutex_) = 800.0;
+  mutable uint64_t prev_alpha_update_count_ ABSL_GUARDED_BY(mutex_) = 0;
 
   const ImmutableConverterInterface* immutable_converter_ = nullptr;
 };

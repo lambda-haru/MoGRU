@@ -37,6 +37,7 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <istream>
 #include <map>
@@ -933,6 +934,12 @@ void ConfigDialog::SetupMogruUi() {
         QString::fromUtf8("除外する直近の平仮名文字数:"));
     gruScoreWeightLabel->setText(
         QString::fromUtf8("GRUスコア重み (α / gru_score_weight):"));
+    enableAutoAlphaCheckBox->setText(QString::fromUtf8(
+        "α (gru_score_weight) を自動で調整・学習する"));
+    autoAlphaStatusTitleLabel->setText(
+        QString::fromUtf8("学習済み基準 α (α_base):"));
+    resetAutoAlphaButton->setText(
+        QString::fromUtf8("α 学習値をリセット"));
 
     gruModelPathsGroupBox->setTitle(
         QString::fromUtf8("モデルファイル設定（空欄で規定のインストール先を使用）"));
@@ -1079,8 +1086,16 @@ void ConfigDialog::SetupMogruUi() {
                    this, &ConfigDialog::RefreshConversionStatsUi);
   QObject::connect(resetConversionStatsButton, &QPushButton::clicked,
                    this, &ConfigDialog::ResetConversionStats);
+  QObject::connect(resetAutoAlphaButton, &QPushButton::clicked,
+                   this, &ConfigDialog::ResetAutoAlpha);
+  QObject::connect(enableAutoAlphaCheckBox, &QCheckBox::toggled,
+                   this, [this](bool) { RefreshAutoAlphaStatusUi(); });
+  QObject::connect(gruScoreWeightSpinBox,
+                   QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                   this, [this](double) { RefreshAutoAlphaStatusUi(); });
 
   RefreshConversionStatsUi();
+  RefreshAutoAlphaStatusUi();
 }
 
 void ConfigDialog::OnGruProfileChanged(int index) {
@@ -1255,6 +1270,7 @@ void ConfigDialog::DeleteGruProfile() {
 void ConfigDialog::SaveWidgetsToProfile(GruPenaltyConfig* p) const {
   if (p == nullptr) return;
   p->gru_score_weight = gruScoreWeightSpinBox->value();
+  p->enable_auto_alpha = enableAutoAlphaCheckBox->isChecked();
   p->enable_resegmentation = enableGruResegmentationCheckBox->isChecked();
   p->resegment_threshold = gruResegmentThresholdSpinBox->value();
   p->katakana_multiplier = gruKatakanaMultiplierSpinBox->value();
@@ -1286,6 +1302,7 @@ void ConfigDialog::SaveWidgetsToProfile(GruPenaltyConfig* p) const {
 
 void ConfigDialog::PopulateWidgetsFromProfile(const GruPenaltyConfig& p) {
   gruScoreWeightSpinBox->blockSignals(true);
+  enableAutoAlphaCheckBox->blockSignals(true);
   enableGruResegmentationCheckBox->blockSignals(true);
   gruResegmentThresholdSpinBox->blockSignals(true);
   gruKatakanaMultiplierSpinBox->blockSignals(true);
@@ -1305,6 +1322,7 @@ void ConfigDialog::PopulateWidgetsFromProfile(const GruPenaltyConfig& p) {
   instantMaxWeightDeltaSpinBox->blockSignals(true);
 
   gruScoreWeightSpinBox->setValue(p.gru_score_weight);
+  enableAutoAlphaCheckBox->setChecked(p.enable_auto_alpha);
   enableGruResegmentationCheckBox->setChecked(p.enable_resegmentation);
   gruResegmentThresholdSpinBox->setValue(p.resegment_threshold);
   gruKatakanaMultiplierSpinBox->setValue(p.katakana_multiplier);
@@ -1350,6 +1368,8 @@ void ConfigDialog::PopulateWidgetsFromProfile(const GruPenaltyConfig& p) {
                             .c_str()));
 
   gruScoreWeightSpinBox->blockSignals(false);
+  enableAutoAlphaCheckBox->blockSignals(false);
+  RefreshAutoAlphaStatusUi();
   enableGruResegmentationCheckBox->blockSignals(false);
   gruResegmentThresholdSpinBox->blockSignals(false);
   gruKatakanaMultiplierSpinBox->blockSignals(false);
@@ -1541,6 +1561,7 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
   if (it_def != wp.end()) {
     const auto& def = it_def->second;
     cfg.gru_score_weight = def.gru_score_weight;
+    cfg.enable_auto_alpha = def.enable_auto_alpha;
     cfg.enable_resegmentation = def.enable_resegmentation;
     cfg.resegment_threshold = def.resegment_threshold;
     cfg.katakana_multiplier = def.katakana_multiplier;
@@ -1574,6 +1595,22 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
 bool ConfigDialog::SaveGruConfigFromUi() {
   const GruPenaltyConfig cfg = CollectGruConfigFromUi();
   const bool ok = config::GruConfigManager::SaveConfig(cfg, "");
+  if (ok) {
+    for (const auto& prof : config::GruConfigManager::GetAvailableProfiles(cfg)) {
+      const double old_anchor =
+          config::GruConfigManager::GetEffectiveProfileConfig(
+              cached_gru_config_, prof)
+              .gru_score_weight;
+      const double new_anchor =
+          config::GruConfigManager::GetEffectiveProfileConfig(cfg, prof)
+              .gru_score_weight;
+      if (std::abs(old_anchor - new_anchor) > 1e-4) {
+        config::GruConfigManager::ResetAlphaState(prof);
+      }
+    }
+    cached_gru_config_ = cfg;
+    RefreshAutoAlphaStatusUi();
+  }
   const std::string saved_path =
       config::GruConfigManager::ResolveConfigFilePath("",
                                                       /*allow_in_test=*/true);
@@ -1599,17 +1636,26 @@ void ConfigDialog::ReloadGruConfigFromDisk() {
 }
 
 void ConfigDialog::CheckGruConfigFileModified() {
-  if (gru_config_path_.empty()) {
-    return;
+  if (!gru_config_path_.empty()) {
+    const int64_t current_mtime =
+        config::GruConfigManager::GetFileMtime(gru_config_path_);
+    if (current_mtime > 0 && current_mtime != gru_config_mtime_) {
+      const bool apply_was_enabled =
+          configDialogButtonBox->button(QDialogButtonBox::Apply)->isEnabled();
+      ReloadGruConfigFromDisk();
+      configDialogButtonBox->button(QDialogButtonBox::Apply)
+          ->setEnabled(apply_was_enabled);
+    }
   }
-  const int64_t current_mtime =
-      config::GruConfigManager::GetFileMtime(gru_config_path_);
-  if (current_mtime > 0 && current_mtime != gru_config_mtime_) {
-    const bool apply_was_enabled =
-        configDialogButtonBox->button(QDialogButtonBox::Apply)->isEnabled();
-    ReloadGruConfigFromDisk();
-    configDialogButtonBox->button(QDialogButtonBox::Apply)
-        ->setEnabled(apply_was_enabled);
+  const std::string alpha_path =
+      config::GruConfigManager::ResolveProfileAlphaStateFilePath(
+          current_dialog_profile_);
+  if (!alpha_path.empty()) {
+    const int64_t current_alpha_mtime =
+        config::GruConfigManager::GetFileMtime(alpha_path);
+    if (current_alpha_mtime != alpha_state_mtime_) {
+      RefreshAutoAlphaStatusUi();
+    }
   }
 }
 
@@ -1808,6 +1854,73 @@ void ConfigDialog::ResetConversionStats() {
   const QString done_msg =
       is_ja ? QString::fromUtf8("変換正確率の統計をリセットしました。")
             : tr("Conversion accuracy statistics have been reset.");
+  QMessageBox::information(this, windowTitle(), done_msg);
+}
+
+void ConfigDialog::RefreshAutoAlphaStatusUi() {
+  const std::string prof =
+      current_dialog_profile_.empty() ? "default" : current_dialog_profile_;
+  const double anchor = gruScoreWeightSpinBox->value();
+  const bool auto_enabled = enableAutoAlphaCheckBox->isChecked();
+  const bool is_ja = (QLocale::system().language() == QLocale::Japanese);
+
+  const std::string alpha_path =
+      config::GruConfigManager::ResolveProfileAlphaStateFilePath(prof);
+  alpha_state_mtime_ =
+      alpha_path.empty() ? 0 : config::GruConfigManager::GetFileMtime(alpha_path);
+  const config::GruAlphaState state =
+      config::GruConfigManager::LoadAlphaState(prof, anchor);
+
+  QString text;
+  if (!auto_enabled) {
+    text = is_ja ? QString::fromUtf8("無効 (設定値 %1 を使用)")
+                       .arg(anchor, 0, 'f', 1)
+                 : QString::fromUtf8("Disabled (using %1)")
+                       .arg(anchor, 0, 'f', 1);
+  } else if (anchor <= 0.0) {
+    text = is_ja ? QString::fromUtf8("0.0 (基準値 0 以下のため自動更新停止)")
+                 : QString::fromUtf8("0.0 (auto-tuning paused when anchor <= 0)");
+  } else {
+    text = is_ja ? QString::fromUtf8("%1 (基準: %2 / 更新: %3回)")
+                       .arg(state.alpha_base, 0, 'f', 1)
+                       .arg(anchor, 0, 'f', 1)
+                       .arg(state.update_count)
+                 : QString::fromUtf8("%1 (anchor: %2, updates: %3)")
+                       .arg(state.alpha_base, 0, 'f', 1)
+                       .arg(anchor, 0, 'f', 1)
+                       .arg(state.update_count);
+  }
+  autoAlphaStatusValueLabel->setText(text);
+  resetAutoAlphaButton->setEnabled(alpha_state_mtime_ != 0 ||
+                                   state.update_count > 0);
+}
+
+void ConfigDialog::ResetAutoAlpha() {
+  const std::string prof =
+      current_dialog_profile_.empty() ? "default" : current_dialog_profile_;
+  const bool is_ja = (QLocale::system().language() == QLocale::Japanese);
+  const QString prompt =
+      is_ja ? QString::fromUtf8(
+                  "選択中プロファイル「%1」の自動調整された α_base を基準値 (%2) にリセットしますか？")
+                  .arg(QString::fromUtf8(prof.c_str()))
+                  .arg(gruScoreWeightSpinBox->value(), 0, 'f', 1)
+            : QString::fromUtf8(
+                  "Do you want to reset the learned α_base for profile '%1' back to anchor (%2)?")
+                  .arg(QString::fromUtf8(prof.c_str()))
+                  .arg(gruScoreWeightSpinBox->value(), 0, 'f', 1);
+  if (QMessageBox::Ok !=
+      QMessageBox::question(this, windowTitle(), prompt,
+                            QMessageBox::Ok | QMessageBox::Cancel,
+                            QMessageBox::Cancel)) {
+    return;
+  }
+
+  config::GruConfigManager::ResetAlphaState(prof);
+  RefreshAutoAlphaStatusUi();
+
+  const QString done_msg =
+      is_ja ? QString::fromUtf8("学習済み α_base をリセットしました。")
+            : QString::fromUtf8("Learned α_base has been reset.");
   QMessageBox::information(this, windowTitle(), done_msg);
 }
 

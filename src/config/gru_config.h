@@ -57,6 +57,7 @@ struct GruPenaltyConfig {
   std::string gru_chardata_path = "";
   std::string gru_user_model_path = "";
   double gru_score_weight = 800.0;
+  bool enable_auto_alpha = true;
   bool show_gru_score = true;
   double katakana_multiplier = 1.3;
   double hiragana_multiplier = 1.1;
@@ -103,6 +104,13 @@ using GruConfig = GruPenaltyConfig;
 
 namespace config {
 
+struct GruAlphaState {
+  double alpha_base = 800.0;
+  double anchor_alpha = 800.0;
+  uint64_t update_count = 0;
+  std::string last_updated;
+};
+
 class GruConfigManager {
  public:
   // Resolves a data file path (e.g. "grumodel.bin", "chardata.bin").
@@ -128,6 +136,30 @@ class GruConfigManager {
   static std::string ResolveProfileUserModelFilePath(
       const std::string& profile_name,
       const std::string& user_specified = "");
+
+  // Resolves the path to gru_alpha_<profile>.json for a specific profile.
+  static std::string ResolveProfileAlphaStateFilePath(
+      const std::string& profile_name,
+      const std::string& explicit_dir = "");
+
+  // Clamps adaptive alpha_base to the scale-invariant relative bounds
+  // [0.25 * anchor_alpha, 2.5 * anchor_alpha] when anchor_alpha > 0.
+  static double ClampAutoAlphaBase(double alpha_base, double anchor_alpha);
+
+  // Loads per-profile adaptive alpha state (resetting to anchor_alpha if missing
+  // or if anchor_alpha no longer matches the configured gru_score_weight).
+  static GruAlphaState LoadAlphaState(const std::string& profile_name,
+                                      double anchor_alpha,
+                                      const std::string& explicit_path = "");
+
+  // Saves per-profile adaptive alpha state atomically.
+  static bool SaveAlphaState(const std::string& profile_name,
+                             const GruAlphaState& state,
+                             const std::string& explicit_path = "");
+
+  // Removes persisted adaptive alpha state for `profile_name`.
+  static bool ResetAlphaState(const std::string& profile_name,
+                              const std::string& explicit_path = "");
 
   // Sanitizes a profile name into a safe filename token (alphanumeric, '_', '-').
   // Returns "default" if empty or invalid.

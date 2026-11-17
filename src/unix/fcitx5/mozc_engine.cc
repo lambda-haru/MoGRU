@@ -60,6 +60,7 @@ ABSL_DECLARE_FLAG(std::string, gru_model_path);
 ABSL_DECLARE_FLAG(std::string, gru_chardata_path);
 ABSL_DECLARE_FLAG(std::string, gru_user_model_path);
 ABSL_DECLARE_FLAG(double, gru_score_weight);
+ABSL_DECLARE_FLAG(bool, enable_gru_auto_alpha);
 ABSL_DECLARE_FLAG(bool, show_gru_score);
 ABSL_DECLARE_FLAG(bool, enable_gru_resegmentation);
 ABSL_DECLARE_FLAG(int32_t, gru_resegment_cost_threshold);
@@ -289,6 +290,7 @@ void MozcEngine::SyncGruFlags() {
   absl::SetFlag(&FLAGS_gru_chardata_path, cfg.gru_chardata_path);
   absl::SetFlag(&FLAGS_gru_user_model_path, cfg.gru_user_model_path);
   absl::SetFlag(&FLAGS_gru_score_weight, cfg.gru_score_weight);
+  absl::SetFlag(&FLAGS_enable_gru_auto_alpha, cfg.enable_auto_alpha);
   absl::SetFlag(&FLAGS_show_gru_score, cfg.show_gru_score);
   absl::SetFlag(&FLAGS_enable_gru_resegmentation, cfg.enable_resegmentation);
   absl::SetFlag(&FLAGS_gru_resegment_cost_threshold,
