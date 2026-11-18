@@ -159,6 +159,7 @@ class MozcState : public InputContextProperty {
   std::string url_;  // URL to be opened by a browser.
   std::string description_;
   std::string title_;
+  std::string last_active_profile_;
 };
 
 }  // namespace fcitx

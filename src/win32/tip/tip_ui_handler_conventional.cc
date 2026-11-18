@@ -34,6 +34,7 @@
 #include <windows.h>
 
 #include <cstddef>
+#include <string>
 #include <utility>
 
 #include "absl/log/check.h"
@@ -339,6 +340,10 @@ void UpdateCommand(TipTextService* text_service, ITfContext* context,
   app_info->set_thread_id(::GetCurrentThreadId());
   app_info->set_receiver_handle(WinUtil::EncodeWindowHandle(
       text_service->renderer_callback_window_handle()));
+  if (const std::string& host_app = TipThreadContext::GetHostApplicationName();
+      !host_app.empty()) {
+    app_info->set_application_name(host_app);
+  }
 
   auto ui_element_manager =
       ComQuery<ITfUIElementMgr>(text_service->GetThreadManager());
@@ -348,7 +353,9 @@ void UpdateCommand(TipTextService* text_service, ITfContext* context,
   FillCharPosition(private_context, context, read_cookie,
                    command->output().has_preedit(), app_info, no_layout);
 
-  if (private_context != nullptr) {
+  if (private_context != nullptr &&
+      !TipStatus::IsDisabledContext(context) &&
+      !TipStatus::IsEmptyContext(context)) {
     const TipInputModeManager* input_mode_manager =
         text_service->GetThreadContext()->GetInputModeManager();
     if (private_context->input_behavior().use_mode_indicator &&
@@ -359,6 +366,9 @@ void UpdateCommand(TipTextService* text_service, ITfContext* context,
           input_mode_manager->GetEffectiveOpenClose());
       info->mutable_status()->set_mode(
           input_mode_manager->GetEffectiveConversionMode());
+      if (!input_mode_manager->pending_profile_change().empty()) {
+        info->set_profile_name(input_mode_manager->pending_profile_change());
+      }
     }
   }
 
@@ -386,6 +396,12 @@ class UpdateUiEditSessionImpl final : public TipComImplements<ITfEditSession> {
                   &no_layout);
     if (!no_layout || !command.visible()) {
       Win32RendererClient::OnUpdated(command);
+      if (command.has_application_info() &&
+          command.application_info().has_indicator_info()) {
+        text_service_->GetThreadContext()
+            ->GetInputModeManager()
+            ->ClearPendingProfileChange();
+      }
     }
     return S_OK;
   }
@@ -457,6 +473,12 @@ bool TipUiHandlerConventional::Update(TipTextService* text_service,
   UpdateCommand(text_service, context, read_cookie, &command, &no_layout);
   if (!no_layout || !command.visible()) {
     Win32RendererClient::OnUpdated(command);
+    if (command.has_application_info() &&
+        command.application_info().has_indicator_info()) {
+      text_service->GetThreadContext()
+          ->GetInputModeManager()
+          ->ClearPendingProfileChange();
+    }
   }
   return true;
 }

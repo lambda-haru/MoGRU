@@ -750,11 +750,13 @@ class TipTextServiceImpl
     if (!document_manager) {
       return S_OK;
     }
+    GetThreadContext()->GetInputModeManager()->OnFocusChanged();
     TipUiHandler::OnFocusChange(this, document_manager.get());
     return S_OK;
   }
   STDMETHODIMP OnKillThreadFocus() override {
     // See the comment in OnSetThreadFocus().
+    GetThreadContext()->GetInputModeManager()->OnDissociateContext();
     TipUiHandler::OnFocusChange(this, nullptr);
     return S_OK;
   }
@@ -1008,6 +1010,8 @@ class TipTextServiceImpl
       wil::com_ptr_nothrow<ITfContext> context;
       RETURN_IF_FAILED_HRESULT(document_mgr->GetTop(&context));
       EnsurePrivateContextExists(context.get());
+    } else {
+      GetThreadContext()->GetInputModeManager()->OnDissociateContext();
     }
     TipUiHandler::OnDocumentMgrChanged(this, document_mgr);
     TipEditSession::OnSetFocusAsync(this, document_mgr);

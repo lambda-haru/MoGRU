@@ -78,6 +78,10 @@ MozcState::MozcState(InputContext* ic, MozcEngine* engine)
       SetCompositionMode(raw_response.mode(), /*updateUI=*/false);
     }
   }
+  if (ic_ != nullptr) {
+    last_active_profile_ =
+        engine_->ResolveModeIndicatorProfileInfo(*ic_).active_profile;
+  }
 }
 
 MozcState::~MozcState() { MOZC_VLOG(1) << "MozcState destroyed."; }
@@ -334,6 +338,11 @@ void MozcState::FocusIn() {
   MOZC_VLOG(1) << "MozcState::FocusIn()";
 
   UpdatePreeditMethod();
+  if (ic_ != nullptr) {
+    last_active_profile_ =
+        engine_->ResolveModeIndicatorProfileInfo(*ic_, /*force_mtime_check=*/true)
+            .active_profile;
+  }
   DrawAll();
 }
 
@@ -358,6 +367,7 @@ void MozcState::FocusOut(const InputContextEvent& event) {
 
 bool MozcState::ParseResponse(const mozc::commands::Output& raw_response) {
   auto oldMode = composition_mode_;
+  const std::string oldProfile = last_active_profile_;
   ClearAll();
   const bool consumed = engine_->parser()->ParseResponse(raw_response, ic_);
   if (!consumed) {
@@ -365,8 +375,32 @@ bool MozcState::ParseResponse(const mozc::commands::Output& raw_response) {
   }
   OpenUrl();
   DrawAll();
-  if (oldMode != composition_mode_ && aux_.empty() && preedit_.empty() &&
-      !ic_->inputPanel().candidateList()) {
+  const bool is_idle =
+      aux_.empty() && preedit_.empty() && !ic_->inputPanel().candidateList();
+  bool profile_changed = false;
+  if (is_idle) {
+    std::string new_profile;
+    if (raw_response.has_status() &&
+        raw_response.status().has_active_profile()) {
+      new_profile = raw_response.status().active_profile();
+    } else if (ic_ != nullptr) {
+      new_profile =
+          engine_
+              ->ResolveModeIndicatorProfileInfo(*ic_,
+                                                /*force_mtime_check=*/true)
+              .active_profile;
+    }
+    profile_changed =
+        (!oldProfile.empty() && !new_profile.empty() &&
+         new_profile != oldProfile);
+    if (!new_profile.empty()) {
+      last_active_profile_ = std::move(new_profile);
+    }
+  }
+  if ((oldMode != composition_mode_ || profile_changed) && is_idle) {
+    if (profile_changed) {
+      engine_->compositionModeUpdated(ic_);
+    }
     engine_->instance()->showInputMethodInformation(ic_);
   }
   return consumed;

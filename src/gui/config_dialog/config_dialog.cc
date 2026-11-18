@@ -996,6 +996,8 @@ void ConfigDialog::SetupMogruUi() {
         QString::fromUtf8("アクティブなアプリケーションに応じたプロファイル自動切り替え"));
     appProfileMapLabel->setText(
         QString::fromUtf8("連動ルール (app:profile,...):"));
+    showProfileInModeIndicatorCheckBox->setText(
+        QString::fromUtf8("モード表示に有効なプロファイル名を表示する (show_profile_in_mode_indicator)"));
 
     enableInstantModeCheckBox->setText(
         QString::fromUtf8("インスタント速習モードを有効にする (極小ステップ即時適応)"));
@@ -1495,6 +1497,8 @@ void ConfigDialog::LoadGruConfigToUi(const GruPenaltyConfig& gru_config) {
   appProfileMapLineEdit->setText(
       QString::fromUtf8(gru_config.app_profile_map.c_str()));
   appProfileMapLineEdit->setEnabled(gru_config.enable_app_profile_switching);
+  showProfileInModeIndicatorCheckBox->setChecked(
+      gru_config.show_profile_in_mode_indicator);
 
   // Populate active profile's specific parameters
   PopulateWidgetsFromProfile(working_profiles_[active_prof]);
@@ -1548,6 +1552,8 @@ GruPenaltyConfig ConfigDialog::CollectGruConfigFromUi() const {
   cfg.enable_app_profile_switching =
       enableAppProfileSwitchingCheckBox->isChecked();
   cfg.app_profile_map = appProfileMapLineEdit->text().trimmed().toStdString();
+  cfg.show_profile_in_mode_indicator =
+      showProfileInModeIndicatorCheckBox->isChecked();
 
   // Make a working copy of working_profiles_ and save currently visible widgets into it
   auto wp = working_profiles_;

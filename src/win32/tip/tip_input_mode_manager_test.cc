@@ -148,12 +148,12 @@ TEST(TipInputModeManagerTest, IgnoreConversionModeByGlobalConfig_Issue8583505) {
   // Initialize (Off + Hiragana)
   input_mode_manager.OnInitialize(false, kNativeHiragana);
 
-  // SetFocus (Off + Hiragana)
+  // SetFocus (Off + Hiragana) -> always shows indicator on focus change.
   std::vector<InputScope> input_scope_empty;
   auto action =
       input_mode_manager.OnSetFocus(false, kNativeHiragana, input_scope_empty);
-  EXPECT_EQ(action, TipInputModeManager::kDoNothing);
-  EXPECT_FALSE(input_mode_manager.IsIndicatorVisible());
+  EXPECT_EQ(action, TipInputModeManager::kUpdateUI);
+  EXPECT_TRUE(input_mode_manager.IsIndicatorVisible());
   EXPECT_FALSE(input_mode_manager.GetEffectiveOpenClose());
   EXPECT_EQ(input_mode_manager.GetEffectiveConversionMode(),
             commands::HIRAGANA);
@@ -185,12 +185,12 @@ TEST(TipInputModeManagerTest, HonorConversionMode_Issue8583505) {
   // Initialize (Off + Hiragana)
   input_mode_manager.OnInitialize(false, kNativeHiragana);
 
-  // SetFocus (Off + Hiragana)
+  // SetFocus (Off + Hiragana) -> always shows indicator on focus change.
   std::vector<InputScope> input_scope_empty;
   auto action =
       input_mode_manager.OnSetFocus(false, kNativeHiragana, input_scope_empty);
-  EXPECT_EQ(action, TipInputModeManager::kDoNothing);
-  EXPECT_FALSE(input_mode_manager.IsIndicatorVisible());
+  EXPECT_EQ(action, TipInputModeManager::kUpdateUI);
+  EXPECT_TRUE(input_mode_manager.IsIndicatorVisible());
   EXPECT_FALSE(input_mode_manager.GetEffectiveOpenClose());
   EXPECT_EQ(input_mode_manager.GetEffectiveConversionMode(),
             commands::HIRAGANA);
@@ -220,12 +220,12 @@ TEST(TipInputModeManagerTest, ChangeInputScope) {
   // Initialize (Off + Hiragana)
   input_mode_manager.OnInitialize(false, kNativeHiragana);
 
-  // SetFocus (Off + Hiragana)
+  // SetFocus (Off + Hiragana) -> always shows indicator on focus change.
   std::vector<InputScope> input_scope_empty;
   auto action =
       input_mode_manager.OnSetFocus(false, kNativeHiragana, input_scope_empty);
-  EXPECT_EQ(action, TipInputModeManager::kDoNothing);
-  EXPECT_FALSE(input_mode_manager.IsIndicatorVisible());
+  EXPECT_EQ(action, TipInputModeManager::kUpdateUI);
+  EXPECT_TRUE(input_mode_manager.IsIndicatorVisible());
   EXPECT_FALSE(input_mode_manager.GetEffectiveOpenClose());
   EXPECT_EQ(input_mode_manager.GetEffectiveConversionMode(),
             commands::HIRAGANA);
@@ -290,12 +290,12 @@ TEST(TipInputModeManagerTest, InputScopeOnSetFocus_GitHubIssue826) {
   // Initialize (Off + Hiragana)
   input_mode_manager.OnInitialize(false, kNativeHiragana);
 
-  // SetFocus (Off + Hiragana)
+  // SetFocus (Off + Hiragana) -> always shows indicator on focus change.
   std::vector<InputScope> input_scope_email = {IS_EMAIL_SMTPEMAILADDRESS};
   auto action =
       input_mode_manager.OnSetFocus(false, kNativeHiragana, input_scope_email);
-  EXPECT_EQ(action, TipInputModeManager::kDoNothing);
-  EXPECT_FALSE(input_mode_manager.IsIndicatorVisible());
+  EXPECT_EQ(action, TipInputModeManager::kUpdateUI);
+  EXPECT_TRUE(input_mode_manager.IsIndicatorVisible());
   EXPECT_FALSE(input_mode_manager.GetEffectiveOpenClose());
   EXPECT_EQ(input_mode_manager.GetEffectiveConversionMode(),
             commands::HIRAGANA);
@@ -314,6 +314,33 @@ TEST(TipInputModeManagerTest, InputScopeOnSetFocus_GitHubIssue826) {
   EXPECT_FALSE(input_mode_manager.GetEffectiveOpenClose());
   EXPECT_EQ(input_mode_manager.GetEffectiveConversionMode(),
             commands::HIRAGANA);
+}
+
+TEST(TipInputModeManagerTest, OnFocusChangedAndProfileChange) {
+  TipInputModeManager input_mode_manager(GetGlobalMode());
+  input_mode_manager.OnInitialize(true, kNativeHiragana);
+
+  // Initial OnReceiveCommand records initial active profile.
+  input_mode_manager.OnReceiveCommand(true, commands::HIRAGANA,
+                                      commands::HIRAGANA, "default");
+  EXPECT_TRUE(input_mode_manager.pending_profile_change().empty());
+
+  // Key press hides indicator.
+  input_mode_manager.OnKey(VirtualKey(), true, true);
+  EXPECT_FALSE(input_mode_manager.IsIndicatorVisible());
+
+  // Switching profile via command makes indicator visible immediately.
+  input_mode_manager.OnReceiveCommand(true, commands::HIRAGANA,
+                                      commands::HIRAGANA, "coding");
+  EXPECT_TRUE(input_mode_manager.IsIndicatorVisible());
+  EXPECT_EQ(input_mode_manager.pending_profile_change(), "coding");
+
+  // Focus change clears pending command override and makes indicator visible.
+  input_mode_manager.OnKey(VirtualKey(), true, true);
+  EXPECT_FALSE(input_mode_manager.IsIndicatorVisible());
+  EXPECT_EQ(input_mode_manager.OnFocusChanged(), TipInputModeManager::kUpdateUI);
+  EXPECT_TRUE(input_mode_manager.IsIndicatorVisible());
+  EXPECT_TRUE(input_mode_manager.pending_profile_change().empty());
 }
 
 }  // namespace

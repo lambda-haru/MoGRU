@@ -31,10 +31,14 @@
 #define MOZC_WIN32_TIP_TIP_THREAD_CONTEXT_H_
 
 #include <cstdint>
+#include <string>
 
 #include "win32/tip/tip_input_mode_manager.h"
 
 namespace mozc {
+namespace commands {
+class Context;
+}  // namespace commands
 namespace win32 {
 namespace tsf {
 
@@ -53,6 +57,13 @@ class TipThreadContext {
   bool use_async_lock_in_key_handler() const {
     return use_async_lock_in_key_handler_;
   }
+
+  // Returns the sanitized executable name of the current host process
+  // (e.g. "Code" for Code.exe).
+  static const std::string& GetHostApplicationName();
+
+  // Populates `context->application_name` from the host process executable.
+  static void FillApplicationContext(commands::Context* context);
 
  private:
   TipInputModeManager input_mode_manager_;

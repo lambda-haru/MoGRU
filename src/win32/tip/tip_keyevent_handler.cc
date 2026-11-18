@@ -140,6 +140,7 @@ void FillMozcContextCommon(TipTextService* text_service, ITfContext* context,
   }
   mozc_context->set_revision(
       text_service->GetThreadContext()->GetFocusRevision());
+  TipThreadContext::FillApplicationContext(mozc_context);
   wil::com_ptr_nothrow<ITfContextView> context_view;
   if (FAILED(context->GetActiveView(&context_view))) {
     return;
@@ -390,7 +391,10 @@ HRESULT OnKey(TipTextService* text_service, ITfContext* context,
     // Handle PrevPage button on the on-screen keyboard.
     SessionCommand command;
     command.set_type(SessionCommand::CONVERT_PREV_PAGE);
-    if (!private_context->GetClient()->SendCommand(command, &temporal_output)) {
+    Context mozc_context;
+    FillMozcContextCommon(text_service, context, &mozc_context);
+    if (!private_context->GetClient()->SendCommandWithContext(
+            command, mozc_context, &temporal_output)) {
       *eaten = FALSE;
       return E_FAIL;
     }
@@ -400,7 +404,10 @@ HRESULT OnKey(TipTextService* text_service, ITfContext* context,
     // Handle NextPage button on the on-screen keyboard.
     SessionCommand command;
     command.set_type(SessionCommand::CONVERT_NEXT_PAGE);
-    if (!private_context->GetClient()->SendCommand(command, &temporal_output)) {
+    Context mozc_context;
+    FillMozcContextCommon(text_service, context, &mozc_context);
+    if (!private_context->GetClient()->SendCommandWithContext(
+            command, mozc_context, &temporal_output)) {
       *eaten = FALSE;
       return E_FAIL;
     }

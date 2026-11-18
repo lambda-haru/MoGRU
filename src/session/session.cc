@@ -48,6 +48,7 @@
 #include "composer/composer.h"
 #include "composer/key_event_util.h"
 #include "composer/table.h"
+#include "config/gru_config.h"
 #include "engine/engine_converter_interface.h"
 #include "engine/engine_interface.h"
 #include "protocol/commands.pb.h"
@@ -2795,6 +2796,14 @@ void Session::OutputMode(commands::Command* command) const {
   }
   status->set_mode(mode);
   status->set_comeback_mode(comeback_mode);
+
+  const commands::Context* context =
+      command->input().has_context() ? &command->input().context() : nullptr;
+  const auto profile_info =
+      config::GruConfigManager::ResolveModeIndicatorProfileInfo(context);
+  status->set_active_profile(profile_info.active_profile);
+  status->set_show_profile_in_mode_indicator(
+      profile_info.show_profile_in_mode_indicator);
 }
 
 void Session::OutputComposition(commands::Command* command) const {

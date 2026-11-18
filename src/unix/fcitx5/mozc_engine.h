@@ -43,6 +43,7 @@
 
 #include "base/file_util.h"
 #include "base/system_util.h"
+#include "config/gru_config.h"
 #include "protocol/commands.pb.h"
 #include "unix/fcitx5/i18nwrapper.h"
 #include "unix/fcitx5/mozc_client_interface.h"
@@ -155,6 +156,10 @@ class MozcEngine final : public InputMethodEngineV2 {
                       fcitx::InputContext& ic) override;
   std::string subModeIconImpl(const InputMethodEntry& entry,
                               InputContext& ic) override;
+  std::string subModeLabelImpl(const InputMethodEntry& entry,
+                               InputContext& ic) override;
+  mozc::config::ModeIndicatorProfileInfo ResolveModeIndicatorProfileInfo(
+      InputContext& ic, bool force_mtime_check = false) const;
 
   const Configuration* getConfig() const override;
   void setConfig(const RawConfig& config) override;

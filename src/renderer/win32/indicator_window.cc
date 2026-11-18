@@ -38,11 +38,16 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <vector>
+#include <cstdlib>
+#include <string>
+#include <utility>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
+#include "absl/strings/str_cat.h"
 #include "base/const.h"
 #include "base/win32/wide_char.h"
+#include "config/gru_config.h"
 #include "protocol/commands.pb.h"
 #include "protocol/renderer_command.pb.h"
 #include "renderer/win32/win32_font_util.h"
@@ -87,11 +92,65 @@ const UINT_PTR kTimerEventFading = 1;
 constexpr DWORD kStartFadingOutDelay = 2500;  // msec
 constexpr DWORD kFadingOutInterval = 16;      // msec
 constexpr int kFadingOutAlphaDelta = 32;
+constexpr size_t kMaxCachedSprites = 64;
 
 double GetDPIScaling() {
   wil::unique_hdc desktop_dc(::GetDC(nullptr));
   const int dpi_x = ::GetDeviceCaps(desktop_dc.get(), LOGPIXELSX);
   return static_cast<double>(dpi_x) / kDefaultDPI;
+}
+
+int MeasureLabelWidth(const std::string& label, const std::string& font_name,
+                      double font_point) {
+  if (label.empty()) {
+    return 0;
+  }
+  wil::unique_hdc dc(::CreateCompatibleDC(nullptr));
+  if (!dc) {
+    return 0;
+  }
+  const std::wstring wide_fontname = mozc::win32::Utf8ToWide(font_name);
+  if (wide_fontname.empty() || wide_fontname.size() >= LF_FACESIZE) {
+    return 0;
+  }
+  LOGFONT logfont = {};
+  logfont.lfWeight = FW_NORMAL;
+  logfont.lfCharSet = DEFAULT_CHARSET;
+  logfont.lfHeight =
+      -std::abs(::MulDiv(::GetDeviceCaps(dc.get(), LOGPIXELSY),
+                         static_cast<int>(font_point * 10), 720));
+  if (wcscpy_s(logfont.lfFaceName, LF_FACESIZE, wide_fontname.c_str()) != 0) {
+    return 0;
+  }
+  wil::unique_hfont font_handle(::CreateFontIndirectW(&logfont));
+  if (!font_handle) {
+    return 0;
+  }
+  wil::unique_select_object old_font(
+      wil::SelectObject(dc.get(), font_handle.get()));
+  const std::wstring wide_text = mozc::win32::Utf8ToWide(label);
+  RECT rect = {0, 0, 0, 0};
+  ::DrawTextW(dc.get(), wide_text.c_str(), static_cast<int>(wide_text.size()),
+              &rect, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+  return rect.right - rect.left;
+}
+
+const char* GetBaseModeLabel(int mode) {
+  switch (mode) {
+    case commands::HIRAGANA:
+      return "あ";
+    case commands::FULL_KATAKANA:
+      return "ア";
+    case commands::HALF_ASCII:
+      return "_A";
+    case commands::FULL_ASCII:
+      return "Ａ";
+    case commands::HALF_KATAKANA:
+      return "_ｱ";
+    case commands::DIRECT:
+    default:
+      return "A";
+  }
 }
 
 }  // namespace
@@ -101,9 +160,7 @@ class IndicatorWindow::WindowImpl
                          IndicatorWindowTraits> {
  public:
   DECLARE_WND_CLASS_EX(kIndicatorWindowClassName, 0, COLOR_WINDOW);
-  WindowImpl() : alpha_(255), dpi_scaling_(GetDPIScaling()) {
-    sprites_.resize(commands::NUM_OF_COMPOSITIONS);
-  }
+  WindowImpl() : current_image_(nullptr), alpha_(255), dpi_scaling_(GetDPIScaling()) {}
   WindowImpl(const WindowImpl&) = delete;
   WindowImpl& operator=(const WindowImpl&) = delete;
 
@@ -135,33 +192,76 @@ class IndicatorWindow::WindowImpl
     DCHECK(command.has_application_info());
     DCHECK(command.application_info().has_indicator_info());
     DCHECK(command.application_info().indicator_info().has_status());
-    const Status& status = command.application_info().indicator_info().status();
+    const ApplicationInfo& app_info = command.application_info();
+    const auto& indicator_info = app_info.indicator_info();
+    const Status& status = indicator_info.status();
 
     alpha_ = 255;
-    current_image_ = sprites_[commands::DIRECT].bitmap.get();
-    CPoint offset = sprites_[commands::DIRECT].offset;
-    if (!status.has_activated() || !status.has_mode() || !status.activated()) {
-      current_image_ = sprites_[commands::DIRECT].bitmap.get();
-      offset = sprites_[commands::DIRECT].offset;
-    } else {
-      const int mode = status.mode();
-      switch (mode) {
+    int effective_mode = commands::DIRECT;
+    if (status.has_activated() && status.activated() && status.has_mode()) {
+      switch (status.mode()) {
         case commands::HIRAGANA:
         case commands::FULL_KATAKANA:
         case commands::HALF_ASCII:
         case commands::FULL_ASCII:
         case commands::HALF_KATAKANA:
-          current_image_ = sprites_[mode].bitmap.get();
-          offset = sprites_[mode].offset;
+          effective_mode = status.mode();
+          break;
+        default:
+          effective_mode = commands::DIRECT;
           break;
       }
     }
-    if (current_image_ == nullptr) {
+
+    const bool is_direct = (effective_mode == commands::DIRECT);
+    const char* base_label = GetBaseModeLabel(effective_mode);
+    std::string final_label = base_label;
+    if (!is_direct) {
+      commands::Context context;
+      if (app_info.has_application_name() &&
+          !app_info.application_name().empty()) {
+        context.set_application_name(app_info.application_name());
+      }
+      auto profile_info =
+          config::GruConfigManager::ResolveModeIndicatorProfileInfo(
+              &context, "", /*force_mtime_check=*/true);
+      if (indicator_info.has_profile_name() &&
+          !indicator_info.profile_name().empty()) {
+        profile_info.active_profile = indicator_info.profile_name();
+      }
+      if (indicator_info.has_show_profile_in_mode_indicator()) {
+        profile_info.show_profile_in_mode_indicator =
+            indicator_info.show_profile_in_mode_indicator();
+      }
+      final_label = config::GruConfigManager::FormatModeIndicatorLabel(
+          base_label, /*is_direct=*/false, profile_info.active_profile,
+          profile_info.show_profile_in_mode_indicator);
+    }
+
+    const Sprite* sprite = GetOrCreateSprite(effective_mode, final_label);
+    if (sprite == nullptr || sprite->bitmap.get() == nullptr) {
       HideIndicator();
       return;
     }
+    current_image_ = sprite->bitmap.get();
+    const CPoint offset = sprite->offset;
     top_left_ = CPoint(indicator_layout.window_rect.left - offset.x,
                        indicator_layout.window_rect.bottom - offset.y);
+    RECT working_area = {};
+    if (GetWorkingAreaFromPoint(
+            CPoint(indicator_layout.window_rect.left,
+                   indicator_layout.window_rect.bottom),
+            &working_area)) {
+      BITMAP bm = {};
+      if (::GetObject(current_image_, sizeof(bm), &bm) != 0) {
+        if (top_left_.x + bm.bmWidth > working_area.right) {
+          top_left_.x = working_area.right - bm.bmWidth;
+        }
+        if (top_left_.x < working_area.left) {
+          top_left_.x = working_area.left;
+        }
+      }
+    }
     UpdateWindow();
 
     // Start fading out.
@@ -176,6 +276,9 @@ class IndicatorWindow::WindowImpl
 
  private:
   void UpdateWindow() {
+    if (current_image_ == nullptr) {
+      return;
+    }
     BITMAP bm = {};
     ::GetObject(current_image_, sizeof(bm), &bm);
     CSize size(bm.bmWidth, bm.bmHeight);
@@ -200,13 +303,7 @@ class IndicatorWindow::WindowImpl
 
   LRESULT OnCreate(LPCREATESTRUCT create_struct) {
     EnableOrDisableWindowForWorkaround();
-    constexpr int kModes[] = {
-        commands::DIRECT,     commands::HIRAGANA,   commands::FULL_KATAKANA,
-        commands::HALF_ASCII, commands::FULL_ASCII, commands::HALF_KATAKANA,
-    };
-    for (size_t i = 0; i < std::size(kModes); ++i) {
-      LoadSprite(kModes[i]);
-    }
+    GetOrCreateSprite(commands::DIRECT, GetBaseModeLabel(commands::DIRECT));
     return 1;
   }
 
@@ -249,14 +346,25 @@ class IndicatorWindow::WindowImpl
     }
   }
 
-  void LoadSprite(int mode) {
+  const Sprite* GetOrCreateSprite(int mode, const std::string& label) {
+    if (label.empty()) {
+      return nullptr;
+    }
+    const std::string key = absl::StrCat(mode, "\t", label);
+    if (auto it = sprites_.find(key); it != sprites_.end()) {
+      return &it->second;
+    }
+    if (sprites_.size() >= kMaxCachedSprites) {
+      current_image_ = nullptr;
+      sprites_.clear();
+    }
+
     BalloonImage::BalloonImageInfo info;
     LOGFONT logfont = GetMessageBoxLogFont(::GetDpiForSystem());
     info.label_font = mozc::win32::WideToUtf8(logfont.lfFaceName);
 
     info.frame_color = RGBColor(1, 122, 204);
     info.blur_color = RGBColor(1, 122, 204);
-    info.rect_width = ceil(dpi_scaling_ * 45.0);   // snap to pixel alignment
     info.rect_height = ceil(dpi_scaling_ * 45.0);  // snap to pixel alignment
     info.corner_radius = dpi_scaling_ * 0.0;
     info.tail_height = dpi_scaling_ * 5.0;
@@ -268,39 +376,33 @@ class IndicatorWindow::WindowImpl
     info.label_color = RGBColor(0, 0, 0);
     info.blur_offset_x = 0;
     info.blur_offset_y = 0;
+    info.label = label;
 
-    switch (mode) {
-      case commands::DIRECT:
-        info.blur_sigma = dpi_scaling_ * 0.0;
-        info.frame_color = RGBColor(186, 186, 186);
-        info.label_color = RGBColor(0, 0, 0);
-        info.blur_sigma = dpi_scaling_ * 0.0;
-        info.frame_thickness = dpi_scaling_ * 1.0;
-        info.corner_radius = dpi_scaling_ * 0.0;
-        info.blur_offset_x = 0;
-        info.blur_offset_y = 0;
-        info.label = "A";
-        break;
-      case commands::HIRAGANA:
-        info.label = "あ";
-        break;
-      case commands::FULL_KATAKANA:
-        info.label = "ア";
-        break;
-      case commands::HALF_ASCII:
-        info.label = "_A";
-        break;
-      case commands::FULL_ASCII:
-        info.label = "Ａ";
-        break;
-      case commands::HALF_KATAKANA:
-        info.label = "_ｱ";
-        break;
+    if (mode == commands::DIRECT) {
+      info.blur_sigma = dpi_scaling_ * 0.0;
+      info.frame_color = RGBColor(186, 186, 186);
+      info.label_color = RGBColor(0, 0, 0);
+      info.frame_thickness = dpi_scaling_ * 1.0;
+      info.corner_radius = dpi_scaling_ * 0.0;
+      info.blur_offset_x = 0;
+      info.blur_offset_y = 0;
     }
-    if (!info.label.empty()) {
-      sprites_[mode].bitmap.reset(
-          BalloonImage::Create(info, &sprites_[mode].offset));
+
+    const double min_width = ceil(dpi_scaling_ * 45.0);
+    const int text_width =
+        MeasureLabelWidth(info.label, info.label_font, info.label_size);
+    const double padded_width = static_cast<double>(text_width) +
+                                ceil(dpi_scaling_ * 18.0) +
+                                2.0 * info.frame_thickness;
+    info.rect_width = std::max(min_width, ceil(padded_width));
+
+    Sprite sprite;
+    sprite.bitmap.reset(BalloonImage::Create(info, &sprite.offset));
+    if (sprite.bitmap.get() == nullptr) {
+      return nullptr;
     }
+    auto [inserted_it, _] = sprites_.emplace(key, std::move(sprite));
+    return &inserted_it->second;
   }
 
   inline LRESULT OnCreate(UINT msg_id, WPARAM wparam, LPARAM lparam,
@@ -324,7 +426,7 @@ class IndicatorWindow::WindowImpl
   CPoint top_left_;
   BYTE alpha_;
   double dpi_scaling_;
-  std::vector<Sprite> sprites_;
+  absl::flat_hash_map<std::string, Sprite> sprites_;
 };
 
 IndicatorWindow::IndicatorWindow() : impl_(new WindowImpl) {}

@@ -54,6 +54,7 @@
 #include "composer/key_parser.h"
 #include "composer/table.h"
 #include "config/config_handler.h"
+#include "config/gru_config.h"
 #include "converter/attribute.h"
 #include "converter/candidate.h"
 #include "converter/converter_mock.h"
@@ -11206,6 +11207,45 @@ TEST_F(SessionTest, SegmentWidthExpandAndShrinkPropagatePrecedingText) {
       });
   command.Clear();
   EXPECT_TRUE(session.SegmentWidthExpand(&command));
+}
+
+TEST_F(SessionTest, StatusIncludesActiveProfileAndIndicatorFlag) {
+  config::GruConfigManager::InvalidateConfigCache();
+  const std::string config_path =
+      config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+  ASSERT_FALSE(config_path.empty());
+
+  GruPenaltyConfig cfg;
+  cfg.current_profile = "business";
+  cfg.enable_app_profile_switching = true;
+  cfg.app_profile_map = "Code:coding";
+  cfg.show_profile_in_mode_indicator = true;
+  ASSERT_TRUE(config::GruConfigManager::SaveConfig(cfg, config_path));
+
+  std::unique_ptr<Engine> engine =
+      MockDataEngineFactory::Create().value();
+  Session session(*engine);
+
+  commands::Command command;
+  command.mutable_input()->set_type(commands::Input::SEND_COMMAND);
+  command.mutable_input()->mutable_command()->set_type(
+      commands::SessionCommand::GET_STATUS);
+  ASSERT_TRUE(session.GetStatus(&command));
+  EXPECT_EQ(command.output().status().active_profile(), "business");
+  EXPECT_TRUE(command.output().status().show_profile_in_mode_indicator());
+
+  command.Clear();
+  command.mutable_input()->set_type(commands::Input::SEND_COMMAND);
+  command.mutable_input()->mutable_command()->set_type(
+      commands::SessionCommand::GET_STATUS);
+  command.mutable_input()->mutable_context()->set_application_name("Code");
+  ASSERT_TRUE(session.GetStatus(&command));
+  EXPECT_EQ(command.output().status().active_profile(), "coding");
+  EXPECT_TRUE(command.output().status().show_profile_in_mode_indicator());
+
+  std::error_code ec;
+  std::filesystem::remove(config_path, ec);
+  config::GruConfigManager::InvalidateConfigCache();
 }
 
 }  // namespace session

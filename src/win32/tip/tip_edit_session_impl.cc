@@ -407,9 +407,12 @@ HRESULT UpdatePrivateContext(TipTextService* text_service, ITfContext* context,
   const Status& status = output.status();
   TipInputModeManager* input_mode_manager =
       text_service->GetThreadContext()->GetInputModeManager();
+  const std::string active_profile =
+      status.has_active_profile() ? status.active_profile() : "";
   const TipInputModeManager::NotifyActionSet action_set =
       input_mode_manager->OnReceiveCommand(
-          status.activated(), status.comeback_mode(), status.mode());
+          status.activated(), status.comeback_mode(), status.mode(),
+          active_profile);
   if ((action_set & TipInputModeManager::kNotifySystemOpenClose) ==
       TipInputModeManager::kNotifySystemOpenClose) {
     TipStatus::SetIMEOpen(text_service->GetThreadManager(),
@@ -627,7 +630,10 @@ HRESULT TipEditSessionImpl::OnCompositionTerminated(
   if (private_context == nullptr) {
     return E_FAIL;
   }
-  if (!private_context->GetClient()->SendCommand(command, &output)) {
+  commands::Context mozc_context;
+  TipThreadContext::FillApplicationContext(&mozc_context);
+  if (!private_context->GetClient()->SendCommandWithContext(
+          command, mozc_context, &output)) {
     return E_FAIL;
   }
   const HRESULT result = DoEditSessionAfterComposition(text_service, context,

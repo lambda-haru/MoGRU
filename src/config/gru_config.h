@@ -87,6 +87,7 @@ struct GruPenaltyConfig {
   std::string current_profile = "default";
   bool enable_app_profile_switching = true;
   std::string app_profile_map = "code:coding,cursor:coding,slack:business,discord:casual";
+  bool show_profile_in_mode_indicator = true;
 
   // Instant adaptation mode configuration
   bool enable_instant_mode = false;
@@ -109,6 +110,11 @@ struct GruAlphaState {
   double anchor_alpha = 800.0;
   uint64_t update_count = 0;
   std::string last_updated;
+};
+
+struct ModeIndicatorProfileInfo {
+  std::string active_profile = "default";
+  bool show_profile_in_mode_indicator = true;
 };
 
 class GruConfigManager {
@@ -179,6 +185,27 @@ class GruConfigManager {
   static std::string ResolveEffectiveActiveProfile(
       const commands::Context* context = nullptr,
       const std::string& explicit_config_path = "");
+
+  // Resolves both the effective active profile and whether the mode indicator
+  // should include the profile name.
+  static ModeIndicatorProfileInfo ResolveModeIndicatorProfileInfo(
+      const commands::Context* context = nullptr,
+      const std::string& explicit_config_path = "",
+      bool force_mtime_check = false);
+
+  // Formats a mode indicator label (e.g. "あ" -> "あ [coding]").
+  // Returns `mode_label` unchanged when `is_direct` is true,
+  // `show_profile_in_indicator` is false, or `active_profile` is empty.
+  static std::string FormatModeIndicatorLabel(
+      absl::string_view mode_label,
+      bool is_direct,
+      absl::string_view active_profile,
+      bool show_profile_in_indicator);
+
+  // Extracts an application name from an executable path
+  // (e.g. "C:\\Program Files\\Microsoft VS Code\\Code.exe" -> "Code").
+  static std::string ExtractAppNameFromExecutablePath(
+      absl::string_view exe_path);
 
   // Forces the next call to ResolveEffectiveActiveProfile to re-read gru_config.ini.
   static void InvalidateConfigCache();

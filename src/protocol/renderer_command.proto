@@ -84,6 +84,8 @@ message RendererCommand {
   // Visual information about mode indicator.
   message IndicatorInfo {
     optional Status status = 1;
+    optional string profile_name = 2;
+    optional bool show_profile_in_mode_indicator = 3;
   }
 
   // Application information Mozc UI is attaching
@@ -154,6 +156,9 @@ message RendererCommand {
 
     // used in Windows:
     optional IndicatorInfo indicator_info = 14;
+
+    // Application identifier (e.g. host executable name on Windows).
+    optional string application_name = 15;
   }
 
   optional ApplicationInfo application_info = 5;

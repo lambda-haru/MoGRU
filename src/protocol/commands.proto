@@ -1326,6 +1326,12 @@ message Status {
   // Whether Undo operation is available.
   // The client may enable/disable the Undo key based on this value.
   optional bool undo_available = 26;
+
+  // Currently active MoGRU profile name resolved for the context.
+  optional string active_profile = 27;
+
+  // Whether the active profile name should be shown in the mode indicator.
+  optional bool show_profile_in_mode_indicator = 28;
 }
 
 // This message contains which characters are to be deleted by client.

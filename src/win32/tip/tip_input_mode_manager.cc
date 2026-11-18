@@ -32,9 +32,11 @@
 #include <inputscope.h>
 
 #include <algorithm>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "protocol/commands.pb.h"
 #include "win32/base/conversion_mode_util.h"
@@ -161,9 +163,22 @@ TipInputModeManager::Action TipInputModeManager::OnMoveFocusedWindow() {
   }
 }
 
+TipInputModeManager::Action TipInputModeManager::OnFocusChanged() {
+  pending_profile_change_.clear();
+  const IndicatorVisibilityTracker::Action action =
+      indicator_visibility_tracker_.OnChangeInputMode();
+  switch (action) {
+    case IndicatorVisibilityTracker::kUpdateUI:
+      return kUpdateUI;
+    default:
+      return kDoNothing;
+  }
+}
+
 TipInputModeManager::NotifyActionSet TipInputModeManager::OnReceiveCommand(
     bool mozc_open_close_mode, commands::CompositionMode mozc_logical_mode,
-    commands::CompositionMode mozc_visible_mode) {
+    commands::CompositionMode mozc_visible_mode,
+    absl::string_view active_profile) {
   const StatePair prev_tsf_state = tsf_state_;
 
   tsf_state_.open_close = mozc_open_close_mode;
@@ -178,7 +193,16 @@ TipInputModeManager::NotifyActionSet TipInputModeManager::OnReceiveCommand(
   if (prev_tsf_state.conversion_mode != tsf_state_.conversion_mode) {
     action_set |= kNotifySystemConversionMode;
   }
-  if (action_set != kNotifyNothing) {
+  bool profile_changed = false;
+  if (!active_profile.empty()) {
+    if (!last_active_profile_.empty() &&
+        last_active_profile_ != active_profile) {
+      profile_changed = true;
+      pending_profile_change_.assign(active_profile);
+    }
+    last_active_profile_.assign(active_profile);
+  }
+  if (action_set != kNotifyNothing || profile_changed) {
     indicator_visibility_tracker_.OnChangeInputMode();
   }
   return action_set;
@@ -186,6 +210,8 @@ TipInputModeManager::NotifyActionSet TipInputModeManager::OnReceiveCommand(
 
 void TipInputModeManager::OnInitialize(bool system_open_close_mode,
                                        DWORD system_conversion_mode) {
+  last_active_profile_.clear();
+  pending_profile_change_.clear();
   mozc_state_.open_close = system_open_close_mode;
   tsf_state_.open_close = system_open_close_mode;
   if (use_global_mode_) {
@@ -201,9 +227,7 @@ void TipInputModeManager::OnInitialize(bool system_open_close_mode,
 TipInputModeManager::Action TipInputModeManager::OnSetFocus(
     bool system_open_close_mode, DWORD system_conversion_mode,
     absl::Span<const InputScope> input_scopes) {
-  const StatePair prev_effective = mozc_state_;
-
-  indicator_visibility_tracker_.OnMoveFocusedWindow();
+  pending_profile_change_.clear();
 
   std::vector<InputScope> new_input_scopes(input_scopes.begin(),
                                            input_scopes.end());
@@ -219,12 +243,8 @@ TipInputModeManager::Action TipInputModeManager::OnSetFocus(
 
   input_scope_ = std::move(new_input_scopes);
   mozc_state_ = GetOverriddenState(tsf_state_, input_scopes);
-  if ((mozc_state_.open_close != prev_effective.open_close) ||
-      (mozc_state_.conversion_mode != prev_effective.conversion_mode)) {
-    indicator_visibility_tracker_.OnChangeInputMode();
-    return kUpdateUI;
-  }
-  return kDoNothing;
+  indicator_visibility_tracker_.OnChangeInputMode();
+  return kUpdateUI;
 }
 
 TipInputModeManager::Action TipInputModeManager::OnChangeOpenClose(

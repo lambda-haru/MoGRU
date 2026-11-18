@@ -309,6 +309,7 @@ void MozcEngine::setConfig(const RawConfig& config) {
 void MozcEngine::reloadConfig() {
   readAsIni(config_, GetConfigPath());
   safeSaveAsIni(config_, GetConfigPath());
+  mozc::config::GruConfigManager::InvalidateConfigCache();
   SyncGruFlags();
   mozc::config::ConfigHandler::Reload();
   ResetClientPool();
@@ -362,16 +363,47 @@ void MozcEngine::save() {
   client_->SyncData();
 }
 
+mozc::config::ModeIndicatorProfileInfo
+MozcEngine::ResolveModeIndicatorProfileInfo(InputContext& ic,
+                                            bool force_mtime_check) const {
+  mozc::commands::Context context;
+  if (!ic.program().empty()) {
+    context.set_application_name(ic.program());
+  }
+  return mozc::config::GruConfigManager::ResolveModeIndicatorProfileInfo(
+      &context, "", force_mtime_check);
+}
+
 std::string MozcEngine::subMode(const fcitx::InputMethodEntry& /*entry*/,
                                 fcitx::InputContext& ic) {
   auto* mozc_state = mozcState(&ic);
-  return _(kPropCompositionModes[mozc_state->GetCompositionMode()].description);
+  const auto mode = mozc_state->GetCompositionMode();
+  const size_t idx =
+      (mode < kNumCompositionModes) ? mode : mozc::commands::HIRAGANA;
+  const bool is_direct = (idx == mozc::commands::DIRECT);
+  const auto info = ResolveModeIndicatorProfileInfo(ic, /*force_mtime_check=*/true);
+  return mozc::config::GruConfigManager::FormatModeIndicatorLabel(
+      _(kPropCompositionModes[idx].description), is_direct,
+      info.active_profile, info.show_profile_in_mode_indicator);
 }
 
 std::string MozcEngine::subModeIconImpl(
     const fcitx::InputMethodEntry& /*unused*/, fcitx::InputContext& ic) {
   auto* mozc_state = mozcState(&ic);
   return _(kPropCompositionModes[mozc_state->GetCompositionMode()].icon);
+}
+
+std::string MozcEngine::subModeLabelImpl(
+    const fcitx::InputMethodEntry& /*entry*/, fcitx::InputContext& ic) {
+  auto* mozc_state = mozcState(&ic);
+  const auto mode = mozc_state->GetCompositionMode();
+  const size_t idx =
+      (mode < kNumCompositionModes) ? mode : mozc::commands::HIRAGANA;
+  const bool is_direct = (idx == mozc::commands::DIRECT);
+  const auto info = ResolveModeIndicatorProfileInfo(ic, /*force_mtime_check=*/true);
+  return mozc::config::GruConfigManager::FormatModeIndicatorLabel(
+      kPropCompositionModes[idx].label, is_direct, info.active_profile,
+      info.show_profile_in_mode_indicator);
 }
 
 MozcState* MozcEngine::mozcState(InputContext* ic) {

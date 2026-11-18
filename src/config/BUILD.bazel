@@ -155,6 +155,19 @@ mozc_cc_library(
     ],
 )
 
+mozc_cc_test(
+    name = "gru_config_test",
+    size = "small",
+    srcs = ["gru_config_test.cc"],
+    deps = [
+        ":gru_config",
+        "//base:file_util",
+        "//protocol:commands_cc_proto",
+        "//testing:gunit_main",
+        "//testing:mozctest",
+    ],
+)
+
 mozc_cc_library(
     name = "conversion_stats",
     srcs = ["conversion_stats.cc"],

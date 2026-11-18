@@ -34,8 +34,10 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "protocol/commands.pb.h"
 #include "win32/base/indicator_visibility_tracker.h"
@@ -101,17 +103,24 @@ class TipInputModeManager : public TipInputModeManagerImpl {
   Action OnTestKey(const VirtualKey& key, bool is_down, bool eaten);
   Action OnKey(const VirtualKey& key, bool is_down, bool eaten);
   Action OnMoveFocusedWindow();
+  Action OnFocusChanged();
   bool IsIndicatorVisible() const;
 
   void OnInitialize(bool system_open_close_mode, DWORD system_conversion_mode);
   NotifyActionSet OnReceiveCommand(bool mozc_open_close_mode,
                                    commands::CompositionMode mozc_logical_mode,
-                                   commands::CompositionMode mozc_visible_mode);
+                                   commands::CompositionMode mozc_visible_mode,
+                                   absl::string_view active_profile = "");
   Action OnSetFocus(bool system_open_close_mode, DWORD system_conversion_mode,
                     absl::Span<const InputScope> input_scopes);
   Action OnChangeOpenClose(bool new_open_close_mode);
   Action OnChangeConversionMode(DWORD new_conversion_mode);
   Action OnChangeInputScope(absl::Span<const InputScope> input_scopes);
+
+  const std::string& pending_profile_change() const {
+    return pending_profile_change_;
+  }
+  void ClearPendingProfileChange() { pending_profile_change_.clear(); }
 
   // Returns an IME open/close state that is visible from the Mozc session.
   bool GetEffectiveOpenClose() const;
@@ -128,6 +137,8 @@ class TipInputModeManager : public TipInputModeManagerImpl {
   StatePair tsf_state_;
   IndicatorVisibilityTracker indicator_visibility_tracker_;
   std::vector<InputScope> input_scope_;
+  std::string last_active_profile_;
+  std::string pending_profile_change_;
 };
 
 }  // namespace tsf

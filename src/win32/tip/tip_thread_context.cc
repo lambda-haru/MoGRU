@@ -29,10 +29,19 @@
 
 #include "win32/tip/tip_thread_context.h"
 
-#include <cstdint>
-#include <limits>
+#include <windows.h>
 
+#include <cstdint>
+#include <iterator>
+#include <limits>
+#include <string>
+#include <string_view>
+
+#include "absl/base/no_destructor.h"
+#include "base/win32/wide_char.h"
 #include "base/win32/win_util.h"
+#include "config/gru_config.h"
+#include "protocol/commands.pb.h"
 #include "win32/tip/tip_input_mode_manager.h"
 
 namespace mozc {
@@ -56,6 +65,34 @@ void TipThreadContext::IncrementFocusRevision() {
     focus_revision_++;
   } else {
     focus_revision_ = 0;
+  }
+}
+
+// static
+const std::string& TipThreadContext::GetHostApplicationName() {
+  static const absl::NoDestructor<std::string> app_name([]() -> std::string {
+    wchar_t module_path[4096] = {};
+    const DWORD len =
+        ::GetModuleFileNameW(nullptr, module_path, std::size(module_path));
+    if (len == 0 || len >= std::size(module_path)) {
+      return "";
+    }
+    const std::string utf8_path =
+        WideToUtf8(std::wstring_view(module_path, len));
+    return config::GruConfigManager::ExtractAppNameFromExecutablePath(
+        utf8_path);
+  }());
+  return *app_name;
+}
+
+// static
+void TipThreadContext::FillApplicationContext(commands::Context* context) {
+  if (context == nullptr) {
+    return;
+  }
+  const std::string& app_name = GetHostApplicationName();
+  if (!app_name.empty()) {
+    context->set_application_name(app_name);
   }
 }
 

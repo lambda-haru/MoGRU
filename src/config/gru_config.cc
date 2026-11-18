@@ -643,9 +643,10 @@ void GruConfigManager::InvalidateConfigCache() {
   state.has_cached = false;
 }
 
-std::string GruConfigManager::ResolveEffectiveActiveProfile(
+ModeIndicatorProfileInfo GruConfigManager::ResolveModeIndicatorProfileInfo(
     const commands::Context* context,
-    const std::string& explicit_config_path) {
+    const std::string& explicit_config_path,
+    bool force_mtime_check) {
   auto& state = GetActiveProfileCacheState();
   absl::MutexLock lock(state.mutex);
 
@@ -659,16 +660,14 @@ std::string GruConfigManager::ResolveEffectiveActiveProfile(
       state.last_mtime = -1;
       state.has_cached = false;
     }
-    if (!state.has_cached) {
-      state.cached_root_config = GruPenaltyConfig();
-      ApplyEnvOverrides(&state.cached_root_config);
-      state.active_profile =
-          SanitizeProfileName(state.cached_root_config.current_profile);
-      state.has_cached = true;
-    }
+    state.cached_root_config = GruPenaltyConfig();
+    ApplyEnvOverrides(&state.cached_root_config);
+    state.active_profile =
+        SanitizeProfileName(state.cached_root_config.current_profile);
+    state.has_cached = true;
   } else {
     const absl::Time now = absl::Now();
-    if (!state.has_cached || path != state.last_path ||
+    if (!state.has_cached || path != state.last_path || force_mtime_check ||
         (now - state.last_check_time) >= absl::Seconds(1)) {
       state.last_check_time = now;
       EnsureConfigFileExists(path);
@@ -688,7 +687,43 @@ std::string GruConfigManager::ResolveEffectiveActiveProfile(
 
   state.active_profile =
       ResolveActiveProfileForContext(state.cached_root_config, context);
-  return state.active_profile;
+  return ModeIndicatorProfileInfo{
+      state.active_profile,
+      state.cached_root_config.show_profile_in_mode_indicator,
+  };
+}
+
+std::string GruConfigManager::ResolveEffectiveActiveProfile(
+    const commands::Context* context,
+    const std::string& explicit_config_path) {
+  return ResolveModeIndicatorProfileInfo(context, explicit_config_path)
+      .active_profile;
+}
+
+std::string GruConfigManager::FormatModeIndicatorLabel(
+    absl::string_view mode_label,
+    bool is_direct,
+    absl::string_view active_profile,
+    bool show_profile_in_indicator) {
+  if (is_direct || !show_profile_in_indicator || active_profile.empty()) {
+    return std::string(mode_label);
+  }
+  return absl::StrCat(mode_label, " [", active_profile, "]");
+}
+
+std::string GruConfigManager::ExtractAppNameFromExecutablePath(
+    absl::string_view exe_path) {
+  absl::string_view trimmed = absl::StripAsciiWhitespace(exe_path);
+  if (trimmed.empty()) {
+    return "";
+  }
+  const size_t slash = trimmed.find_last_of("/\\");
+  absl::string_view base =
+      (slash == absl::string_view::npos) ? trimmed : trimmed.substr(slash + 1);
+  if (absl::EndsWithIgnoreCase(base, ".exe")) {
+    base.remove_suffix(4);
+  }
+  return std::string(base);
 }
 
 std::map<std::string, GruPenaltyConfig> GruConfigManager::GetBuiltinDefaultProfiles(
@@ -1254,6 +1289,9 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       "# 【アプリケーション名とプロファイルの紐付け定義】 (app_name:profile_name)\n"
       "app_profile_map = %s\n"
       "\n"
+      "# 【モードインジケータへのプロファイル名表示】 (初期値: true)\n"
+      "show_profile_in_mode_indicator = %s\n"
+      "\n"
       "# 【インスタント速習モードの有効化】 (初期値: false)\n"
       "# - 1回の確定で対象単語を極限まで高速学習し、次回入力時の最上位候補へ昇格させます。\n"
       "enable_instant_mode = %s\n"
@@ -1301,6 +1339,7 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       config.current_profile.empty() ? "default" : config.current_profile.c_str(),
       config.enable_app_profile_switching ? "true" : "false",
       config.app_profile_map.c_str(),
+      config.show_profile_in_mode_indicator ? "true" : "false",
       config.enable_instant_mode ? "true" : "false",
       config.instant_learning_rate,
       config.instant_max_weight_delta);
@@ -1627,6 +1666,11 @@ void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
         "\n# 【アプリケーション名とプロファイルの紐付け定義】 (app_name:profile_name)\n"
         "app_profile_map = code:coding,cursor:coding,slack:business,discord:casual\n";
   }
+  if (content.find("show_profile_in_mode_indicator") == std::string::npos) {
+    append_content +=
+        "\n# 【モードインジケータへのプロファイル名表示】 (初期値: true)\n"
+        "show_profile_in_mode_indicator = true\n";
+  }
   if (content.find("enable_instant_mode") == std::string::npos) {
     append_content +=
         "\n# 【インスタント速習モードの有効化】 (初期値: false)\n"
@@ -1829,6 +1873,11 @@ void ApplyConfigKeyValue(GruPenaltyConfig* config,
   }
   if (key == "app_profile_map") {
     config->app_profile_map = std::string(val);
+    return;
+  }
+  if (key == "show_profile_in_mode_indicator") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->show_profile_in_mode_indicator = b;
     return;
   }
   if (key == "deleted_profiles") {
@@ -2121,6 +2170,10 @@ void GruConfigManager::ApplyEnvOverrides(GruPenaltyConfig* config) {
   if (const char* e = std::getenv("MOZC_GRU_ENABLE_CONVERSION_HISTORY_LOG")) {
     bool b = false;
     if (absl::SimpleAtob(e, &b)) config->enable_conversion_history_log = b;
+  }
+  if (const char* e = std::getenv("MOZC_GRU_SHOW_PROFILE_IN_MODE_INDICATOR")) {
+    bool b = true;
+    if (absl::SimpleAtob(e, &b)) config->show_profile_in_mode_indicator = b;
   }
 }
 
