@@ -4265,5 +4265,68 @@ TEST_F(ConverterTest, EnglishFallbackMultiWordWithTrailingParticle) {
   }
 }
 
+TEST_F(ConverterTest, PrecedingTextLifecycleAndEqualsMatcher) {
+  std::unique_ptr<Converter> converter = CreateStubbedConverter();
+
+  composer::Composer composer;
+  composer.SetPreeditTextForTestOnly("きょうはいいてんき");
+  commands::Context context;
+  context.set_preceding_text("最近の");
+  const ConversionRequest convreq =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetContextView(context)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+
+  Segments segments;
+  ASSERT_TRUE(converter->StartConversion(convreq, &segments));
+  EXPECT_EQ(segments.preceding_text(), "最近の");
+
+  // ResizeSegment with empty request context must preserve segments.preceding_text().
+  const ConversionRequest empty_resize_req;
+  ASSERT_TRUE(converter->ResizeSegment(&segments, empty_resize_req, 0, -1));
+  EXPECT_EQ(segments.preceding_text(), "最近の");
+
+  // EqualsSegments must compare preceding_text.
+  Segments same_segments(segments);
+  Segments diff_segments(segments);
+  diff_segments.set_preceding_text("別の");
+  EXPECT_THAT(same_segments, EqualsSegments(segments));
+  EXPECT_THAT(diff_segments, ::testing::Not(EqualsSegments(segments)));
+
+  // ResizeSegment with a new preceding_text in request updates it.
+  commands::Context updated_context;
+  updated_context.set_preceding_text("新しい");
+  const ConversionRequest updated_resize_req =
+      ConversionRequestBuilder().SetContextView(updated_context).Build();
+  ASSERT_TRUE(converter->ResizeSegment(&segments, updated_resize_req, 0, 1));
+  EXPECT_EQ(segments.preceding_text(), "新しい");
+
+  // FinishConversion clears preceding_text.
+  converter->FinishConversion(convreq, &segments);
+  EXPECT_TRUE(segments.preceding_text().empty());
+
+  // ResetConversion clears preceding_text as well.
+  segments.set_preceding_text("残存");
+  converter->ResetConversion(&segments);
+  EXPECT_TRUE(segments.preceding_text().empty());
+
+  // StartPrediction records preceding_text on segments.
+  composer::Composer pred_composer;
+  pred_composer.SetPreeditTextForTestOnly("きかい");
+  commands::Context pred_context;
+  pred_context.set_preceding_text("予測用");
+  const ConversionRequest pred_req =
+      ConversionRequestBuilder()
+          .SetComposer(pred_composer)
+          .SetContextView(pred_context)
+          .SetRequestType(ConversionRequest::PREDICTION)
+          .Build();
+  Segments pred_segments;
+  ASSERT_TRUE(converter->StartPrediction(pred_req, &pred_segments));
+  EXPECT_EQ(pred_segments.preceding_text(), "予測用");
+}
+
 }  // namespace converter
 }  // namespace mozc

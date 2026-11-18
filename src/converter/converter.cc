@@ -200,6 +200,7 @@ bool Converter::StartConversion(const ConversionRequest& request,
   }
 
   segments->InitForConvert(key);
+  segments->set_preceding_text(request.GetSurroundingContext().first);
   const int additional_resize_budget =
       segments->resized() ? 0 : kMaxAdditionalRewriterResizes;
   ApplyConversionInternal(segments, request, additional_resize_budget);
@@ -273,6 +274,7 @@ bool Converter::StartPrediction(const ConversionRequest& request,
   if (ShouldInitSegmentsForPrediction(key, *segments)) {
     segments->InitForConvert(key);
   }
+  segments->set_preceding_text(request.GetSurroundingContext().first);
   DCHECK_EQ(segments->conversion_segments_size(), 1);
   DCHECK_EQ(segments->conversion_segment(0).key(), key);
 
@@ -304,6 +306,9 @@ void Converter::PrependCandidates(const ConversionRequest& request,
                                   const Segment& segment,
                                   Segments* segments) const {
   segments->PrependCandidates(segment);
+  if (request.context().has_preceding_text()) {
+    segments->set_preceding_text(request.GetSurroundingContext().first);
+  }
   ApplyPostProcessing(request, segments);
 }
 
@@ -380,6 +385,7 @@ void Converter::FinishConversion(const ConversionRequest& request,
                                            .Build();
   rewriter_->Finish(finish_req, *segments);
   predictor_->Finish(finish_req, committed_results, segments->revert_id());
+  segments->clear_preceding_text();
 
   // Remove the front segments except for some segments which will be
   // used as history segments.
@@ -567,6 +573,9 @@ bool Converter::ResizeSegmentsInternal(
     return false;
   }
 
+  if (request.context().has_preceding_text()) {
+    segments->set_preceding_text(request.GetSurroundingContext().first);
+  }
   ApplyConversionInternal(segments, request, additional_resize_budget);
   return true;
 }

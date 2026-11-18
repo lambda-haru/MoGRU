@@ -269,6 +269,7 @@ std::string Segment::DebugString() const {
 
 Segments::Segments(const Segments& x)
     : pool_(32),
+      preceding_text_(x.preceding_text_),
       revert_id_(x.revert_id_),
       max_history_segments_size_(x.max_history_segments_size_),
       resized_(x.resized_) {
@@ -281,6 +282,7 @@ Segments::Segments(const Segments& x)
 Segments& Segments::operator=(const Segments& x) {
   Clear();
 
+  preceding_text_ = x.preceding_text_;
   max_history_segments_size_ = x.max_history_segments_size_;
   resized_ = x.resized_;
   // Deep-copy segments.
@@ -429,6 +431,7 @@ void Segments::InitForCommit(absl::string_view key, absl::string_view value) {
 
 void Segments::Clear() {
   clear_segments();
+  preceding_text_.clear();
   revert_id_ = 0;
 }
 

@@ -227,6 +227,7 @@ MATCHER_P(EqualsSegments, segments, "") {
   }
   COMPARE_PROPERTY(max_history_segments_size);
   COMPARE_PROPERTY(resized);
+  COMPARE_PROPERTY(preceding_text);
 #undef COMPARE_PROPERTY
 
   const size_t common_segments_size =

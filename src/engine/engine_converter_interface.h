@@ -240,7 +240,11 @@ class EngineConverterInterface {
   virtual void SegmentFocusLeftEdge() = 0;
 
   // Resize the focused segment.
+  virtual void SegmentWidthExpand(const composer::Composer& composer,
+                                  const commands::Context& context) = 0;
   virtual void SegmentWidthExpand(const composer::Composer& composer) = 0;
+  virtual void SegmentWidthShrink(const composer::Composer& composer,
+                                  const commands::Context& context) = 0;
   virtual void SegmentWidthShrink(const composer::Composer& composer) = 0;
 
   // Move the focus of candidates.

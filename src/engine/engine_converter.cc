@@ -194,6 +194,7 @@ bool EngineConverter::ConvertInternal(
     const ConversionPreferences& preferences,
     const bool allow_cross_boundary_fallback) {
   DCHECK(CheckState(COMPOSITION | SUGGESTION | CONVERSION));
+  UpdateLastContext(context, /*preserve_preceding_text=*/true);
   const bool was_live_conversion = (live_conversion_active_ || live_conversion_presented_);
   if (was_live_conversion) {
     if (config::GruConfigManager::IsConversionStatsEnabled(true)) {
@@ -426,8 +427,7 @@ bool EngineConverter::ConvertToTransliteration(
        (HALF_WIDTH | FULL_WIDTH | ASCII | HIRAGANA | KATAKANA));
 
   if (CheckState(COMPOSITION | SUGGESTION)) {
-    if (!ConvertInternal(composer, commands::Context::default_instance(),
-                         conversion_preferences_,
+    if (!ConvertInternal(composer, last_context_, conversion_preferences_,
                          /*allow_cross_boundary_fallback=*/false)) {
       LOG(ERROR) << "Conversion failed";
       return false;
@@ -443,7 +443,7 @@ bool EngineConverter::ConvertToTransliteration(
            segments_.conversion_segments().drop(segment_index_ + 1)) {
         offset += segment.key_len();
       }
-      ResizeSegmentWidth(composer, offset);
+      ResizeSegmentWidth(composer, last_context_, offset);
     }
 
     DCHECK(CheckState(CONVERSION));
@@ -521,8 +521,7 @@ bool EngineConverter::SwitchKanaType(const composer::Composer& composer) {
 
   Attributes attributes = NO_ATTRIBUTES;
   if (CheckState(COMPOSITION | SUGGESTION)) {
-    if (!ConvertInternal(composer, commands::Context::default_instance(),
-                         conversion_preferences_,
+    if (!ConvertInternal(composer, last_context_, conversion_preferences_,
                          /*allow_cross_boundary_fallback=*/false)) {
       LOG(ERROR) << "Conversion failed";
       return false;
@@ -543,6 +542,7 @@ bool EngineConverter::SwitchKanaType(const composer::Composer& composer) {
           ConversionRequestBuilder()
               .SetComposer(composer)
               .SetRequestView(*request_)
+              .SetContextView(last_context_)
               .SetConfigView(*config_)
               .SetRequestType(ConversionRequest::CONVERSION)
               .Build();
@@ -582,6 +582,7 @@ bool EngineConverter::Suggest(const composer::Composer& composer,
                               const commands::Context& context,
                               const ConversionPreferences& preferences) {
   DCHECK(CheckState(COMPOSITION | SUGGESTION));
+  UpdateLastContext(context, /*preserve_preceding_text=*/true);
   candidate_list_visible_ = false;
 
   std::vector<Segment> saved_frozen_segments =
@@ -867,6 +868,7 @@ bool EngineConverter::Predict(const composer::Composer& composer,
   // TODO(komatsu): DCHECK should be
   // DCHECK(CheckState(COMPOSITION | SUGGESTION | PREDICTION));
   DCHECK(CheckState(COMPOSITION | SUGGESTION | CONVERSION | PREDICTION));
+  UpdateLastContext(context, /*preserve_preceding_text=*/true);
   ResetResult();
   live_conversion_active_ = false;
   live_conversion_key_.clear();
@@ -940,7 +942,7 @@ void EngineConverter::MaybeExpandPrediction(
   ResetResult();
 
   const size_t previous_index = candidate_list_.focused_index();
-  if (!Predict(composer, conversion_preferences_)) {
+  if (!Predict(composer, last_context_, conversion_preferences_)) {
     return;
   }
 
@@ -964,6 +966,7 @@ void EngineConverter::Reset() {
   // Even if composition mode, call ResetConversion
   // in order to clear history segments.
   converter_->ResetConversion(&segments_);
+  last_context_.Clear();
 
   if (CheckState(COMPOSITION)) {
     return;
@@ -1479,6 +1482,7 @@ void EngineConverter::SegmentFocusLeft() {
 void EngineConverter::SegmentFocusLeftEdge() { SegmentFocusInternal(0); }
 
 void EngineConverter::ResizeSegmentWidth(const composer::Composer& composer,
+                                         const commands::Context& context,
                                          int delta) {
   DCHECK(CheckState(PREDICTION | CONVERSION));
   candidate_list_visible_ = false;
@@ -1494,6 +1498,7 @@ void EngineConverter::ResizeSegmentWidth(const composer::Composer& composer,
       ConversionRequestBuilder()
           .SetComposer(composer)
           .SetRequestView(*request_)
+          .SetContextView(context)
           .SetConfigView(*config_)
           .SetRequestType(ConversionRequest::CONVERSION)
           .Build();
@@ -1585,12 +1590,24 @@ void EngineConverter::ResizeSegmentWidth(const composer::Composer& composer,
   UpdateSelectedCandidateIndex();
 }
 
+void EngineConverter::SegmentWidthExpand(const composer::Composer& composer,
+                                         const commands::Context& context) {
+  UpdateLastContext(context, /*preserve_preceding_text=*/true);
+  ResizeSegmentWidth(composer, last_context_, 1);
+}
+
 void EngineConverter::SegmentWidthExpand(const composer::Composer& composer) {
-  ResizeSegmentWidth(composer, 1);
+  ResizeSegmentWidth(composer, last_context_, 1);
+}
+
+void EngineConverter::SegmentWidthShrink(const composer::Composer& composer,
+                                         const commands::Context& context) {
+  UpdateLastContext(context, /*preserve_preceding_text=*/true);
+  ResizeSegmentWidth(composer, last_context_, -1);
 }
 
 void EngineConverter::SegmentWidthShrink(const composer::Composer& composer) {
-  ResizeSegmentWidth(composer, -1);
+  ResizeSegmentWidth(composer, last_context_, -1);
 }
 
 void EngineConverter::CandidateNext(const composer::Composer& composer) {
@@ -2682,6 +2699,7 @@ void EngineConverter::SetConfig(std::shared_ptr<const config::Config> config) {
 }
 
 void EngineConverter::OnStartComposition(const commands::Context& context) {
+  UpdateLastContext(context, /*preserve_preceding_text=*/false);
   bool revision_changed = false;
   if (context.has_revision()) {
     revision_changed = (context.revision() != client_revision_);
@@ -2911,6 +2929,26 @@ bool EngineConverter::PopPendingAutoCommit(
   auto_commit_pending_ = false;
 
   return true;
+}
+
+void EngineConverter::UpdateLastContext(const commands::Context& context,
+                                          bool preserve_preceding_text) {
+  if (&context == &last_context_) {
+    return;
+  }
+  if (preserve_preceding_text && !context.has_preceding_text() &&
+      last_context_.has_preceding_text()) {
+    if (context.ByteSizeLong() == 0) {
+      return;
+    }
+    const std::string saved_preceding = last_context_.preceding_text();
+    last_context_ = context;
+    last_context_.set_preceding_text(saved_preceding);
+    return;
+  }
+  if (context.ByteSizeLong() > 0 || !preserve_preceding_text) {
+    last_context_ = context;
+  }
 }
 
 // Sets request type and update the engine_converter's state

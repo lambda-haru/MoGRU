@@ -6226,5 +6226,188 @@ TEST_F(EngineConverterTest,
   unsetenv("MOZC_GRU_LIVE_CONVERSION_EXCLUDED_HIRAGANA_CHARACTERS");
 }
 
+TEST_F(EngineConverterTest, SegmentWidthExpandAndShrinkPropagateContext) {
+  auto mock_converter = std::make_shared<MockConverter>();
+  EngineConverter converter(mock_converter, request_, config_);
+
+  composer_->InsertCharacterPreedit(kChars_Aiueo);
+
+  Segments initial_segments;
+  AddSegmentWithSingleCandidate(&initial_segments, "あいう", "あいう");
+  AddSegmentWithSingleCandidate(&initial_segments, "えお", "えお");
+  FillT13Ns(&initial_segments, composer_.get());
+
+  Context initial_ctx;
+  initial_ctx.set_preceding_text("saved_left");
+  initial_ctx.set_following_text("saved_right");
+
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce([&](const ConversionRequest& req, Segments* segs) {
+        EXPECT_EQ(req.context().preceding_text(), "saved_left");
+        EXPECT_EQ(req.context().following_text(), "saved_right");
+        *segs = initial_segments;
+        return true;
+      });
+  ASSERT_TRUE(converter.Convert(*composer_, initial_ctx));
+
+  // 1-arg SegmentWidthShrink falls back to saved last_context_.
+  Segments shrunk_segments;
+  AddSegmentWithSingleCandidate(&shrunk_segments, "あい", "あい");
+  AddSegmentWithSingleCandidate(&shrunk_segments, "うえお", "うえお");
+  FillT13Ns(&shrunk_segments, composer_.get());
+  EXPECT_CALL(*mock_converter, ResizeSegment(_, _, 0, -1))
+      .WillOnce([&](Segments* segs, const ConversionRequest& req, size_t, int) {
+        EXPECT_EQ(req.context().preceding_text(), "saved_left");
+        EXPECT_EQ(req.context().following_text(), "saved_right");
+        *segs = shrunk_segments;
+        return true;
+      });
+  converter.SegmentWidthShrink(*composer_);
+
+  // 1-arg SegmentWidthExpand falls back to saved last_context_.
+  EXPECT_CALL(*mock_converter, ResizeSegment(_, _, 0, 1))
+      .WillOnce([&](Segments* segs, const ConversionRequest& req, size_t, int) {
+        EXPECT_EQ(req.context().preceding_text(), "saved_left");
+        EXPECT_EQ(req.context().following_text(), "saved_right");
+        *segs = initial_segments;
+        return true;
+      });
+  converter.SegmentWidthExpand(*composer_);
+
+  // 2-arg overloads forward the explicit Context passed by caller.
+  Context shrink_ctx;
+  shrink_ctx.set_preceding_text("explicit_shrink");
+  EXPECT_CALL(*mock_converter, ResizeSegment(_, _, 0, -1))
+      .WillOnce([&](Segments* segs, const ConversionRequest& req, size_t, int) {
+        EXPECT_EQ(req.context().preceding_text(), "explicit_shrink");
+        *segs = shrunk_segments;
+        return true;
+      });
+  converter.SegmentWidthShrink(*composer_, shrink_ctx);
+
+  Context expand_ctx;
+  expand_ctx.set_preceding_text("explicit_expand");
+  EXPECT_CALL(*mock_converter, ResizeSegment(_, _, 0, 1))
+      .WillOnce([&](Segments* segs, const ConversionRequest& req, size_t, int) {
+        EXPECT_EQ(req.context().preceding_text(), "explicit_expand");
+        *segs = initial_segments;
+        return true;
+      });
+  converter.SegmentWidthExpand(*composer_, expand_ctx);
+}
+
+TEST_F(EngineConverterTest, SuggestPreservesLastPrecedingTextAndResetClearsIt) {
+  auto mock_converter = std::make_shared<MockConverter>();
+  EngineConverter converter(mock_converter, request_, config_);
+
+  composer_->InsertCharacterKeyAndPreedit("a", "あ");
+  composer_->InsertCharacterKeyAndPreedit("i", "い");
+  composer_->InsertCharacterKeyAndPreedit("u", "う");
+  composer_->InsertCharacterKeyAndPreedit("e", "え");
+  composer_->InsertCharacterKeyAndPreedit("o", "お");
+
+  Context start_ctx;
+  start_ctx.set_preceding_text("initial_left");
+  converter.OnStartComposition(start_ctx);
+
+  Segments pred_segments;
+  SetAiueo(&pred_segments);
+  FillT13Ns(&pred_segments, composer_.get());
+
+  // Suggest() with empty Context preserves last_context_.preceding_text().
+  EXPECT_CALL(*mock_converter, StartPrediction(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(pred_segments), Return(true)));
+  ASSERT_TRUE(converter.Suggest(*composer_, Context::default_instance()));
+
+  // Suggest() with non-empty Context omitting preceding_text preserves
+  // last_context_.preceding_text() while adopting following_text.
+  Context following_only_ctx;
+  following_only_ctx.set_following_text("updated_right");
+  EXPECT_CALL(*mock_converter, StartPrediction(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(pred_segments), Return(true)));
+  ASSERT_TRUE(converter.Suggest(*composer_, following_only_ctx));
+
+  // Verify saved preceding_text and updated following_text reach ResizeSegment
+  // via Convert() + 1-arg SegmentWidthShrink().
+  Segments conv_segments;
+  AddSegmentWithSingleCandidate(&conv_segments, "あいう", "あいう");
+  AddSegmentWithSingleCandidate(&conv_segments, "えお", "えお");
+  FillT13Ns(&conv_segments, composer_.get());
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce(DoAll(SetArgPointee<1>(conv_segments), Return(true)));
+  ASSERT_TRUE(converter.Convert(*composer_));
+
+  EXPECT_CALL(*mock_converter, ResizeSegment(_, _, 0, -1))
+      .WillOnce([&](Segments* segs, const ConversionRequest& req, size_t, int) {
+        EXPECT_EQ(req.context().preceding_text(), "initial_left");
+        EXPECT_EQ(req.context().following_text(), "updated_right");
+        *segs = conv_segments;
+        return true;
+      });
+  converter.SegmentWidthShrink(*composer_);
+
+  // Reset() must clear last_context_.
+  EXPECT_CALL(*mock_converter, ResetConversion(_)).WillRepeatedly(Return());
+  converter.Reset();
+  composer_->Reset();
+  composer_->InsertCharacterPreedit(kChars_Aiueo);
+
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce([&](const ConversionRequest& req, Segments* segs) {
+        EXPECT_TRUE(req.context().preceding_text().empty());
+        EXPECT_TRUE(req.context().following_text().empty());
+        SetAiueo(segs);
+        return true;
+      });
+  EXPECT_TRUE(converter.SwitchKanaType(*composer_));
+}
+
+TEST_F(EngineConverterTest, TransliterationAndSwitchKanaTypePassLastContext) {
+  auto mock_converter = std::make_shared<MockConverter>();
+  EngineConverter converter(mock_converter, request_, config_);
+
+  Context ctx;
+  ctx.set_preceding_text("left_translit");
+  ctx.set_following_text("right_translit");
+
+  composer_->InsertCharacterKeyAndPreedit("aiueo", kChars_Aiueo);
+  converter.OnStartComposition(ctx);
+
+  Segments segments;
+  SetAiueo(&segments);
+  FillT13Ns(&segments, composer_.get());
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce([&](const ConversionRequest& req, Segments* segs) {
+        EXPECT_EQ(req.context().preceding_text(), "left_translit");
+        EXPECT_EQ(req.context().following_text(), "right_translit");
+        *segs = segments;
+        return true;
+      });
+  EXPECT_TRUE(converter.ConvertToTransliteration(*composer_,
+                                                 transliteration::HALF_ASCII));
+
+  EXPECT_CALL(*mock_converter, ResetConversion(_)).WillRepeatedly(Return());
+  converter.Reset();
+  composer_->Reset();
+  composer_->InsertCharacterKeyAndPreedit("a", "あ");
+  composer_->InsertCharacterKeyAndPreedit("i", "い");
+  composer_->InsertCharacterKeyAndPreedit("u", "う");
+  composer_->InsertCharacterKeyAndPreedit("e", "え");
+  composer_->InsertCharacterKeyAndPreedit("o", "お");
+  converter.OnStartComposition(ctx);
+
+  Segments kana_segments;
+  SetAiueo(&kana_segments);
+  FillT13Ns(&kana_segments, composer_.get());
+  EXPECT_CALL(*mock_converter, StartConversion(_, _))
+      .WillOnce([&](const ConversionRequest& req, Segments* segs) {
+        EXPECT_EQ(req.context().preceding_text(), "left_translit");
+        EXPECT_EQ(req.context().following_text(), "right_translit");
+        *segs = kana_segments;
+        return true;
+      });
+  EXPECT_TRUE(converter.SwitchKanaType(*composer_));
+}
+
 }  // namespace engine
 }  // namespace mozc

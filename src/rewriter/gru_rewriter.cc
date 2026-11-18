@@ -190,13 +190,13 @@ float ScoreCandidateWithContext(const gruscorer::GruModel& model,
 
 std::string GetHistoryPrefix(const ConversionRequest* request,
                              const Segments& segments) {
-  std::string prefix;
   if (segments.history_segments_size() > 0) {
-    prefix = segments.history_value();
-  } else if (request != nullptr) {
-    prefix = request->GetSurroundingContext().first;
+    return segments.history_value();
   }
-  return prefix;
+  if (request != nullptr && request->context().has_preceding_text()) {
+    return request->GetSurroundingContext().first;
+  }
+  return std::string(segments.preceding_text());
 }
 
 constexpr size_t kMaxPrefixChars = 32;
@@ -1720,6 +1720,10 @@ bool GruRewriter::Focus(Segments* segments, size_t segment_index,
 
   // Build prefix text up to segment_index, incorporating the chosen candidate.
   std::string prefix_text;
+  if (segments->history_segments_size() == 0 &&
+      !segments->preceding_text().empty()) {
+    prefix_text.append(segments->preceding_text());
+  }
   for (size_t i = 0; i < segment_index; ++i) {
     const Segment& seg = segments->segment(i);
     if (seg.candidates_size() > 0) {

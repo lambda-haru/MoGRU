@@ -849,5 +849,40 @@ TEST(SegmentTest, IteratorRange) {
   EXPECT_THAT(ToKeys(segments.all().subrange(5, 2)), ElementsAre());
   EXPECT_THAT(ToKeys(segments.all().subrange(6, 2)), ElementsAre());
 }
+
+TEST(SegmentTest, PrecedingTextPersistenceAndClear) {
+  Segments segments;
+  EXPECT_TRUE(segments.preceding_text().empty());
+
+  segments.set_preceding_text("最新の");
+  EXPECT_EQ(segments.preceding_text(), "最新の");
+
+  Segment* history = segments.push_back_segment();
+  history->set_segment_type(Segment::HISTORY);
+  history->set_key("きかい");
+  Segment* conv = segments.push_back_segment();
+  conv->set_segment_type(Segment::FREE);
+  conv->set_key("を");
+
+  Segments copied(segments);
+  EXPECT_EQ(copied.preceding_text(), "最新の");
+
+  Segments assigned;
+  assigned = segments;
+  EXPECT_EQ(assigned.preceding_text(), "最新の");
+
+  copied.clear_preceding_text();
+  EXPECT_TRUE(copied.preceding_text().empty());
+
+  // Assigning an empty Segments overwrites and clears preceding_text.
+  assigned = Segments();
+  EXPECT_TRUE(assigned.preceding_text().empty());
+
+  segments.clear_conversion_segments();
+  EXPECT_EQ(segments.preceding_text(), "最新の");
+
+  segments.Clear();
+  EXPECT_TRUE(segments.preceding_text().empty());
+}
 }  // namespace converter
 }  // namespace mozc

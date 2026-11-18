@@ -447,6 +447,15 @@ class Segments final {
   void set_revert_id(uint64_t revert_id) { revert_id_ = revert_id; }
   uint64_t revert_id() const { return revert_id_; }
 
+  // Normalized surrounding preceding text retained for the current conversion
+  // session (e.g., for segment resizing and Focus re-scoring when
+  // history_segments is empty).
+  absl::string_view preceding_text() const { return preceding_text_; }
+  void set_preceding_text(absl::string_view preceding_text) {
+    strings::Assign(preceding_text_, preceding_text);
+  }
+  void clear_preceding_text() { preceding_text_.clear(); }
+
  private:
   friend class SegmentsPoolAccessorTestPeer;
 
@@ -456,6 +465,7 @@ class Segments final {
   // LINT.IfChange
   ObjectPool<Segment> pool_;
   std::deque<Segment*> segments_;
+  std::string preceding_text_;
   uint64_t revert_id_ = 0;
   uint32_t max_history_segments_size_ = 0;
   bool resized_ = false;

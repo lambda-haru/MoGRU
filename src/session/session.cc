@@ -2680,7 +2680,8 @@ bool Session::SegmentWidthExpand(commands::Command* command) {
     return DoNothing(command);
   }
   command->mutable_output()->set_consumed(true);
-  context_->mutable_converter()->SegmentWidthExpand(context_->composer());
+  context_->mutable_converter()->SegmentWidthExpand(
+      context_->composer(), context_->client_context());
   Output(command);
   return true;
 }
@@ -2690,7 +2691,8 @@ bool Session::SegmentWidthShrink(commands::Command* command) {
     return DoNothing(command);
   }
   command->mutable_output()->set_consumed(true);
-  context_->mutable_converter()->SegmentWidthShrink(context_->composer());
+  context_->mutable_converter()->SegmentWidthShrink(
+      context_->composer(), context_->client_context());
   Output(command);
   return true;
 }

@@ -11143,5 +11143,70 @@ TEST_F(SessionTest, LiveConversionShiftTempHalfAsciiAndBackspaceChunkIntegrity) 
             "きょうとをrだ");
 }
 
+TEST_F(SessionTest, SegmentWidthExpandAndShrinkPropagatePrecedingText) {
+  MockEngine engine;
+  std::shared_ptr<MockConverter> converter = CreateEngineConverterMock(&engine);
+
+  Session session(engine);
+  InitSessionToPrecomposition(&session);
+
+  commands::Context context;
+  context.set_preceding_text("left_context");
+
+  commands::Command command;
+  InsertCharacterCharsWithContext("a", context, &session, &command);
+  InsertCharacterChars("iueo", &session, &command);
+
+  const ConversionRequest request = CreateConversionRequest(session);
+  Segments conv_segments;
+  {
+    Segment* seg0 = conv_segments.add_segment();
+    seg0->set_key("あいう");
+    seg0->add_candidate()->value = "あいう";
+    Segment* seg1 = conv_segments.add_segment();
+    seg1->set_key("えお");
+    seg1->add_candidate()->value = "えお";
+  }
+  FillT13Ns(request, &conv_segments);
+
+  EXPECT_CALL(*converter, StartConversion(_, _))
+      .WillOnce([&](const ConversionRequest& req, Segments* segs) {
+        EXPECT_EQ(req.context().preceding_text(), "left_context");
+        *segs = conv_segments;
+        return true;
+      });
+  command.Clear();
+  ASSERT_TRUE(session.Convert(&command));
+
+  Segments shrunk_segments;
+  {
+    Segment* seg0 = shrunk_segments.add_segment();
+    seg0->set_key("あい");
+    seg0->add_candidate()->value = "あい";
+    Segment* seg1 = shrunk_segments.add_segment();
+    seg1->set_key("うえお");
+    seg1->add_candidate()->value = "うえお";
+  }
+  FillT13Ns(request, &shrunk_segments);
+
+  EXPECT_CALL(*converter, ResizeSegment(_, _, 0, -1))
+      .WillOnce([&](Segments* segs, const ConversionRequest& req, size_t, int) {
+        EXPECT_EQ(req.context().preceding_text(), "left_context");
+        *segs = shrunk_segments;
+        return true;
+      });
+  command.Clear();
+  EXPECT_TRUE(session.SegmentWidthShrink(&command));
+
+  EXPECT_CALL(*converter, ResizeSegment(_, _, 0, 1))
+      .WillOnce([&](Segments* segs, const ConversionRequest& req, size_t, int) {
+        EXPECT_EQ(req.context().preceding_text(), "left_context");
+        *segs = conv_segments;
+        return true;
+      });
+  command.Clear();
+  EXPECT_TRUE(session.SegmentWidthExpand(&command));
+}
+
 }  // namespace session
 }  // namespace mozc

@@ -29,7 +29,7 @@
 
 MAJOR = 1
 
-MINOR = 5
+MINOR = 6
 
 # BUILD number used for the OSS version.
 BUILD_OSS = 0

@@ -2598,6 +2598,198 @@ TEST_F(GruRewriterTest, AutoAlphaProportionalResegmentThresholdScaling) {
   absl::SetFlag(&FLAGS_gru_config_path, "");
 }
 
+TEST_F(GruRewriterTest, FocusUsesSegmentsPrecedingTextWhenHistoryEmpty) {
+  ASSERT_TRUE(rewriter_->Reload());
+
+  auto make_two_segments = [](Segments* segs) {
+    Segment* seg0 = segs->add_segment();
+    seg0->set_key("その");
+    AddCandidate("その", "園", 1000, seg0);
+    AddCandidate("その", "その", 1050, seg0);
+
+    Segment* seg1 = segs->add_segment();
+    seg1->set_key("きかい");
+    AddCandidate("きかい", "奇怪", 1000, seg1);
+    AddCandidate("きかい", "機械", 1000, seg1);
+  };
+
+  auto parse_gru_score = [](const Segment& seg, absl::string_view value) -> float {
+    for (size_t i = 0; i < seg.candidates_size(); ++i) {
+      if (seg.candidate(i).value == value) {
+        const std::string& desc = seg.candidate(i).description;
+        const size_t p = desc.find("GRU:");
+        EXPECT_NE(p, std::string::npos) << "Missing GRU tag in desc=" << desc;
+        if (p == std::string::npos) return 0.0f;
+        const size_t b = desc.find('[', p);
+        float v = 0.0f;
+        EXPECT_TRUE(absl::SimpleAtof(desc.substr(p + 4, b - (p + 4)), &v))
+            << "Failed parsing GRU score from desc=" << desc;
+        return v;
+      }
+    }
+    ADD_FAILURE() << "Candidate not found: " << value;
+    return 0.0f;
+  };
+
+  auto extract_alpha = [](const Segment& seg, absl::string_view value) -> double {
+    for (size_t i = 0; i < seg.candidates_size(); ++i) {
+      if (seg.candidate(i).value == value) {
+        const std::string& desc = seg.candidate(i).description;
+        const size_t pos = desc.find("[α:");
+        EXPECT_NE(pos, std::string::npos) << "Missing alpha tag in desc=" << desc;
+        if (pos == std::string::npos) return -1.0;
+        const size_t start = pos + std::string("[α:").size();
+        const size_t end = desc.find(']', start);
+        double val = -1.0;
+        EXPECT_TRUE(absl::SimpleAtod(desc.substr(start, end - start), &val))
+            << "Failed parsing alpha from desc=" << desc;
+        return val;
+      }
+    }
+    ADD_FAILURE() << "Candidate not found: " << value;
+    return -1.0;
+  };
+
+  // 1. Baseline: history segment with "最新の人工知能と" (all-segments index 1
+  //    focuses conversion_segment(0), just as Converter::FocusSegmentValue does).
+  Segments segs_hist;
+  {
+    Segment* hist = segs_hist.add_segment();
+    hist->set_segment_type(Segment::HISTORY);
+    hist->set_key("さいしんのじんこうちのうと");
+    AddCandidate("さいしんのじんこうちのうと", "最新の人工知能と", 0, hist);
+  }
+  make_two_segments(&segs_hist);
+  rewriter_->Focus(&segs_hist, 1, 1);
+  const float score_hist =
+      parse_gru_score(segs_hist.conversion_segment(1), "機械");
+  const double alpha_hist =
+      extract_alpha(segs_hist.conversion_segment(1), "機械");
+
+  // 2. No history segments, preceding_text set on Segments -> matches baseline.
+  Segments segs_prec;
+  segs_prec.set_preceding_text("最新の人工知能と");
+  make_two_segments(&segs_prec);
+  rewriter_->Focus(&segs_prec, 0, 1);
+  const float score_prec =
+      parse_gru_score(segs_prec.conversion_segment(1), "機械");
+  const double alpha_prec =
+      extract_alpha(segs_prec.conversion_segment(1), "機械");
+  EXPECT_NEAR(score_prec, score_hist, 1e-3f);
+  EXPECT_NEAR(alpha_prec, alpha_hist, 1.0);
+
+  // 3. No history segments and empty preceding_text -> produces different score & alpha.
+  Segments segs_empty;
+  make_two_segments(&segs_empty);
+  rewriter_->Focus(&segs_empty, 0, 1);
+  const float score_empty =
+      parse_gru_score(segs_empty.conversion_segment(1), "機械");
+  const double alpha_empty =
+      extract_alpha(segs_empty.conversion_segment(1), "機械");
+  EXPECT_GT(std::abs(score_prec - score_empty), 1e-3f);
+  EXPECT_GT(std::abs(alpha_prec - alpha_empty), 10.0);
+
+  // 4. Both history segment and preceding_text set -> avoids prepending
+  //    preceding_text when history_segments_size() > 0.
+  //    If preceding_text ("最新の人工知能") were prepended before history ("と"),
+  //    prefix length would match segs_hist (10 chars vs 3 chars), shifting [α:...].
+  Segments segs_short_hist;
+  {
+    Segment* hist = segs_short_hist.add_segment();
+    hist->set_segment_type(Segment::HISTORY);
+    hist->set_key("と");
+    AddCandidate("と", "と", 0, hist);
+  }
+  make_two_segments(&segs_short_hist);
+  rewriter_->Focus(&segs_short_hist, 1, 1);
+  const float score_short_hist =
+      parse_gru_score(segs_short_hist.conversion_segment(1), "機械");
+  const double alpha_short_hist =
+      extract_alpha(segs_short_hist.conversion_segment(1), "機械");
+  EXPECT_GT(std::abs(alpha_hist - alpha_short_hist), 10.0);
+
+  Segments segs_both;
+  {
+    Segment* hist = segs_both.add_segment();
+    hist->set_segment_type(Segment::HISTORY);
+    hist->set_key("と");
+    AddCandidate("と", "と", 0, hist);
+  }
+  segs_both.set_preceding_text("最新の人工知能");
+  make_two_segments(&segs_both);
+  rewriter_->Focus(&segs_both, 1, 1);
+  const float score_both =
+      parse_gru_score(segs_both.conversion_segment(1), "機械");
+  const double alpha_both =
+      extract_alpha(segs_both.conversion_segment(1), "機械");
+  EXPECT_NEAR(score_both, score_short_hist, 1e-3f);
+  EXPECT_NEAR(alpha_both, alpha_short_hist, 1.0);
+}
+
+TEST_F(GruRewriterTest, RewriteFallsBackToSegmentsPrecedingTextWhenRequestEmpty) {
+  ASSERT_TRUE(rewriter_->Reload());
+
+  auto make_seg = [](Segments* segs) {
+    Segment* seg = segs->add_segment();
+    seg->set_key("きかい");
+    AddCandidate("きかい", "奇怪", 1000, seg);
+    AddCandidate("きかい", "機械", 1000, seg);
+  };
+  auto parse_gru_score = [](const Segment& seg, absl::string_view value) -> float {
+    for (size_t i = 0; i < seg.candidates_size(); ++i) {
+      if (seg.candidate(i).value == value) {
+        const std::string& desc = seg.candidate(i).description;
+        const size_t p = desc.find("GRU:");
+        EXPECT_NE(p, std::string::npos) << "Missing GRU tag in desc=" << desc;
+        if (p == std::string::npos) return 0.0f;
+        const size_t b = desc.find('[', p);
+        float v = 0.0f;
+        EXPECT_TRUE(absl::SimpleAtof(desc.substr(p + 4, b - (p + 4)), &v))
+            << "Failed parsing GRU score from desc=" << desc;
+        return v;
+      }
+    }
+    ADD_FAILURE() << "Candidate not found: " << value;
+    return 0.0f;
+  };
+
+  commands::Context ctx;
+  ctx.set_preceding_text("最新の人工知能");
+  ConversionRequest req_with_ctx =
+      ConversionRequestBuilder().SetContext(ctx).Build();
+  ConversionRequest empty_req;
+
+  Segments segs_with_ctx;
+  make_seg(&segs_with_ctx);
+  rewriter_->Rewrite(req_with_ctx, &segs_with_ctx);
+  const float score_req_ctx =
+      parse_gru_score(segs_with_ctx.conversion_segment(0), "機械");
+
+  Segments segs_seg_prec;
+  segs_seg_prec.set_preceding_text("最新の人工知能");
+  make_seg(&segs_seg_prec);
+  rewriter_->Rewrite(empty_req, &segs_seg_prec);
+  const float score_seg_prec =
+      parse_gru_score(segs_seg_prec.conversion_segment(0), "機械");
+  EXPECT_NEAR(score_seg_prec, score_req_ctx, 1e-3f);
+
+  Segments segs_no_prec;
+  make_seg(&segs_no_prec);
+  rewriter_->Rewrite(empty_req, &segs_no_prec);
+  const float score_no_prec =
+      parse_gru_score(segs_no_prec.conversion_segment(0), "機械");
+  EXPECT_GT(std::abs(score_seg_prec - score_no_prec), 1e-3f);
+
+  // Request context must override stale segments.preceding_text().
+  Segments segs_override;
+  segs_override.set_preceding_text("昔の小説");
+  make_seg(&segs_override);
+  rewriter_->Rewrite(req_with_ctx, &segs_override);
+  const float score_override =
+      parse_gru_score(segs_override.conversion_segment(0), "機械");
+  EXPECT_NEAR(score_override, score_req_ctx, 1e-3f);
+}
+
 }  // namespace
 }  // namespace mozc
 

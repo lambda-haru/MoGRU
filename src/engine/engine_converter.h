@@ -216,7 +216,11 @@ class EngineConverter : public EngineConverterInterface {
   void SegmentFocusLeftEdge() override;
 
   // Resizes the focused segment.
+  void SegmentWidthExpand(const composer::Composer& composer,
+                          const commands::Context& context) override;
   void SegmentWidthExpand(const composer::Composer& composer) override;
+  void SegmentWidthShrink(const composer::Composer& composer,
+                          const commands::Context& context) override;
   void SegmentWidthShrink(const composer::Composer& composer) override;
 
   // Moves the focus of candidates.
@@ -369,7 +373,10 @@ class EngineConverter : public EngineConverterInterface {
                                 size_t* consumed_key_size);
 
   void SegmentFocusInternal(size_t segment_index);
-  void ResizeSegmentWidth(const composer::Composer& composer, int delta);
+  void ResizeSegmentWidth(const composer::Composer& composer,
+                          const commands::Context& context, int delta);
+  void UpdateLastContext(const commands::Context& context,
+                         bool preserve_preceding_text);
 
   void FillConversion(commands::Preedit* preedit) const;
   void FillLiveConversionPreedit(const composer::Composer& composer,
@@ -487,6 +494,9 @@ class EngineConverter : public EngineConverterInterface {
   // Raw byte offsets separated during the most recent Convert() call, pending
   // synchronization into Session's mutable Composer.
   std::vector<size_t> pending_separated_raw_offsets_;
+
+  // Most recent client context associated with the active composition/conversion.
+  commands::Context last_context_;
 };
 
 }  // namespace engine
