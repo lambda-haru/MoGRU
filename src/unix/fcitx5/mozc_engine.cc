@@ -21,6 +21,7 @@
 
 #include <fcitx-config/iniparser.h>
 #include <fcitx-config/rawconfig.h>
+#include <fcitx-module/dbus/dbus_public.h>
 #include <fcitx-utils/log.h>
 #include <fcitx-utils/macros.h>
 #include <fcitx-utils/semver.h>
@@ -37,6 +38,7 @@
 #include <fcitx/userinterfacemanager.h>
 
 #include <cstddef>
+#include <exception>
 #include <memory>
 #include <string>
 
@@ -49,6 +51,8 @@
 #include "config/config_handler.h"
 #include "config/gru_config.h"
 #include "protocol/commands.pb.h"
+#include "unix/fcitx5/app_name_resolver.h"
+#include "unix/fcitx5/gnome_app_tracker.h"
 #include "unix/fcitx5/i18nwrapper.h"
 #include "unix/fcitx5/mozc_client_interface.h"
 #include "unix/fcitx5/mozc_client_pool.h"
@@ -244,9 +248,45 @@ MozcEngine::MozcEngine(Instance* instance, std::string addonName)
                             });
 
   reloadConfig();
+  InitGnomeAppTracker();
 }
 
-MozcEngine::~MozcEngine() {}
+MozcEngine::~MozcEngine() { gnomeAppTracker_.reset(); }
+
+void MozcEngine::InitGnomeAppTracker() {
+  try {
+    auto* dbus_addon = dbus();
+    if (dbus_addon == nullptr) {
+      return;
+    }
+    auto* bus = dbus_addon->call<IDBusModule::bus>();
+    if (bus == nullptr || !bus->isOpen()) {
+      return;
+    }
+    gnomeAppTracker_ = std::make_unique<GnomeAppTracker>(
+        bus, [this](const std::string& app_name) {
+          OnFocusedAppChanged(app_name);
+        });
+  } catch (const std::exception& e) {
+    FCITX_LOG(Warn) << "Failed to initialize GnomeAppTracker: " << e.what();
+    gnomeAppTracker_.reset();
+  }
+}
+
+void MozcEngine::OnFocusedAppChanged(const std::string& /*app_name*/) {
+  instance_->inputContextManager().foreachFocused([this](InputContext* ic) {
+    if (ic == nullptr) {
+      return true;
+    }
+    if (!IsMoGRUActiveInputMethod(instance_->inputMethod(ic))) {
+      return true;
+    }
+    if (auto* state = mozcState(ic)) {
+      state->RefreshFocusedAppProfile();
+    }
+    return true;
+  });
+}
  
 std::string MozcEngine::GetConfigPath() const {
   std::string name;
@@ -363,12 +403,20 @@ void MozcEngine::save() {
   client_->SyncData();
 }
 
+std::string MozcEngine::ResolveApplicationName(const InputContext* ic) const {
+  const std::string ic_program = (ic != nullptr) ? ic->program() : "";
+  const std::string gnome_app =
+      (gnomeAppTracker_ != nullptr) ? gnomeAppTracker_->focused_app() : "";
+  return fcitx::ResolveApplicationName(ic_program, gnome_app);
+}
+
 mozc::config::ModeIndicatorProfileInfo
 MozcEngine::ResolveModeIndicatorProfileInfo(InputContext& ic,
                                             bool force_mtime_check) const {
   mozc::commands::Context context;
-  if (!ic.program().empty()) {
-    context.set_application_name(ic.program());
+  const std::string app_name = ResolveApplicationName(&ic);
+  if (!app_name.empty()) {
+    context.set_application_name(app_name);
   }
   return mozc::config::GruConfigManager::ResolveModeIndicatorProfileInfo(
       &context, "", force_mtime_check);

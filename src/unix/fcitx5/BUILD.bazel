@@ -3,6 +3,7 @@ load(
     "//:build_defs.bzl",
     "mozc_cc_binary",
     "mozc_cc_library",
+    "mozc_cc_test",
     "mozc_select",
 )
 
@@ -97,6 +98,62 @@ mozc_cc_library(
 )
 
 mozc_cc_library(
+    name = "app_name_resolver",
+    srcs = [
+        "app_name_resolver.cc",
+    ],
+    hdrs = [
+        "app_name_resolver.h",
+    ],
+    deps = [
+        "//config:gru_config",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+mozc_cc_test(
+    name = "app_name_resolver_test",
+    size = "small",
+    srcs = [
+        "app_name_resolver_test.cc",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
+    deps = [
+        ":app_name_resolver",
+        "//testing:gunit_main",
+    ],
+)
+
+mozc_cc_library(
+    name = "gnome_app_tracker",
+    srcs = [
+        "gnome_app_tracker.cc",
+    ],
+    hdrs = [
+        "gnome_app_tracker.h",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
+    deps = [
+        ":app_name_resolver",
+        "@fcitx5",
+    ],
+)
+
+mozc_cc_test(
+    name = "gnome_app_tracker_test",
+    size = "small",
+    srcs = [
+        "gnome_app_tracker_test.cc",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
+    deps = [
+        ":gnome_app_tracker",
+        "//testing:gunit_main",
+        "@fcitx5",
+    ],
+)
+
+mozc_cc_library(
     name = "mozc_engine",
     srcs = [
         "mozc_engine.cc",
@@ -109,7 +166,9 @@ mozc_cc_library(
         "mozc_state.h",
     ],
     deps = [
+        ":app_name_resolver",
         ":fcitx_key_util",
+        ":gnome_app_tracker",
         ":i18nwrapper",
         ":mozc_client_pool",
         ":surrounding_text_util",

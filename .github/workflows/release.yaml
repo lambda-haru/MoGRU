@@ -102,6 +102,12 @@ jobs:
           cp -f scripts/install_linux.sh package_linux/install.sh
           chmod 755 package_linux/install.sh
 
+          # GNOME Shell 拡張機能（Wayland アクティブアプリ名取得）の同梱
+          mkdir -p package_linux/gnome_extension
+          cp -f src/unix/gnome_extension/metadata.json package_linux/gnome_extension/
+          cp -f src/unix/gnome_extension/extension.js package_linux/gnome_extension/
+          cp -f src/unix/gnome_extension/app_resolver.js package_linux/gnome_extension/
+
           # zip アーカイブ作成
           mv package_linux MoGRU-linux
           zip -r MoGRU-linux.zip MoGRU-linux

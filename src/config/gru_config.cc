@@ -1031,10 +1031,14 @@ std::string GruConfigManager::DetectProfileFromApplication(
   return "";
 }
 
-static bool IsCompositorOrProxyAppName(absl::string_view name) {
-  std::string lower = absl::AsciiStrToLower(name);
+bool GruConfigManager::IsCompositorOrProxyAppName(absl::string_view name) {
+  std::string lower =
+      absl::AsciiStrToLower(absl::StripAsciiWhitespace(name));
   return lower == "gnome-shell" || lower == "kwin_wayland" ||
-         lower == "mutter" || lower == "weston" || lower == "xwayland";
+         lower == "mutter" || lower == "weston" || lower == "xwayland" ||
+         lower == "ibus-portal" || lower == "xdg-desktop-portal" ||
+         lower == "xdg-desktop-portal-gnome" ||
+         lower == "xdg-desktop-portal-gtk";
 }
 
 std::string GruConfigManager::GetCurrentApplicationName(

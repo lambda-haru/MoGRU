@@ -45,6 +45,7 @@
 #include "base/system_util.h"
 #include "config/gru_config.h"
 #include "protocol/commands.pb.h"
+#include "unix/fcitx5/gnome_app_tracker.h"
 #include "unix/fcitx5/i18nwrapper.h"
 #include "unix/fcitx5/mozc_client_interface.h"
 #include "unix/fcitx5/mozc_client_pool.h"
@@ -160,6 +161,7 @@ class MozcEngine final : public InputMethodEngineV2 {
                                InputContext& ic) override;
   mozc::config::ModeIndicatorProfileInfo ResolveModeIndicatorProfileInfo(
       InputContext& ic, bool force_mtime_check = false) const;
+  std::string ResolveApplicationName(const InputContext* ic) const;
 
   const Configuration* getConfig() const override;
   void setConfig(const RawConfig& config) override;
@@ -183,12 +185,15 @@ class MozcEngine final : public InputMethodEngineV2 {
   PropertyPropagatePolicy GetSharedStatePolicy();
   std::string GetConfigPath() const;
   void SyncGruFlags();
+  void InitGnomeAppTracker();
+  void OnFocusedAppChanged(const std::string& app_name);
 
   Instance* instance_;
   const std::unique_ptr<MozcResponseParser> parser_;
   std::unique_ptr<MozcClientInterface> client_;
   std::unique_ptr<MozcClientPool> pool_;
   FactoryFor<MozcState> factory_;
+  std::unique_ptr<GnomeAppTracker> gnomeAppTracker_;
   SimpleAction toolAction_;
   std::vector<std::unique_ptr<MozcModeSubAction>> modeActions_;
   std::unique_ptr<HandlerTableEntry<EventHandler>> globalConfigReloadHandle_;
@@ -202,6 +207,7 @@ class MozcEngine final : public InputMethodEngineV2 {
   bool deactivating_ = false;
 
   FCITX_ADDON_DEPENDENCY_LOADER(clipboard, instance_->addonManager());
+  FCITX_ADDON_DEPENDENCY_LOADER(dbus, instance_->addonManager());
 };
 
 }  // namespace fcitx

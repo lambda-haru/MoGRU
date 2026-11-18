@@ -1,0 +1,15 @@
+{
+  "uuid": "mogru-app-tracker@lambda-haru.github.io",
+  "name": "MoGRU Active App Tracker",
+  "description": "Exposes the currently focused application identifier over Session D-Bus for MoGRU (Fcitx5) on GNOME Wayland.",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "50"
+  ],
+  "url": "https://github.com/lambda-haru/MoGRU",
+  "version": 1
+}

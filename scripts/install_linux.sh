@@ -105,9 +105,21 @@ if [ -z "$MODELS_DIR" ] && [ -d "$REPO_ROOT/models" ]; then
   MODELS_DIR="$REPO_ROOT/models"
 fi
 
+GNOME_EXT_DIR=""
+for candidate_ext in \
+    "$PACKAGE_DIR/gnome_extension" \
+    "$SCRIPT_DIR/gnome_extension" \
+    "$REPO_ROOT/src/unix/gnome_extension"; do
+  if [ -f "$candidate_ext/metadata.json" ] && [ -f "$candidate_ext/extension.js" ]; then
+    GNOME_EXT_DIR="$candidate_ext"
+    break
+  fi
+done
+
 echo "[+] Using binary: $SOURCE_SO"
 [ -n "$SOURCE_TOOL" ] && echo "[+] Using GUI tool: $SOURCE_TOOL"
 [ -n "$MODELS_DIR" ] && echo "[+] Using models directory: $MODELS_DIR"
+[ -n "$GNOME_EXT_DIR" ] && echo "[+] Using GNOME extension: $GNOME_EXT_DIR"
 
 # Check Fcitx5 runtime
 if ! command -v fcitx5 &>/dev/null; then
@@ -268,6 +280,7 @@ Configurable=True
 
 [Addon/OptionalDependencies]
 0=clipboard
+1=dbus
 EOF
 
 cat << 'EOF' > "$HOME/.local/share/fcitx5/inputmethod/mogru.conf"
@@ -285,6 +298,36 @@ rm -f "$HOME/.local/lib/fcitx5/fcitx5-mozc-gru.so"
 rm -f "$HOME/.local/lib64/fcitx5/fcitx5-mozc-gru.so"
 rm -f "$HOME/.local/share/fcitx5/addon/mozc-gru.conf"
 rm -f "$HOME/.local/share/fcitx5/inputmethod/mozc-gru.conf"
+
+# 6.5. Deploy GNOME Shell Extension (Wayland active app tracker)
+GNOME_EXT_UUID="mogru-app-tracker@lambda-haru.github.io"
+if command -v gnome-shell &>/dev/null && [ -n "$GNOME_EXT_DIR" ]; then
+  echo "=== Installing GNOME Shell Extension ==="
+  GNOME_EXT_TARGET="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$GNOME_EXT_UUID"
+  mkdir -p "$GNOME_EXT_TARGET"
+  cp -f "$GNOME_EXT_DIR/metadata.json" "$GNOME_EXT_TARGET/"
+  cp -f "$GNOME_EXT_DIR/extension.js" "$GNOME_EXT_TARGET/"
+  cp -f "$GNOME_EXT_DIR/app_resolver.js" "$GNOME_EXT_TARGET/"
+  chmod 644 "$GNOME_EXT_TARGET/metadata.json" "$GNOME_EXT_TARGET/extension.js" "$GNOME_EXT_TARGET/app_resolver.js"
+  echo "[+] Installed GNOME Shell extension to: $GNOME_EXT_TARGET"
+
+  if [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]] || pgrep -u "$USER" -x gnome-shell >/dev/null 2>&1; then
+    if command -v gnome-extensions &>/dev/null; then
+      if gnome-extensions enable "$GNOME_EXT_UUID" >/dev/null 2>&1; then
+        echo "[+] Enabled GNOME Shell extension: $GNOME_EXT_UUID"
+      else
+        echo "[*] Note: GNOME Shell does not yet recognize $GNOME_EXT_UUID in the running session."
+        echo "    Please log out and log back in, then run:"
+        echo "        gnome-extensions enable $GNOME_EXT_UUID"
+      fi
+    else
+      echo "[*] Note: 'gnome-extensions' command not found. Enable $GNOME_EXT_UUID in GNOME Extensions app after re-login."
+    fi
+  else
+    echo "[*] GNOME session is not currently active. When using GNOME, enable the extension with:"
+    echo "    gnome-extensions enable $GNOME_EXT_UUID"
+  fi
+fi
 
 # 7. Migrate old MoGRU configuration and learned model from legacy directories if present
 TARGET_MODELS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/mogru/models"

@@ -258,6 +258,10 @@ class GruConfigManager {
                                     absl::string_view active_profile,
                                     bool enabled);
 
+  // Returns true if |name| refers to a Wayland/XWayland compositor or IM portal
+  // proxy rather than a real user application.
+  static bool IsCompositorOrProxyAppName(absl::string_view name);
+
   // Resolves the current application name from Context, env vars, or active window.
   static std::string GetCurrentApplicationName(
       const commands::Context* context = nullptr);

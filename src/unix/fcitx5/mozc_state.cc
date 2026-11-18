@@ -136,9 +136,11 @@ bool MozcState::TrySendKeyEvent(InputContext* ic,
   }
 
   mozc::commands::Context context;
-  if (ic && !ic->program().empty()) {
-    context.set_application_name(ic->program());
-    context.add_experimental_features(std::string("app:") + ic->program());
+  const std::string app_name =
+      (engine_ != nullptr) ? engine_->ResolveApplicationName(ic) : "";
+  if (!app_name.empty()) {
+    context.set_application_name(app_name);
+    context.add_experimental_features(std::string("app:") + app_name);
   }
   SurroundingTextInfo surrounding_text_info;
   if (GetSurroundingText(ic, &surrounding_text_info,
@@ -201,9 +203,11 @@ bool MozcState::TrySendRawCommand(const mozc::commands::SessionCommand& command,
                                   std::string* out_error) const {
   MOZC_VLOG(1) << "TrySendRawCommand: " << command.DebugString();
   mozc::commands::Context context;
-  if (ic_ && !ic_->program().empty()) {
-    context.set_application_name(ic_->program());
-    context.add_experimental_features(std::string("app:") + ic_->program());
+  const std::string app_name =
+      (engine_ != nullptr) ? engine_->ResolveApplicationName(ic_) : "";
+  if (!app_name.empty()) {
+    context.set_application_name(app_name);
+    context.add_experimental_features(std::string("app:") + app_name);
   }
   if (!GetClient()->SendCommandWithContext(command, context, out)) {
     *out_error = "SendCommand failed";
@@ -344,6 +348,19 @@ void MozcState::FocusIn() {
             .active_profile;
   }
   DrawAll();
+}
+
+void MozcState::RefreshFocusedAppProfile() {
+  if (ic_ == nullptr || engine_ == nullptr) {
+    return;
+  }
+  const std::string new_profile =
+      engine_->ResolveModeIndicatorProfileInfo(*ic_, /*force_mtime_check=*/false)
+          .active_profile;
+  if (!new_profile.empty() && new_profile != last_active_profile_) {
+    last_active_profile_ = new_profile;
+    engine_->compositionModeUpdated(ic_);
+  }
 }
 
 // This function is called when the ic loses focus.

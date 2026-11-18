@@ -151,7 +151,7 @@ GUI 設定ツール（Linux: Fcitx5 設定、macOS: 環境設定、Windows: プ�
 - **学習・変換履歴の完全分離**:
   - プロファイルごとに GRU 個人重み（`grumodel_user_<profile>.bin`）だけでなく、Mozc 本体の変換履歴・文節境界・予測履歴 DB（`segment_<profile>.db`, `boundary_<profile>.db`, `.history_<profile>.db` 等）も個別に分離保存されるため、用途ごとの変換癖が混ざりません。
 - **アクティブアプリ連動切り替え** (`enable_app_profile_switching = true`, デフォルト `app_profile_map = "code:coding,cursor:coding,slack:business,discord:casual"`):
-  - Fcitx5 等のアクティブアプリ名（`gnome-shell` / `kwin_wayland` / `mutter` / `weston` / `xwayland` 等のコンポジタは自動除外）や環境変数 `MOGRU_APP_NAME` / `MOZC_CURRENT_APP` に応じてプロファイルを自動切替します。追加したカスタムプロファイルも紐付け可能です。
+  - Fcitx5 等のアクティブアプリ名（`gnome-shell` / `kwin_wayland` / `mutter` / `weston` / `xwayland` / `ibus-portal` 等のコンポジタ・プロキシは自動除外）、GNOME + Wayland 環境向けの同梱 GNOME Shell 拡張機能（[`src/unix/gnome_extension/`](src/unix/gnome_extension/README.md)）、または環境変数 `MOGRU_APP_NAME` / `MOZC_CURRENT_APP` に応じてプロファイルを自動切替します。追加したカスタムプロファイルも紐付け可能です。
 
 ### 6. インラインコマンド候補（変換操作だけで設定変更）
 

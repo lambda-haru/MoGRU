@@ -151,6 +151,16 @@ TEST_F(GruConfigModeIndicatorTest, ResolveAndPersistModeIndicatorFlag) {
   EXPECT_TRUE(refreshed_code.show_profile_in_mode_indicator);
 }
 
+TEST(GruConfigAppNameTest, IdentifiesCompositorsAndPortals) {
+  EXPECT_TRUE(GruConfigManager::IsCompositorOrProxyAppName("gnome-shell"));
+  EXPECT_TRUE(GruConfigManager::IsCompositorOrProxyAppName(" Xwayland "));
+  EXPECT_TRUE(GruConfigManager::IsCompositorOrProxyAppName("ibus-portal"));
+  EXPECT_TRUE(
+      GruConfigManager::IsCompositorOrProxyAppName("xdg-desktop-portal-gnome"));
+  EXPECT_FALSE(GruConfigManager::IsCompositorOrProxyAppName("code"));
+  EXPECT_FALSE(GruConfigManager::IsCompositorOrProxyAppName(""));
+}
+
 }  // namespace
 }  // namespace config
 }  // namespace mozc

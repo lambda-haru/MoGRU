@@ -104,6 +104,7 @@ class MozcState : public InputContextProperty {
   void SetUsage(const std::string& title, const std::string& description);
 
   void DrawAll();
+  void RefreshFocusedAppProfile();
 
  private:
   void DisplayUsage();

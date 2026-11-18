@@ -53,6 +53,7 @@
 #include "base/vlog.h"
 #include "protocol/candidate_window.pb.h"
 #include "protocol/commands.pb.h"
+#include "unix/fcitx5/app_name_resolver.h"
 #include "unix/fcitx5/i18nwrapper.h"
 #include "unix/fcitx5/mozc_engine.h"
 #include "unix/fcitx5/mozc_state.h"
@@ -382,8 +383,7 @@ bool MozcResponseParser::ParseResponse(const mozc::commands::Output& response,
   // SWITCH_COMPOSITION_MODE request only contains mode and id fields.
   if (response.has_mode()) {
     const std::string im = engine_->instance()->inputMethod(ic);
-    const bool is_active_im =
-        (im == "mozc" || im == "mogru" || im == "mozc-gru");
+    const bool is_active_im = IsMoGRUActiveInputMethod(im);
     mozc_state->SetCompositionMode(
         response.mode(), !engine_->deactivating() && is_active_im);
   }

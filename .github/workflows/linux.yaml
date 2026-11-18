@@ -111,6 +111,12 @@ jobs:
           cp -f scripts/install_linux.sh package_linux/install.sh
           chmod 755 package_linux/install.sh
 
+          # GNOME Shell 拡張機能（Wayland アクティブアプリ名取得）の同梱
+          mkdir -p package_linux/gnome_extension
+          cp -f src/unix/gnome_extension/metadata.json package_linux/gnome_extension/
+          cp -f src/unix/gnome_extension/extension.js package_linux/gnome_extension/
+          cp -f src/unix/gnome_extension/app_resolver.js package_linux/gnome_extension/
+
       - name: Upload MoGRU Linux Artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
@@ -140,10 +146,14 @@ jobs:
       - name: Setup
         run: |
           sudo apt-get update
-          sudo apt-get install -y libibus-1.0-dev qt6-base-dev fcitx5 libfcitx5core-dev libfcitx5config-dev libfcitx5utils-dev fcitx5-modules-dev
+          sudo apt-get install -y libibus-1.0-dev qt6-base-dev fcitx5 libfcitx5core-dev libfcitx5config-dev libfcitx5utils-dev fcitx5-modules-dev gjs
           #
           # Unset the Android NDK setting to skip the unnecessary configuration.
           echo "ANDROID_NDK_HOME=" >> $GITHUB_ENV
+
+      - name: gnome extension unit test
+        run: |
+          gjs -m src/unix/gnome_extension/app_resolver_test.js
 
       - name: Restore Bazel repository cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
