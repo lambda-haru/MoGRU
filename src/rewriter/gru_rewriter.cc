@@ -331,6 +331,36 @@ double ComputeDynamicAlpha(double alpha_base,
   return alpha_base * mult;
 }
 
+int32_t ComputeSegmentMinCost(const Segment& seg,
+                              size_t max_eval = kMaxCandidateEvaluation) {
+  if (seg.candidates_size() == 0) {
+    return 0;
+  }
+  const size_t limit = std::min(seg.candidates_size(), max_eval);
+  int32_t min_cost = seg.candidate(0).cost;
+  for (size_t i = 1; i < limit; ++i) {
+    min_cost = std::min(min_cost, seg.candidate(i).cost);
+  }
+  return min_cost;
+}
+
+bool IsCandidateWithinCostDiff(const Segment::Candidate& cand,
+                               int32_t ref_min_cost) {
+  if ((cand.attributes &
+       converter::Attribute::USER_SEGMENT_HISTORY_REWRITER) != 0) {
+    return true;
+  }
+  return cand.cost <= ref_min_cost + kMaxCostDiff;
+}
+
+bool CompareCandidateScores(const CandidateScore& a,
+                            const CandidateScore& b) {
+  if (a.within_cost_diff != b.within_cost_diff) {
+    return a.within_cost_diff;
+  }
+  return a.combined_cost < b.combined_cost;
+}
+
 std::vector<CandidateScore> EvaluateSegmentCandidates(
     const gruscorer::GruModel& model,
     const charindex::CharIndex& indexer,
@@ -355,7 +385,7 @@ std::vector<CandidateScore> EvaluateSegmentCandidates(
         ScoreCandidateWithContext(model, indexer, cand, context, penalty_config);
     const PenaltyResult penalty_res =
         CalculatePenalty(cand, is_emoji, penalty_config);
-    const bool within = (cand.cost <= ref_min_cost + kMaxCostDiff);
+    const bool within = IsCandidateWithinCostDiff(cand, ref_min_cost);
 
     CandidateScore cs;
     cs.cand_ptr = &cand;
@@ -374,12 +404,8 @@ std::vector<CandidateScore> EvaluateSegmentCandidates(
   }
 
   for (auto& cs : scored) {
-    double eval = static_cast<double>(cs.viterbi_cost) -
-                  (alpha_eff * cs.gru_score) + cs.penalty_val;
-    if (!cs.within_cost_diff) {
-      eval += 1e9;
-    }
-    cs.combined_cost = eval;
+    cs.combined_cost = static_cast<double>(cs.viterbi_cost) -
+                       (alpha_eff * cs.gru_score) + cs.penalty_val;
   }
   return scored;
 }
@@ -390,6 +416,7 @@ void UpdateCandidateDescription(Segment::Candidate* cand,
                                 double effective_alpha,
                                 PenaltyType penalty_type,
                                 double penalty_val,
+                                bool within_cost_diff,
                                 bool is_promoted) {
   std::string penalty_tag;
   if (penalty_type == PenaltyType::KATAKANA && penalty_val > 0.0) {
@@ -402,6 +429,9 @@ void UpdateCandidateDescription(Segment::Candidate* cand,
       ? absl::StrFormat("GRU:EMOJI[E:%.0f]", combined_cost)
       : absl::StrFormat("GRU:%.2f%s[E:%.0f][α:%.0f]", gru_score, penalty_tag,
                         combined_cost, effective_alpha);
+  if (!within_cost_diff) {
+    tag += "[CUT]";
+  }
   if (is_promoted) {
     tag += "*";
   }
@@ -422,7 +452,7 @@ void UpdateCandidateDescription(Segment::Candidate* cand,
   }
 }
 
-// Sorts evaluated candidates of `seg` by combined_cost in ascending order.
+// Sorts evaluated candidates of `seg` by within_cost_diff and combined_cost.
 // Ensures that the candidate marked with is_best (if any) is placed at index 0.
 bool SortSegmentCandidates(Segment* seg,
                            std::vector<CandidateScore> scored,
@@ -432,14 +462,14 @@ bool SortSegmentCandidates(Segment* seg,
 
   const Segment::Candidate* original_top = &seg->candidate(0);
 
-  // Sort by combined_cost ascending.
+  // Sort by within_cost_diff (valid first), then combined_cost ascending.
   // If is_best is true for one candidate, ensure it sorts first.
   std::stable_sort(scored.begin(), scored.end(),
                    [](const CandidateScore& a, const CandidateScore& b) {
                      if (a.is_best != b.is_best) {
                        return a.is_best;
                      }
-                     return a.combined_cost < b.combined_cost;
+                     return CompareCandidateScores(a, b);
                    });
 
   // Reorder candidates in seg using move_candidate
@@ -464,7 +494,8 @@ bool SortSegmentCandidates(Segment* seg,
     if (show_score) {
       UpdateCandidateDescription(cand, scored[i].gru_score, scored[i].combined_cost,
                                  effective_alpha, scored[i].penalty_type,
-                                 scored[i].penalty_val, is_promoted);
+                                 scored[i].penalty_val, scored[i].within_cost_diff,
+                                 is_promoted);
     }
   }
 
@@ -896,10 +927,7 @@ bool GruRewriter::UpdateAlphaOnFinishLocked(
     }
 
     const size_t num_eval = std::min(seg.candidates_size(), kMaxCandidateEvaluation);
-    int32_t min_cost = chosen.cost;
-    for (size_t j = 1; j < num_eval; ++j) {
-      min_cost = std::min(min_cost, seg.candidate(j).cost);
-    }
+    const int32_t min_cost = ComputeSegmentMinCost(seg, num_eval);
     if (chosen.cost > min_cost + kMaxCostDiff) {
       accum_text.append(chosen_val);
       continue;
@@ -1490,24 +1518,22 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
           UpdateCandidateDescription(cand, scored[0].gru_score,
                                      scored[0].combined_cost, alpha_eff,
                                      scored[0].penalty_type,
-                                     scored[0].penalty_val, false);
+                                     scored[0].penalty_val,
+                                     scored[0].within_cost_diff, false);
         }
       }
       return false;
     }
 
-    const int32_t top_cost = seg->candidate(0).cost;
+    const int32_t min_cost = ComputeSegmentMinCost(*seg);
     double alpha_eff = alpha_base;
     std::vector<CandidateScore> scored = EvaluateSegmentCandidates(
         *model_, *indexer_, *seg, init_context, prefix_len,
-        kMaxCandidateEvaluation, kMaxCandidateEvaluation, top_cost,
+        kMaxCandidateEvaluation, kMaxCandidateEvaluation, min_cost,
         penalty_config, alpha_base, enable_auto_alpha, &alpha_eff);
 
-    auto best_it = std::min_element(
-        scored.begin(), scored.end(),
-        [](const CandidateScore& a, const CandidateScore& b) {
-          return a.combined_cost < b.combined_cost;
-        });
+    auto best_it = std::min_element(scored.begin(), scored.end(),
+                                    CompareCandidateScores);
     if (best_it != scored.end()) {
       best_it->is_best = true;
     }
@@ -1533,12 +1559,14 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
     if (seg0.candidates_size() == 0) {
       return false;
     }
-    const int32_t top_cost = seg0.candidate(0).cost;
     const bool bypass_seg0 = ShouldBypassSegment(seg0);
     const size_t num_eval =
         bypass_seg0
             ? std::min<size_t>(seg0.candidates_size(), 1)
             : std::min(seg0.candidates_size(), kMaxCandidatesPerSegmentForBeam);
+    const int32_t min_cost =
+        bypass_seg0 ? ComputeSegmentMinCost(seg0, num_eval)
+                    : ComputeSegmentMinCost(seg0);
     const gruscorer::GruContext init_context =
         ComputePrefixContext(*model_, *indexer_, prefix_context, "");
     const size_t prefix_len = ComputeEffectivePrefixChars(prefix_context, "");
@@ -1546,7 +1574,7 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
     if (bypass_seg0) {
       for (size_t j = 0; j < num_eval; ++j) {
         const auto& cand = seg0.candidate(j);
-        if (cand.cost > top_cost + kMaxCostDiff) continue;
+        if (!IsCandidateWithinCostDiff(cand, min_cost)) continue;
         const PenaltyResult penalty_res =
             CalculatePenalty(cand, /*is_emoji=*/false, penalty_config);
         const double eval =
@@ -1557,7 +1585,7 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
       double alpha_eff = alpha_base;
       std::vector<CandidateScore> scored = EvaluateSegmentCandidates(
           *model_, *indexer_, seg0, init_context, prefix_len, num_eval,
-          kMaxCandidatesPerSegmentForBeam, top_cost, penalty_config, alpha_base,
+          kMaxCandidatesPerSegmentForBeam, min_cost, penalty_config, alpha_base,
           enable_auto_alpha, &alpha_eff);
       for (size_t j = 0; j < scored.size(); ++j) {
         if (!scored[j].within_cost_diff) continue;
@@ -1565,6 +1593,12 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
         const bool is_emoji = (scored[j].penalty_type == PenaltyType::EMOJI);
         beam.push_back({{j}, cand.value, cand.cost, scored[j].gru_score,
                         scored[j].combined_cost, is_emoji});
+      }
+      if (beam.empty() && !scored.empty()) {
+        const auto& cand = seg0.candidate(0);
+        const bool is_emoji = (scored[0].penalty_type == PenaltyType::EMOJI);
+        beam.push_back({{0}, cand.value, cand.cost, scored[0].gru_score,
+                        scored[0].combined_cost, is_emoji});
       }
     }
 
@@ -1579,12 +1613,17 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
   for (size_t rel_idx = 1; rel_idx < num_target; ++rel_idx) {
     const size_t seg_idx = start_seg_idx + rel_idx;
     const Segment& seg = segments->segment(seg_idx);
-    const int32_t top_cost = seg.candidate(0).cost;
+    if (seg.candidates_size() == 0) {
+      break;
+    }
     const bool bypass_seg = ShouldBypassSegment(seg);
     const size_t num_eval =
         bypass_seg
             ? std::min<size_t>(seg.candidates_size(), 1)
             : std::min(seg.candidates_size(), kMaxCandidatesPerSegmentForBeam);
+    const int32_t min_cost =
+        bypass_seg ? ComputeSegmentMinCost(seg, num_eval)
+                   : ComputeSegmentMinCost(seg);
 
     std::vector<BeamPath> next_beam;
     next_beam.reserve(beam.size() * num_eval);
@@ -1593,7 +1632,7 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
       if (bypass_seg) {
         for (size_t j = 0; j < num_eval; ++j) {
           const auto& cand = seg.candidate(j);
-          if (cand.cost > top_cost + kMaxCostDiff) continue;
+          if (!IsCandidateWithinCostDiff(cand, min_cost)) continue;
           const PenaltyResult penalty_res =
               CalculatePenalty(cand, path.has_emoji, penalty_config);
           const double cand_eval =
@@ -1614,7 +1653,7 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
       double alpha_eff = alpha_base;
       std::vector<CandidateScore> scored = EvaluateSegmentCandidates(
           *model_, *indexer_, seg, path_ctx, prefix_len, num_eval,
-          kMaxCandidatesPerSegmentForBeam, top_cost, penalty_config, alpha_base,
+          kMaxCandidatesPerSegmentForBeam, min_cost, penalty_config, alpha_base,
           enable_auto_alpha, &alpha_eff);
 
       for (size_t j = 0; j < scored.size(); ++j) {
@@ -1635,7 +1674,18 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
       }
     }
 
-    if (next_beam.empty()) break;
+    if (next_beam.empty()) {
+      // Fallback if all top-5 candidates exceed min_cost + kMaxCostDiff.
+      const auto& cand = seg.candidate(0);
+      for (const auto& path : beam) {
+        std::vector<size_t> new_indices = path.indices;
+        new_indices.push_back(0);
+        next_beam.push_back({std::move(new_indices), path.text + cand.value,
+                             path.total_viterbi_cost + cand.cost, 0.0f,
+                             path.eval_score + static_cast<double>(cand.cost),
+                             path.has_emoji});
+      }
+    }
 
     std::sort(next_beam.begin(), next_beam.end(),
               [](const BeamPath& a, const BeamPath& b) { return a.eval_score < b.eval_score; });
@@ -1667,13 +1717,13 @@ bool GruRewriter::RerankSegmentsWithBeamSearch(
     const size_t prefix_len =
         ComputeEffectivePrefixChars(prefix_context, accum_text);
 
-    const int32_t top_cost = seg->candidate(0).cost;
+    const int32_t min_cost = ComputeSegmentMinCost(*seg);
     double alpha_eff = alpha_base;
     std::vector<CandidateScore> scored = EvaluateSegmentCandidates(
         *model_, *indexer_, *seg, seg_ctx, prefix_len, kMaxCandidateEvaluation,
-        kMaxCandidatesPerSegmentForBeam, top_cost, penalty_config, alpha_base,
+        kMaxCandidatesPerSegmentForBeam, min_cost, penalty_config, alpha_base,
         enable_auto_alpha, &alpha_eff);
-    if (best_cand_idx < scored.size()) {
+    if (best_cand_idx < scored.size() && scored[best_cand_idx].within_cost_diff) {
       scored[best_cand_idx].is_best = true;
     }
 

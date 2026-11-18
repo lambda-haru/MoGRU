@@ -625,4 +625,111 @@ TEST_F(NBestGeneratorTest, ParticleOmissionBonusTest) {
   }
 }
 
+TEST_F(NBestGeneratorTest, CrossBoundaryUnreachableNodeIgnored) {
+  auto data_and_converter = std::make_unique<MockDataAndImmutableConverter>();
+  ImmutableConverterTestPeer converter =
+      data_and_converter->GetConverterTestPeer();
+
+  // "えんちょう" exists in the mock dictionary and spans segments 0 and 1,
+  // so Viterbi leaves it with prev == nullptr and cost == 0.
+  Segments segments;
+  {
+    Segment* seg = segments.add_segment();
+    seg->set_segment_type(Segment::FIXED_BOUNDARY);
+    seg->set_key("えん");
+  }
+  {
+    Segment* seg = segments.add_segment();
+    seg->set_segment_type(Segment::FIXED_BOUNDARY);
+    seg->set_key("ちょう");
+  }
+  {
+    Segment* seg = segments.add_segment();
+    seg->set_segment_type(Segment::FIXED_BOUNDARY);
+    seg->set_key("する");
+  }
+
+  Lattice lattice;
+  lattice.SetKey("えんちょうする");
+  const ConversionRequest request = ConvReq(ConversionRequest::CONVERSION);
+  converter.MakeLattice(request.options(), &segments, &lattice);
+  const std::vector<uint16_t> group = converter.MakeGroup(segments);
+  converter.Viterbi(request.options(), segments, &lattice);
+
+  // Also inject a synthetic cross-boundary unreachable node (prev == nullptr,
+  // cost == 0) ending at the boundary before "する" with a distinct rid, and
+  // another unreachable right-edge node starting at the boundary of "ちょう"
+  // so both NBestGenerator::Next() and Reset() are exercised.
+  const size_t seg0_end = std::string("えん").size();
+  const size_t seg1_end = std::string("えんちょう").size();
+  {
+    Node* bad_left = lattice.NewNode();
+    bad_left->key = "んちょう";
+    bad_left->value = "んちょう";
+    bad_left->lid = 1;
+    bad_left->rid = 1;
+    bad_left->wcost = 100;
+    lattice.Insert(std::string("え").size(), bad_left);
+    ASSERT_EQ(bad_left->prev, nullptr);
+    ASSERT_EQ(bad_left->cost, 0);
+  }
+  {
+    Node* bad_right = lattice.NewNode();
+    bad_right->key = "ちょうす";
+    bad_right->value = "ちょうす";
+    bad_right->lid = 1;
+    bad_right->rid = 1;
+    bad_right->wcost = 100;
+    lattice.Insert(seg0_end, bad_right);
+    ASSERT_EQ(bad_right->prev, nullptr);
+    ASSERT_EQ(bad_right->cost, 0);
+  }
+
+  std::unique_ptr<NBestGenerator<CachingConnector<true>>> nbest_generator =
+      data_and_converter->CreateNBestGenerator(lattice, request);
+
+  // Verify segment 0 ("えん") works with BOS_NODE (prev == nullptr) and ignores
+  // unreachable right-edge nodes in Reset().
+  const Node* bos = lattice.bos_node();
+  const Node* seg0_end_node =
+      GetEndNode(request, converter, segments, *bos, group, false);
+  ASSERT_NE(seg0_end_node, nullptr);
+  {
+    nbest_generator->Reset(
+        *bos, *seg0_end_node,
+        {NBestGenerator<CachingConnector<true>>::ONLY_MID,
+         NBestGenerator<CachingConnector<true>>::CANDIDATE_MODE_NONE});
+    Segment seg0_result;
+    nbest_generator->SetCandidates(request.options(), "", 10, seg0_result);
+    ASSERT_GE(seg0_result.candidates_size(), 1);
+    for (size_t i = 0; i < seg0_result.candidates_size(); ++i) {
+      EXPECT_GT(seg0_result.candidate(i).cost, 0);
+      EXPECT_NE(seg0_result.candidate(i).value, "ちょうす");
+    }
+  }
+
+  // Advance along the Viterbi best path to the begin_node of segment 2 ("する").
+  const Node* seg2_begin = bos;
+  while (seg2_begin->next != nullptr && seg2_begin->end_pos < seg1_end) {
+    seg2_begin = seg2_begin->next;
+  }
+  ASSERT_EQ(seg2_begin->end_pos, seg1_end);
+  const Node* seg2_end =
+      GetEndNode(request, converter, segments, *seg2_begin, group, false);
+  ASSERT_NE(seg2_end, nullptr);
+
+  nbest_generator->Reset(
+      *seg2_begin, *seg2_end,
+      {NBestGenerator<CachingConnector<true>>::ONLY_MID,
+       NBestGenerator<CachingConnector<true>>::CANDIDATE_MODE_NONE});
+  Segment seg2_result;
+  nbest_generator->SetCandidates(request.options(), "", 10, seg2_result);
+  ASSERT_GE(seg2_result.candidates_size(), 2);
+  for (size_t i = 0; i < seg2_result.candidates_size(); ++i) {
+    EXPECT_GT(seg2_result.candidate(i).cost, 0)
+        << "Candidate " << i << " (" << seg2_result.candidate(i).value
+        << ") had non-positive cost";
+  }
+}
+
 }  // namespace mozc

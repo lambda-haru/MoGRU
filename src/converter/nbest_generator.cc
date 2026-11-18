@@ -146,7 +146,8 @@ void NBestGenerator<TConnector>::Reset(const Node& begin_node,
 
   for (const Node* node : lattice_.begin_nodes(end_node_->begin_pos)) {
     if (node == end_node_ ||
-        (node->lid != end_node_->lid &&
+        (node->prev != nullptr &&
+         node->lid != end_node_->lid &&
          // node->cost can be smaller than end_node_->cost
          std::abs(node->cost - end_node_->cost) <= kCostDiff &&
          node->prev != end_node_->prev)) {
@@ -463,6 +464,12 @@ bool NBestGenerator<TConnector>::Next(const ConversionOptions& options,
     const bool is_edge = (is_right_edge || is_left_edge);
 
     for (const Node* lnode : lattice_.end_nodes(rnode->begin_pos)) {
+      if (lnode->node_type != Node::BOS_NODE && lnode->prev == nullptr) {
+        // Invalid lnode that was not reached by Viterbi (e.g. a node crossing
+        // a segment boundary whose cost remained 0).
+        continue;
+      }
+
       // is_invalid_position is true if the lnode's location is invalid
       //  1.   |<-- begin_node_-->|
       //                    |<--lnode-->|  <== overlapped.

@@ -2790,6 +2790,121 @@ TEST_F(GruRewriterTest, RewriteFallsBackToSegmentsPrecedingTextWhenRequestEmpty)
   EXPECT_NEAR(score_override, score_req_ctx, 1e-3f);
 }
 
+TEST_F(GruRewriterTest, MinCostReferenceIsIdempotentAndExemptsUserHistory) {
+  const std::string test_config = FileUtil::JoinPath(
+      std::filesystem::temp_directory_path().string(),
+      "gru_min_cost_ref_test.ini");
+  std::error_code ec;
+  std::filesystem::remove(test_config, ec);
+
+  auto write_cfg = [&](double weight) {
+    GruPenaltyConfig cfg;
+    cfg.enable_gru_rewriter = true;
+    cfg.show_gru_score = true;
+    cfg.enable_auto_alpha = false;
+    cfg.gru_score_weight = weight;
+    ASSERT_TRUE(config::GruConfigManager::SaveConfig(cfg, test_config));
+  };
+
+  write_cfg(800.0);
+  absl::SetFlag(&FLAGS_gru_config_path, test_config);
+  ASSERT_TRUE(rewriter_->Reload());
+
+  auto find_cand = [](const Segment& seg,
+                      absl::string_view value) -> const converter::Candidate* {
+    for (size_t i = 0; i < seg.candidates_size(); ++i) {
+      if (seg.candidate(i).value == value) {
+        return &seg.candidate(i);
+      }
+    }
+    return nullptr;
+  };
+  auto parse_eval_cost = [](const std::string& desc) -> double {
+    const size_t e_pos = desc.find("[E:");
+    EXPECT_NE(e_pos, std::string::npos) << "Missing [E: in " << desc;
+    if (e_pos == std::string::npos) return 0.0;
+    const size_t end_pos = desc.find(']', e_pos + 3);
+    EXPECT_NE(end_pos, std::string::npos) << "Malformed [E: in " << desc;
+    double val = 0.0;
+    EXPECT_TRUE(absl::SimpleAtod(desc.substr(e_pos + 3, end_pos - (e_pos + 3)), &val))
+        << "Failed parsing [E: from " << desc;
+    return val;
+  };
+
+  // Case 1: Minimum cost is not at index 0, and re-running Focus stays idempotent.
+  Segments segments;
+  {
+    Segment* seg0 = segments.add_segment();
+    seg0->set_key("きょう");
+    AddCandidate("きょう", "今日", 1000, seg0);
+    AddCandidate("きょう", "京", 1200, seg0);
+
+    Segment* seg1 = segments.add_segment();
+    seg1->set_key("きかい");
+    // Index 0 has higher cost (5000), index 1 has true min_cost (1000),
+    // index 2 exceeds min_cost + 4000 (6000 > 5000).
+    AddCandidate("きかい", "機会", 5000, seg1);
+    AddCandidate("きかい", "機械", 1000, seg1);
+    AddCandidate("きかい", "奇怪", 6000, seg1);
+  }
+
+  ConversionRequest req;
+  rewriter_->Rewrite(req, &segments);
+
+  const Segment& seg1_after_rewrite = segments.conversion_segment(1);
+  const auto* c_kikai = find_cand(seg1_after_rewrite, "機械");
+  const auto* c_kikai_opp = find_cand(seg1_after_rewrite, "機会");
+  const auto* c_kikai_cut = find_cand(seg1_after_rewrite, "奇怪");
+  ASSERT_NE(c_kikai, nullptr);
+  ASSERT_NE(c_kikai_opp, nullptr);
+  ASSERT_NE(c_kikai_cut, nullptr);
+  EXPECT_EQ(c_kikai->description.find("[CUT]"), std::string::npos);
+  EXPECT_EQ(c_kikai_opp->description.find("[CUT]"), std::string::npos);
+  EXPECT_NE(c_kikai_cut->description.find("[CUT]"), std::string::npos);
+  EXPECT_LT(parse_eval_cost(c_kikai_cut->description), 100000.0);
+
+  const double cut_eval_before_focus = parse_eval_cost(c_kikai_cut->description);
+  // Focusing segment 0 re-evaluates segment 1; min_cost reference must keep
+  // [CUT] status and score consistent even if candidate 0 changed.
+  rewriter_->Focus(&segments, 0, 1);
+  const auto* c_kikai_cut_after =
+      find_cand(segments.conversion_segment(1), "奇怪");
+  ASSERT_NE(c_kikai_cut_after, nullptr);
+  EXPECT_NE(c_kikai_cut_after->description.find("[CUT]"), std::string::npos);
+  EXPECT_NEAR(parse_eval_cost(c_kikai_cut_after->description),
+              cut_eval_before_focus, 1.0);
+
+  // Case 2: USER_SEGMENT_HISTORY_REWRITER candidate above min_cost + 4000 is
+  // exempt from [CUT], while a normal candidate at the same high cost is [CUT]
+  // and sorted after valid candidates even with a large alpha weight.
+  write_cfg(5000.0);
+  ASSERT_TRUE(rewriter_->Reload());
+  Segments hist_segments;
+  Segment* hseg = hist_segments.add_segment();
+  hseg->set_key("きかい");
+  AddCandidate("きかい", "きかい", 12000, hseg);
+  hseg->mutable_candidate(0)->attributes |=
+      converter::Attribute::USER_SEGMENT_HISTORY_REWRITER;
+  AddCandidate("きかい", "奇怪", 1000, hseg);
+  AddCandidate("きかい", "機械", 12000, hseg);
+
+  rewriter_->Rewrite(req, &hist_segments);
+  const auto* hist_cand = find_cand(*hseg, "きかい");
+  const auto* normal_valid = find_cand(*hseg, "奇怪");
+  const auto* normal_cut = find_cand(*hseg, "機械");
+  ASSERT_NE(hist_cand, nullptr);
+  ASSERT_NE(normal_valid, nullptr);
+  ASSERT_NE(normal_cut, nullptr);
+  EXPECT_EQ(hist_cand->description.find("[CUT]"), std::string::npos);
+  EXPECT_EQ(normal_valid->description.find("[CUT]"), std::string::npos);
+  EXPECT_NE(normal_cut->description.find("[CUT]"), std::string::npos);
+  EXPECT_LT(parse_eval_cost(normal_cut->description), 1000000.0);
+  EXPECT_EQ(hseg->candidate(hseg->candidates_size() - 1).value, "機械");
+
+  std::filesystem::remove(test_config, ec);
+  absl::SetFlag(&FLAGS_gru_config_path, "");
+}
+
 }  // namespace
 }  // namespace mozc
 
