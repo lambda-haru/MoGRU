@@ -51,6 +51,7 @@
 #include "win32/tip/tip_input_mode_manager.h"
 #include "win32/tip/tip_private_context.h"
 #include "win32/tip/tip_range_util.h"
+#include "win32/tip/tip_status.h"
 #include "win32/tip/tip_text_service.h"
 #include "win32/tip/tip_thread_context.h"
 #include "win32/tip/tip_ui_element_manager.h"

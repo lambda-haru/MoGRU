@@ -504,8 +504,8 @@ mozc_cc_library(
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
         ":tip_input_mode_manager",
-        "//base/win32:wide_char",
         "//base:system_util",
+        "//base/win32:wide_char",
         "//config:gru_config",
         "//protocol:commands_cc_proto",
         "@com_google_absl//absl/base:no_destructor",
