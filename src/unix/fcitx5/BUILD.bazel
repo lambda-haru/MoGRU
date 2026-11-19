@@ -135,6 +135,7 @@ mozc_cc_library(
     target_compatible_with = ["@platforms//os:linux"],
     deps = [
         ":app_name_resolver",
+        "@com_google_absl//absl/strings",
         "@fcitx5",
     ],
 )

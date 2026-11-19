@@ -369,6 +369,8 @@ void UpdateCommand(TipTextService* text_service, ITfContext* context,
           input_mode_manager->GetEffectiveConversionMode());
       if (!input_mode_manager->pending_profile_change().empty()) {
         info->set_profile_name(input_mode_manager->pending_profile_change());
+      } else if (!input_mode_manager->last_active_profile().empty()) {
+        info->set_profile_name(input_mode_manager->last_active_profile());
       }
     }
   }

@@ -30,9 +30,38 @@ const DBUS_INTERFACE_XML = `
       <arg name="appName" type="s"/>
       <arg name="info" type="a{sv}"/>
     </signal>
+    <signal name="WindowClosed">
+      <arg name="windowId" type="t"/>
+    </signal>
   </interface>
 </node>
 `;
+
+/**
+ * Walks the `transient_for` parent chain to locate the root owner window.
+ *
+ * @param {Meta.Window|null} window
+ * @returns {Meta.Window|null}
+ */
+function resolveRootWindow(window) {
+  let cur = window;
+  const seen = new Set();
+  for (let depth = 0; depth < 32 && cur; depth++) {
+    if (seen.has(cur)) {
+      break;
+    }
+    seen.add(cur);
+    const parent =
+      typeof cur.get_transient_for === 'function'
+        ? cur.get_transient_for()
+        : null;
+    if (!parent) {
+      break;
+    }
+    cur = parent;
+  }
+  return cur;
+}
 
 /**
  * Converts a plain app-info record into a `a{sv}` dictionary of `GLib.Variant`s.
@@ -51,6 +80,7 @@ function buildVariantDict(info) {
     gtk_application_id: GLib.Variant.new_string(info.gtk_application_id ?? ''),
     sandboxed_app_id: GLib.Variant.new_string(info.sandboxed_app_id ?? ''),
     pid: GLib.Variant.new_int32(info.pid ?? 0),
+    window_id: GLib.Variant.new_uint64(info.window_id ?? 0),
     is_wayland: GLib.Variant.new_boolean(Boolean(info.is_wayland)),
   };
 }
@@ -61,6 +91,7 @@ export default class MoGRUAppTrackerExtension extends Extension {
     this._tracker = Shell.WindowTracker.get_default();
     this._trackedWindow = null;
     this._windowSignalIds = [];
+    this._lifecycleSignals = new Map();
     this._currentInfo = createEmptyAppInfo();
 
     this._procReader = {
@@ -100,6 +131,18 @@ export default class MoGRUAppTrackerExtension extends Extension {
       'notify::focus-app',
       () => this._onFocusChanged()
     );
+    this._windowCreatedSignalId = global.display.connect(
+      'window-created',
+      (_display, win) => this._trackWindowLifecycle(win)
+    );
+
+    const existingWindows =
+      typeof global.display.list_all_windows === 'function'
+        ? global.display.list_all_windows()
+        : global.get_window_actors().map((actor) => actor.meta_window);
+    for (const win of existingWindows) {
+      this._trackWindowLifecycle(win);
+    }
 
     this._rebindWindowSignals(global.display.focus_window ?? null);
     this._refreshFocusedApp(false);
@@ -107,6 +150,22 @@ export default class MoGRUAppTrackerExtension extends Extension {
 
   disable() {
     this._disconnectWindowSignals();
+
+    if (this._windowCreatedSignalId) {
+      global.display.disconnect(this._windowCreatedSignalId);
+      this._windowCreatedSignalId = 0;
+    }
+    if (this._lifecycleSignals) {
+      for (const [win, sigId] of this._lifecycleSignals.entries()) {
+        try {
+          win.disconnect(sigId);
+        } catch (_e) {
+          // Window may already be finalized.
+        }
+      }
+      this._lifecycleSignals.clear();
+      this._lifecycleSignals = null;
+    }
 
     if (this._focusWindowSignalId) {
       global.display.disconnect(this._focusWindowSignalId);
@@ -179,10 +238,28 @@ export default class MoGRUAppTrackerExtension extends Extension {
     }
   }
 
-  _captureWindowSnapshot(window) {
-    if (!window) {
-      return null;
+  _trackWindowLifecycle(win) {
+    if (!win || !this._lifecycleSignals || this._lifecycleSignals.has(win)) {
+      return;
     }
+    const winId = typeof win.get_id === 'function' ? win.get_id() : 0;
+    const sigId = win.connect('unmanaged', () => {
+      this._lifecycleSignals?.delete(win);
+      if (winId > 0 && this._dbusImpl) {
+        try {
+          this._dbusImpl.emit_signal(
+            'WindowClosed',
+            new GLib.Variant('(t)', [winId])
+          );
+        } catch (e) {
+          console.error(`[MoGRU] Failed to emit WindowClosed: ${e}`);
+        }
+      }
+    });
+    this._lifecycleSignals.set(win, sigId);
+  }
+
+  _extractWindowMetadata(window, rootWindowId) {
     let appId = '';
     const shellApp = this._tracker ? this._tracker.get_window_app(window) : null;
     if (shellApp && !(shellApp.is_window_backed && shellApp.is_window_backed())) {
@@ -195,6 +272,7 @@ export default class MoGRUAppTrackerExtension extends Extension {
 
     return {
       pid: typeof window.get_pid === 'function' ? window.get_pid() : 0,
+      window_id: rootWindowId,
       wm_class: typeof window.get_wm_class === 'function' ? (window.get_wm_class() ?? '') : '',
       wm_class_instance:
         typeof window.get_wm_class_instance === 'function'
@@ -211,6 +289,23 @@ export default class MoGRUAppTrackerExtension extends Extension {
       app_id: appId,
       is_wayland: isWayland,
     };
+  }
+
+  _captureWindowSnapshot(window) {
+    if (!window) {
+      return null;
+    }
+    const rootWin = resolveRootWindow(window);
+    const rootWindowId =
+      rootWin && typeof rootWin.get_id === 'function' ? rootWin.get_id() : 0;
+    const snapshot = this._extractWindowMetadata(window, rootWindowId);
+    if (rootWin && rootWin !== window) {
+      const resolved = resolveFocusedWindowInfo(snapshot, this._procReader);
+      if (!resolved.app_name) {
+        return this._extractWindowMetadata(rootWin, rootWindowId);
+      }
+    }
+    return snapshot;
   }
 
   _disconnectWindowSignals() {

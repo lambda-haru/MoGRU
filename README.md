@@ -152,15 +152,20 @@ GUI 設定ツール（Linux: Fcitx5 設定、macOS: 環境設定、Windows: プ�
   - プロファイルごとに GRU 個人重み（`grumodel_user_<profile>.bin`）だけでなく、Mozc 本体の変換履歴・文節境界・予測履歴 DB（`segment_<profile>.db`, `boundary_<profile>.db`, `.history_<profile>.db` 等）も個別に分離保存されるため、用途ごとの変換癖が混ざりません。
 - **アクティブアプリ連動切り替え** (`enable_app_profile_switching = true`, デフォルト `app_profile_map = "code:coding,cursor:coding,slack:business,discord:casual"`):
   - Fcitx5 等のアクティブアプリ名（`gnome-shell` / `kwin_wayland` / `mutter` / `weston` / `xwayland` / `ibus-portal` 等のコンポジタ・プロキシは自動除外）、GNOME + Wayland 環境向けの同梱 GNOME Shell 拡張機能（[`src/unix/gnome_extension/`](src/unix/gnome_extension/README.md)）、または環境変数 `MOGRU_APP_NAME` / `MOZC_CURRENT_APP` に応じてプロファイルを自動切替します。追加したカスタムプロファイルも紐付け可能です。
+- **ウィンドウごとのプロファイル記憶・フォーカス連動切替** (`enable_window_profile_memory = true`):
+  - 新規ウィンドウはアプリ登録（`app_profile_map`）または設定画面の `current_profile` で開始し、そのウィンドウ内でインラインコマンドによりプロファイルを切り替えると、グローバル設定（`gru_config.ini` の `current_profile`）を上書きせずに **そのウィンドウ専用** としてセッション内メモリに記憶します。
+  - 別のウィンドウへフォーカスを切り替えると各ウィンドウに記憶されたプロファイル（未指定のウィンドウは `app_profile_map` / `current_profile`）へ自動的に切り替わります。
+  - GNOME + Wayland（同梱 GNOME Shell 拡張機能のルートウィンドウ ID + `WindowClosed` シグナル）、X11 / 非 GNOME Linux（Fcitx5 `ic->uuid()` フォールバック）、macOS（`CGWindowID`）、Windows（TSF ルートオーナー `HWND`）に対応し、子ダイアログは親ウィンドウの設定を継承し、ウィンドウ終了時に自動クリーンアップされます。
 
 ### 6. インラインコマンド候補（変換操作だけで設定変更）
 
-通常変換中（誤確定防止のためライブ変換中は非表示）に以下の読みを入力して変換・確定すると、GUI を開かずに即時実行・`gru_config.ini` 保存が行われます。
+通常変換中（誤確定防止のためライブ変換中は非表示）に以下の読みを入力して変換・確定すると、GUI を開かずに即時実行・設定更新が行われます。
 
 | 読み・キーワード | 生成されるコマンド候補 | 動作 |
 | :--- | :--- | :--- |
-| `ぷろふぁいる` / `プロファイル` / `profile` | `MoGRU: プロファイル切替 [<profile>]`<br>*(有効な全プロファイル：組み込み & 追加したカスタムプロファイル)* | アクティブプロファイルを切り替え（カスタムプロファイル名も候補に自動列挙、削除済みプロファイルは自動除外） |
-| 同上（アクティブアプリ名取得可能時） | `MoGRU: 現在のアプリ (<app>) を [<profile>] に登録` | 現在のアプリを指定プロファイルへ自動登録 |
+| `ぷろふぁいる` / `プロファイル` / `profile` | `MoGRU: プロファイル切替 [<profile>]`<br>*(有効な全プロファイル：組み込み & 追加したカスタムプロファイル)* | ウィンドウ記憶有効かつウィンドウ ID 取得時は現在のウィンドウにのみ切替・記憶（無効/未取得時は `current_profile` を切替・保存） |
+| 同上（現在ウィンドウに記憶プロファイルあり） | `MoGRU: このウィンドウのプロファイル記憶を解除` | 現在のウィンドウの手動記憶を解除し、アプリ登録 / デフォルト設定へ戻す |
+| 同上（アクティブアプリ名取得可能時） | `MoGRU: 現在のアプリ (<app>) を [<profile>] に登録` | 現在のアプリを指定プロファイルへ自動登録し、現在ウィンドウの手動記憶を解除 |
 | `いんすたんと` / `インスタント` / `instant` | `MoGRU: インスタント速習モード ON` / `OFF` | インスタント速習モードのトグル |
 
 ### 7. 変換正確率統計 & 詳細履歴ログ

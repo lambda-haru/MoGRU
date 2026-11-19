@@ -44,6 +44,7 @@
 
 #include "absl/flags/declare.h"
 #include "absl/flags/flag.h"
+#include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_format.h"
 #include "base/init_mozc.h"
@@ -264,8 +265,13 @@ void MozcEngine::InitGnomeAppTracker() {
       return;
     }
     gnomeAppTracker_ = std::make_unique<GnomeAppTracker>(
-        bus, [this](const std::string& app_name) {
-          OnFocusedAppChanged(app_name);
+        bus,
+        [this](const std::string& /*app_name*/,
+               const std::string& /*window_id*/) {
+          OnFocusedAppChanged();
+        },
+        [this](const std::string& closed_window_id) {
+          NotifyWindowClosed(closed_window_id);
         });
   } catch (const std::exception& e) {
     FCITX_LOG(Warn) << "Failed to initialize GnomeAppTracker: " << e.what();
@@ -273,7 +279,7 @@ void MozcEngine::InitGnomeAppTracker() {
   }
 }
 
-void MozcEngine::OnFocusedAppChanged(const std::string& /*app_name*/) {
+void MozcEngine::OnFocusedAppChanged() {
   instance_->inputContextManager().foreachFocused([this](InputContext* ic) {
     if (ic == nullptr) {
       return true;
@@ -286,6 +292,22 @@ void MozcEngine::OnFocusedAppChanged(const std::string& /*app_name*/) {
     }
     return true;
   });
+}
+
+void MozcEngine::NotifyWindowClosed(const std::string& window_id) {
+  if (window_id.empty()) {
+    return;
+  }
+  mozc::config::GruConfigManager::ClearWindowProfileOverride(window_id);
+  if (client_ != nullptr) {
+    mozc::commands::SessionCommand command;
+    command.set_type(mozc::commands::SessionCommand::NONE);
+    mozc::commands::Context context;
+    context.add_experimental_features(
+        std::string("close_window:") + window_id);
+    mozc::commands::Output output;
+    client_->SendCommandWithContext(command, context, &output);
+  }
 }
  
 std::string MozcEngine::GetConfigPath() const {
@@ -410,6 +432,32 @@ std::string MozcEngine::ResolveApplicationName(const InputContext* ic) const {
   return fcitx::ResolveApplicationName(ic_program, gnome_app);
 }
 
+std::string MozcEngine::ResolveWindowId(const InputContext* ic) const {
+  const bool gnome_available =
+      (gnomeAppTracker_ != nullptr && gnomeAppTracker_->is_service_available());
+  const std::string gnome_win_id =
+      (gnomeAppTracker_ != nullptr) ? gnomeAppTracker_->focused_window_id() : "";
+  std::string ic_uuid_id;
+  bool allow_ic_fallback = false;
+  if (ic != nullptr) {
+    const auto uuid = ic->uuid();
+    ic_uuid_id = FormatInputContextWindowId(uuid.data(), uuid.size());
+    const std::string& ic_prog = ic->program();
+    const bool is_proxy_ic =
+        mozc::config::GruConfigManager::IsCompositorOrProxyAppName(ic_prog);
+    const char* wayland_display = std::getenv("WAYLAND_DISPLAY");
+    const char* desktop = std::getenv("XDG_CURRENT_DESKTOP");
+    const bool is_gnome_wayland =
+        (wayland_display != nullptr && wayland_display[0] != '\0') &&
+        (desktop != nullptr && absl::StrContainsIgnoreCase(desktop, "GNOME"));
+    const bool is_gnome_shared_wayland =
+        is_gnome_wayland && (ic_prog.empty() || is_proxy_ic);
+    allow_ic_fallback = !is_proxy_ic && !is_gnome_shared_wayland;
+  }
+  return fcitx::ResolveWindowId(gnome_available, gnome_win_id,
+                                allow_ic_fallback, ic_uuid_id);
+}
+
 mozc::config::ModeIndicatorProfileInfo
 MozcEngine::ResolveModeIndicatorProfileInfo(InputContext& ic,
                                             bool force_mtime_check) const {
@@ -417,6 +465,10 @@ MozcEngine::ResolveModeIndicatorProfileInfo(InputContext& ic,
   const std::string app_name = ResolveApplicationName(&ic);
   if (!app_name.empty()) {
     context.set_application_name(app_name);
+  }
+  const std::string window_id = ResolveWindowId(&ic);
+  if (!window_id.empty()) {
+    context.set_window_id(window_id);
   }
   return mozc::config::GruConfigManager::ResolveModeIndicatorProfileInfo(
       &context, "", force_mtime_check);

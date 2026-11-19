@@ -1818,6 +1818,13 @@
                   </property>
                  </widget>
                 </item>
+                <item row="4" column="0" colspan="2">
+                 <widget class="QCheckBox" name="enableWindowProfileMemoryCheckBox">
+                  <property name="text">
+                   <string>Remember selected profile per window and restore on focus</string>
+                  </property>
+                 </widget>
+                </item>
                </layout>
               </widget>
              </item>

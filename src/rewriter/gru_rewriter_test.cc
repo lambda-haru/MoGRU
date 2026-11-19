@@ -74,6 +74,7 @@ class GruRewriterTest : public mozc::testing::TestWithTempUserProfile {
       std::filesystem::remove(test_cfg, ec);
     }
     config::GruConfigManager::InvalidateConfigCache();
+    config::GruConfigManager::ClearAllWindowProfileOverrides();
     absl::SetFlag(&FLAGS_enable_gru_rewriter, true);
     absl::SetFlag(&FLAGS_enable_gru_auto_alpha, true);
     absl::SetFlag(&FLAGS_gru_score_weight, 800.0);
@@ -90,6 +91,7 @@ class GruRewriterTest : public mozc::testing::TestWithTempUserProfile {
     absl::SetFlag(&FLAGS_gru_config_path, "");
     absl::SetFlag(&FLAGS_enable_gru_auto_alpha, true);
     config::GruConfigManager::InvalidateConfigCache();
+    config::GruConfigManager::ClearAllWindowProfileOverrides();
     TestWithTempUserProfile::TearDown();
   }
 
@@ -2903,6 +2905,161 @@ TEST_F(GruRewriterTest, MinCostReferenceIsIdempotentAndExemptsUserHistory) {
 
   std::filesystem::remove(test_config, ec);
   absl::SetFlag(&FLAGS_gru_config_path, "");
+}
+
+TEST_F(GruRewriterTest, WindowProfileMemoryPerWindowAndFocusSwitch) {
+  const std::string config_path =
+      config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+  GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
+  cfg.current_profile = "default";
+  cfg.enable_app_profile_switching = true;
+  cfg.enable_window_profile_memory = true;
+  cfg.app_profile_map = "code:coding,slack:business";
+  ASSERT_TRUE(config::GruConfigManager::SaveConfig(cfg, config_path));
+  ASSERT_TRUE(rewriter_->Reload());
+
+  auto make_segments = [&](absl::string_view key, absl::string_view val) {
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key(std::string(key));
+    AddCandidate(key, val, 1000, seg);
+    return segments;
+  };
+  auto commit_command = [&](const commands::Context& ctx,
+                            absl::string_view cmd) {
+    const ConversionRequest req =
+        ConversionRequestBuilder().SetContextView(ctx).Build();
+    Segments commit_segs;
+    Segment* fixed = commit_segs.add_segment();
+    fixed->set_key("プロファイル");
+    fixed->set_segment_type(Segment::FIXED_VALUE);
+    AddCandidate("プロファイル", cmd, 0, fixed);
+    rewriter_->Finish(req, commit_segs);
+  };
+
+  commands::Context win1;
+  win1.set_window_id("gnome:10");
+  win1.set_application_name("code");
+
+  commands::Context win2;
+  win2.set_window_id("gnome:20");
+  win2.set_application_name("code");
+
+  commands::Context win3;
+  win3.set_window_id("gnome:30");
+  win3.set_application_name("gedit");
+
+  // 1. win1 ("code") starts with app-mapped "coding", shows window-memory
+  // description, and does not show the reset candidate yet.
+  {
+    const ConversionRequest req =
+        ConversionRequestBuilder().SetContextView(win1).Build();
+    Segments segs = make_segments("プロファイル", "プロファイル");
+    EXPECT_TRUE(rewriter_->Rewrite(req, &segs));
+    EXPECT_EQ(rewriter_->active_profile(), "coding");
+
+    bool found_business_desc = false;
+    bool found_reset_cmd = false;
+    const Segment& seg = segs.segment(0);
+    for (size_t i = 0; i < seg.candidates_size(); ++i) {
+      if (seg.candidate(i).value == "MoGRU: プロファイル切替 [business]") {
+        found_business_desc =
+            seg.candidate(i).description.find("（このウィンドウに記憶）") !=
+            std::string::npos;
+      }
+      if (seg.candidate(i).value == config::kWindowProfileResetCommand) {
+        found_reset_cmd = true;
+      }
+    }
+    EXPECT_TRUE(found_business_desc);
+    EXPECT_FALSE(found_reset_cmd);
+  }
+
+  // 2. Switch win1 manually to "business": global current_profile stays "default".
+  commit_command(win1, "MoGRU: プロファイル切替 [business]");
+  EXPECT_EQ(rewriter_->active_profile(), "business");
+  EXPECT_EQ(config::GruConfigManager::LoadConfig(config_path).current_profile,
+            "default");
+
+  // 3. Focusing win2 (same app "code") uses app-mapped "coding".
+  {
+    const ConversionRequest req =
+        ConversionRequestBuilder().SetContextView(win2).Build();
+    Segments segs = make_segments("てすと", "テスト");
+    rewriter_->Rewrite(req, &segs);
+    EXPECT_EQ(rewriter_->active_profile(), "coding");
+  }
+
+  // 4. Focusing win3 (unmapped "gedit") falls back to "default".
+  {
+    const ConversionRequest req =
+        ConversionRequestBuilder().SetContextView(win3).Build();
+    Segments segs = make_segments("てすと", "テスト");
+    rewriter_->Rewrite(req, &segs);
+    EXPECT_EQ(rewriter_->active_profile(), "default");
+  }
+
+  // 5. Focusing back to win1 restores "business" and exposes reset candidate.
+  {
+    const ConversionRequest req =
+        ConversionRequestBuilder().SetContextView(win1).Build();
+    Segments segs = make_segments("プロファイル", "プロファイル");
+    EXPECT_TRUE(rewriter_->Rewrite(req, &segs));
+    EXPECT_EQ(rewriter_->active_profile(), "business");
+    bool found_reset_cmd = false;
+    const Segment& seg = segs.segment(0);
+    for (size_t i = 0; i < seg.candidates_size(); ++i) {
+      if (seg.candidate(i).value == config::kWindowProfileResetCommand) {
+        found_reset_cmd = true;
+        break;
+      }
+    }
+    EXPECT_TRUE(found_reset_cmd);
+  }
+
+  // 6. Resetting win1 returns it to app-mapped "coding".
+  commit_command(win1, config::kWindowProfileResetCommand);
+  EXPECT_EQ(rewriter_->active_profile(), "coding");
+  EXPECT_EQ(config::GruConfigManager::GetWindowProfileOverride("gnome:10"), "");
+
+  // 7. Overridden win4 keeps "casual" even if settings change current_profile,
+  // while unoverridden win3 picks up "creative"; close notification clears win4.
+  commands::Context win4;
+  win4.set_window_id("gnome:40");
+  win4.set_application_name("gedit");
+  commit_command(win4, "MoGRU: プロファイル切替 [casual]");
+  EXPECT_EQ(rewriter_->active_profile(), "casual");
+
+  cfg = config::GruConfigManager::LoadConfig(config_path);
+  cfg.current_profile = "creative";
+  ASSERT_TRUE(config::GruConfigManager::SaveConfig(cfg, config_path));
+  config::GruConfigManager::InvalidateConfigCache();
+  ASSERT_TRUE(rewriter_->Reload());
+
+  {
+    const ConversionRequest req3 =
+        ConversionRequestBuilder().SetContextView(win3).Build();
+    Segments segs3 = make_segments("てすと", "テスト");
+    rewriter_->Rewrite(req3, &segs3);
+    EXPECT_EQ(rewriter_->active_profile(), "creative");
+
+    const ConversionRequest req4 =
+        ConversionRequestBuilder().SetContextView(win4).Build();
+    Segments segs4 = make_segments("てすと", "テスト");
+    rewriter_->Rewrite(req4, &segs4);
+    EXPECT_EQ(rewriter_->active_profile(), "casual");
+  }
+
+  commands::Context close_win4;
+  close_win4.add_experimental_features("close_window:gnome:40");
+  config::GruConfigManager::ProcessContextNotifications(&close_win4);
+  {
+    const ConversionRequest req4 =
+        ConversionRequestBuilder().SetContextView(win4).Build();
+    Segments segs4 = make_segments("てすと", "テスト");
+    rewriter_->Rewrite(req4, &segs4);
+    EXPECT_EQ(rewriter_->active_profile(), "creative");
+  }
 }
 
 }  // namespace

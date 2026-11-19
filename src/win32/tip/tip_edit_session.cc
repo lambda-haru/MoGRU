@@ -75,6 +75,20 @@ using CompositionMode = ::mozc::commands::CompositionMode;
 using SpecialKey = ::mozc::commands::KeyEvent_SpecialKey;
 using CommandType = ::mozc::commands::SessionCommand::CommandType;
 
+void FillApplicationContextForContext(ITfContext* context,
+                                      commands::Context* mozc_context) {
+  HWND attached_window = nullptr;
+  if (context != nullptr) {
+    wil::com_ptr_nothrow<ITfContextView> context_view;
+    if (SUCCEEDED(context->GetActiveView(&context_view)) &&
+        context_view != nullptr) {
+      context_view->GetWnd(&attached_window);
+    }
+  }
+  TipThreadContext::FillApplicationContext(
+      mozc_context, reinterpret_cast<uintptr_t>(attached_window));
+}
+
 // This class is an implementation class for the ITfEditSession classes, which
 // is an observer for exclusively updating the text store of a TSF thread
 // manager.
@@ -154,6 +168,21 @@ class AsyncSetFocusEditSessionImpl final
     }
     const auto action = thread_context->GetInputModeManager()->OnSetFocus(
         TipStatus::IsOpen(thread_manager), system_input_mode, input_scopes);
+    if (TipPrivateContext* private_context =
+            text_service_->GetPrivateContext(context_.get());
+        private_context != nullptr) {
+      commands::Context mozc_context;
+      FillApplicationContextForContext(context_.get(), &mozc_context);
+      SessionCommand command;
+      command.set_type(SessionCommand::GET_STATUS);
+      Output output;
+      if (private_context->GetClient()->SendCommandWithContext(
+              command, mozc_context, &output) &&
+          output.has_status() && output.status().has_active_profile()) {
+        thread_context->GetInputModeManager()->UpdateActiveProfile(
+            output.status().active_profile());
+      }
+    }
     if (action == TipInputModeManager::kUpdateUI) {
       TipEditSessionImpl::UpdateUI(text_service_.get(), context_.get(),
                                    read_cookie);
@@ -211,7 +240,7 @@ class AsyncSwitchInputModeEditSessionImpl final
     }
     Output output;
     commands::Context mozc_context;
-    TipThreadContext::FillApplicationContext(&mozc_context);
+    FillApplicationContextForContext(context_.get(), &mozc_context);
     if (!open_) {
       // The next on/off mode is OFF. Send TURN_OFF_IME to update the converter
       // state.
@@ -291,7 +320,7 @@ class AsyncSessionCommandEditSessionImpl final
       return E_FAIL;
     }
     commands::Context mozc_context;
-    TipThreadContext::FillApplicationContext(&mozc_context);
+    FillApplicationContextForContext(context_.get(), &mozc_context);
     if (!private_context->GetClient()->SendCommandWithContext(
             session_command_, mozc_context, &output)) {
       return E_FAIL;
@@ -362,7 +391,7 @@ bool TurnOnImeAndTryToReconvertFromIme(TipTextService* text_service,
     command.set_type(SessionCommand::CONVERT_REVERSE);
     command.set_text(text_utf8);
     commands::Context mozc_context;
-    TipThreadContext::FillApplicationContext(&mozc_context);
+    FillApplicationContextForContext(context, &mozc_context);
     if (!private_context->GetClient()->SendCommandWithContext(
             command, mozc_context, &output)) {
       return false;
@@ -400,7 +429,7 @@ bool UndoCommint(TipTextService* text_service, ITfContext* context) {
     SessionCommand command;
     command.set_type(SessionCommand::UNDO);
     commands::Context mozc_context;
-    TipThreadContext::FillApplicationContext(&mozc_context);
+    FillApplicationContextForContext(context, &mozc_context);
     if (!private_context->GetClient()->SendCommandWithContext(
             command, mozc_context, &output)) {
       return false;
@@ -852,7 +881,7 @@ bool TipEditSession::ReconvertFromApplicationSync(TipTextService* text_service,
   command.set_text(WideToUtf8(selected_text));
   Output output;
   commands::Context mozc_context;
-  TipThreadContext::FillApplicationContext(&mozc_context);
+  FillApplicationContextForContext(context.get(), &mozc_context);
   if (!private_context->GetClient()->SendCommandWithContext(
           command, mozc_context, &output)) {
     return false;

@@ -29,6 +29,7 @@
 
 #import <Cocoa/Cocoa.h>
 #import <InputMethodKit/InputMethodKit.h>
+#include <sys/types.h>
 
 #import "mac/KeyCodeMap.h"
 #import "mac/common.h"
@@ -81,6 +82,11 @@
   /** |clientBundle_| is the Bundle ID of the client application which the controller communicates
    * with. */
   std::string clientBundle_;
+
+  /** Resolved application name and frontmost root CGWindowID ("mac:<id>"). */
+  std::string applicationName_;
+  std::string windowId_;
+  pid_t clientPid_;
 
   NSRange replacementRange_;
 

@@ -193,19 +193,27 @@ TipInputModeManager::NotifyActionSet TipInputModeManager::OnReceiveCommand(
   if (prev_tsf_state.conversion_mode != tsf_state_.conversion_mode) {
     action_set |= kNotifySystemConversionMode;
   }
-  bool profile_changed = false;
-  if (!active_profile.empty()) {
-    if (!last_active_profile_.empty() &&
-        last_active_profile_ != active_profile) {
-      profile_changed = true;
-      pending_profile_change_.assign(active_profile);
-    }
-    last_active_profile_.assign(active_profile);
-  }
+  const bool profile_changed = UpdateActiveProfile(active_profile);
   if (action_set != kNotifyNothing || profile_changed) {
     indicator_visibility_tracker_.OnChangeInputMode();
   }
   return action_set;
+}
+
+bool TipInputModeManager::UpdateActiveProfile(
+    absl::string_view active_profile) {
+  if (active_profile.empty()) {
+    return false;
+  }
+  bool profile_changed = false;
+  if (!last_active_profile_.empty() &&
+      last_active_profile_ != active_profile) {
+    profile_changed = true;
+    pending_profile_change_.assign(active_profile);
+    indicator_visibility_tracker_.OnChangeInputMode();
+  }
+  last_active_profile_.assign(active_profile);
+  return profile_changed;
 }
 
 void TipInputModeManager::OnInitialize(bool system_open_close_mode,

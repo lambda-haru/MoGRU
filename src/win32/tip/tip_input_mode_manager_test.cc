@@ -341,6 +341,14 @@ TEST(TipInputModeManagerTest, OnFocusChangedAndProfileChange) {
   EXPECT_EQ(input_mode_manager.OnFocusChanged(), TipInputModeManager::kUpdateUI);
   EXPECT_TRUE(input_mode_manager.IsIndicatorVisible());
   EXPECT_TRUE(input_mode_manager.pending_profile_change().empty());
+  EXPECT_EQ(input_mode_manager.last_active_profile(), "coding");
+
+  // UpdateActiveProfile tracks focus-time profile changes after OnSetFocus.
+  EXPECT_FALSE(input_mode_manager.UpdateActiveProfile("coding"));
+  EXPECT_TRUE(input_mode_manager.pending_profile_change().empty());
+  EXPECT_TRUE(input_mode_manager.UpdateActiveProfile("default"));
+  EXPECT_EQ(input_mode_manager.pending_profile_change(), "default");
+  EXPECT_EQ(input_mode_manager.last_active_profile(), "default");
 }
 
 }  // namespace

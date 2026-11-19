@@ -86,6 +86,7 @@ struct GruPenaltyConfig {
   // Profile configuration
   std::string current_profile = "default";
   bool enable_app_profile_switching = true;
+  bool enable_window_profile_memory = true;
   std::string app_profile_map = "code:coding,cursor:coding,slack:business,discord:casual";
   bool show_profile_in_mode_indicator = true;
 
@@ -116,6 +117,15 @@ struct ModeIndicatorProfileInfo {
   std::string active_profile = "default";
   bool show_profile_in_mode_indicator = true;
 };
+
+struct InlineCommandResult {
+  bool handled = false;
+  bool config_saved = false;
+  std::string active_profile;
+};
+
+inline constexpr absl::string_view kWindowProfileResetCommand =
+    "MoGRU: このウィンドウのプロファイル記憶を解除";
 
 class GruConfigManager {
  public:
@@ -265,6 +275,32 @@ class GruConfigManager {
   // Resolves the current application name from Context, env vars, or active window.
   static std::string GetCurrentApplicationName(
       const commands::Context* context = nullptr);
+
+  // Resolves the platform window identifier from Context (`window_id` or
+  // `experimental_features` `"win:..."`).
+  static std::string GetCurrentWindowId(
+      const commands::Context* context = nullptr);
+
+  // Per-window in-memory profile override store (thread-safe, LRU-bounded).
+  static std::string GetWindowProfileOverride(absl::string_view window_id);
+  static void SetWindowProfileOverride(absl::string_view window_id,
+                                       absl::string_view profile_name);
+  static bool ClearWindowProfileOverride(absl::string_view window_id);
+  static void ClearWindowProfileOverridesByPrefix(absl::string_view prefix);
+  static void ClearAllWindowProfileOverrides();
+
+  // Processes window-lifecycle hints carried in Context (e.g.
+  // `experimental_features` `"close_window:<id>"`).
+  static void ProcessContextNotifications(const commands::Context* context);
+
+  // Executes a MoGRU inline command candidate ("プロファイル切替", "記憶解除",
+  // "現在のアプリ登録", "インスタント速習モード") consistently across
+  // EngineConverter and GruRewriter.
+  static InlineCommandResult ExecuteInlineCommandCandidate(
+      absl::string_view candidate_value,
+      const commands::Context* context,
+      const std::string& explicit_config_path = "",
+      GruPenaltyConfig* out_root_config = nullptr);
 
   // Adds or updates an app-to-profile mapping in config->app_profile_map,
   // enabling app profile switching.

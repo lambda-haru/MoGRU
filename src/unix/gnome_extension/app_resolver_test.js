@@ -247,19 +247,25 @@ function testXWaylandWithoutPid() {
 
 function testIsSameAppInfo() {
   const a = resolveFocusedWindowInfo(
-    {pid: 10, wm_class: 'Code', is_wayland: true},
+    {pid: 10, window_id: 1001, wm_class: 'Code', is_wayland: true},
     {readExeTarget: () => '/usr/bin/code'}
   );
   const b = resolveFocusedWindowInfo(
-    {pid: 10, wm_class: 'Code', is_wayland: true},
+    {pid: 10, window_id: 1001, wm_class: 'Code', is_wayland: true},
     {readExeTarget: () => '/usr/bin/code'}
   );
   const c = resolveFocusedWindowInfo(
-    {pid: 11, wm_class: 'Code', is_wayland: true},
+    {pid: 11, window_id: 1001, wm_class: 'Code', is_wayland: true},
     {readExeTarget: () => '/usr/bin/code'}
   );
+  const d = resolveFocusedWindowInfo(
+    {pid: 10, window_id: 1002, wm_class: 'Code', is_wayland: true},
+    {readExeTarget: () => '/usr/bin/code'}
+  );
+  assertEqual(a.window_id, 1001, 'window_id preserved');
   assertTrue(isSameAppInfo(a, b), 'identical app infos match');
   assertFalse(isSameAppInfo(a, c), 'different pids differ');
+  assertFalse(isSameAppInfo(a, d), 'different window_ids differ');
 }
 
 function main() {

@@ -33,6 +33,7 @@
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 
+#include <cstdint>
 #include <string>
 
 #include "absl/strings/string_view.h"
@@ -88,6 +89,10 @@ class MacUtil {
   // Returns false if an error occurred.
   static bool GetFrontmostWindowNameAndOwner(std::string *name,
                                              std::string *owner);
+
+  // Gets the CGWindowID of the frontmost normal-level window (preferring
+  // `preferred_pid` when > 0), or 0 if unavailable.
+  static uint32_t GetFrontmostWindowId(pid_t preferred_pid = 0);
 
   // Returns true when Mozc's suggestion UI is expected to be suppressed on
   // the window specified by |name| and |owner|.

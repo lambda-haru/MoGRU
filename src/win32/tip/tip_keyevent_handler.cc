@@ -140,18 +140,14 @@ void FillMozcContextCommon(TipTextService* text_service, ITfContext* context,
   }
   mozc_context->set_revision(
       text_service->GetThreadContext()->GetFocusRevision());
-  TipThreadContext::FillApplicationContext(mozc_context);
-  wil::com_ptr_nothrow<ITfContextView> context_view;
-  if (FAILED(context->GetActiveView(&context_view))) {
-    return;
-  }
-  if (context_view == nullptr) {
-    return;
-  }
   HWND attached_window = nullptr;
-  if (FAILED(context_view->GetWnd(&attached_window))) {
-    return;
+  wil::com_ptr_nothrow<ITfContextView> context_view;
+  if (SUCCEEDED(context->GetActiveView(&context_view)) &&
+      context_view != nullptr) {
+    context_view->GetWnd(&attached_window);
   }
+  TipThreadContext::FillApplicationContext(
+      mozc_context, reinterpret_cast<uintptr_t>(attached_window));
 }
 
 HRESULT OnTestKey(TipTextService* text_service, ITfContext* context,

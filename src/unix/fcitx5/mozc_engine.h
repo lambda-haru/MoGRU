@@ -162,6 +162,8 @@ class MozcEngine final : public InputMethodEngineV2 {
   mozc::config::ModeIndicatorProfileInfo ResolveModeIndicatorProfileInfo(
       InputContext& ic, bool force_mtime_check = false) const;
   std::string ResolveApplicationName(const InputContext* ic) const;
+  std::string ResolveWindowId(const InputContext* ic) const;
+  void NotifyWindowClosed(const std::string& window_id);
 
   const Configuration* getConfig() const override;
   void setConfig(const RawConfig& config) override;
@@ -186,7 +188,7 @@ class MozcEngine final : public InputMethodEngineV2 {
   std::string GetConfigPath() const;
   void SyncGruFlags();
   void InitGnomeAppTracker();
-  void OnFocusedAppChanged(const std::string& app_name);
+  void OnFocusedAppChanged();
 
   Instance* instance_;
   const std::unique_ptr<MozcResponseParser> parser_;

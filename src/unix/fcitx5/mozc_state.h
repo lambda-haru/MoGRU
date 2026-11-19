@@ -134,6 +134,8 @@ class MozcState : public InputContextProperty {
                          mozc::commands::Output* out,
                          std::string* out_error) const;
 
+  void FillContext(InputContext* ic, mozc::commands::Context* context) const;
+
   // Parses the response from mozc_server. Returns whether the server consumes
   // the input or not (true means 'consumed').
   bool ParseResponse(const mozc::commands::Output& raw_response);

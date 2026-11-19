@@ -22,12 +22,15 @@ GNOME + Wayland 環境において、現在フォーカス中のアプリケー�
     - `gtk_application_id` (`s`): `Meta.Window.get_gtk_application_id()`
     - `sandboxed_app_id` (`s`): `Meta.Window.get_sandboxed_app_id()`
     - `pid` (`i`): クライアント PID
+    - `window_id` (`t`): ルートウィンドウ ID（`transient_for` を辿った `Meta.Window.get_id()`）
     - `is_wayland` (`b`): Wayland ネイティブクライアントか否か
 
 ### シグナル
 
 - `FocusedAppChanged(s appName, a{sv} info)`
-  - フォーカス変更時や遅延属性更新時に発火します（同一状態への重複通知は抑止）。
+  - フォーカス変更（同一アプリ内の別ウィンドウ切替を含む）や遅延属性更新時に発火します（同一状態への重複通知は抑止）。
+- `WindowClosed(t windowId)`
+  - ウィンドウが閉じられた（`unmanaged`）際に発火し、MoGRU のウィンドウ別プロファイル記憶を破棄します。
 
 ## テスト・動作確認
 

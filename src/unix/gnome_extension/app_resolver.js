@@ -191,6 +191,7 @@ export function createEmptyAppInfo() {
     gtk_application_id: '',
     sandboxed_app_id: '',
     pid: 0,
+    window_id: 0,
     is_wayland: false,
   };
 }
@@ -212,6 +213,10 @@ export function resolveFocusedWindowInfo(snapshot, procReader = {}) {
 
   const pid =
     Number.isInteger(snapshot.pid) && snapshot.pid > 0 ? snapshot.pid : 0;
+  const windowId =
+    Number.isInteger(snapshot.window_id) && snapshot.window_id > 0
+      ? snapshot.window_id
+      : 0;
   const wmClass =
     typeof snapshot.wm_class === 'string' ? snapshot.wm_class.trim() : '';
   const wmClassInstance =
@@ -302,6 +307,7 @@ export function resolveFocusedWindowInfo(snapshot, procReader = {}) {
     gtk_application_id: gtkApplicationId,
     sandboxed_app_id: sandboxedAppId,
     pid,
+    window_id: windowId,
     is_wayland: isWayland,
   };
 }
@@ -326,6 +332,7 @@ export function isSameAppInfo(a, b) {
     a.gtk_application_id === b.gtk_application_id &&
     a.sandboxed_app_id === b.sandboxed_app_id &&
     a.pid === b.pid &&
+    a.window_id === b.window_id &&
     a.is_wayland === b.is_wayland
   );
 }

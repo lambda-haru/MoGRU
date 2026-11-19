@@ -631,7 +631,16 @@ HRESULT TipEditSessionImpl::OnCompositionTerminated(
     return E_FAIL;
   }
   commands::Context mozc_context;
-  TipThreadContext::FillApplicationContext(&mozc_context);
+  HWND attached_window = nullptr;
+  if (context != nullptr) {
+    wil::com_ptr_nothrow<ITfContextView> context_view;
+    if (SUCCEEDED(context->GetActiveView(&context_view)) &&
+        context_view != nullptr) {
+      context_view->GetWnd(&attached_window);
+    }
+  }
+  TipThreadContext::FillApplicationContext(
+      &mozc_context, reinterpret_cast<uintptr_t>(attached_window));
   if (!private_context->GetClient()->SendCommandWithContext(
           command, mozc_context, &output)) {
     return E_FAIL;

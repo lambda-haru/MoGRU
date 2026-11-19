@@ -50,6 +50,7 @@
 #import "mac/renderer_receiver.h"
 
 #include "absl/log/log.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "base/const.h"
 #include "base/mac/mac_process.h"
@@ -227,6 +228,7 @@ bool CanSurroundingText(absl::string_view bundle_id) {
   mozcClient_ = mozc::client::ClientFactory::NewClient();
   lastKeyDownTime_ = 0;
   lastKeyCode_ = 0;
+  clientPid_ = 0;
 
   // We don't check the return value of NSBundle because it fails during tests.
   [[NSBundle mainBundle] loadNibNamed:@"Config" owner:self topLevelObjects:nil];
@@ -285,6 +287,7 @@ bool CanSurroundingText(absl::string_view bundle_id) {
   }
   [super activateServer:sender];
   [self setupClientBundle:sender];
+  [self refreshWindowId];
   if (rendererCommand_.visible() && mozcRenderer_) {
     mozcRenderer_->ExecCommand(rendererCommand_);
   }
@@ -371,9 +374,72 @@ bool CanSurroundingText(absl::string_view bundle_id) {
 }
 
 - (void)setupClientBundle:(id)sender {
+  if (sender == nil || ![sender respondsToSelector:@selector(bundleIdentifier)]) {
+    return;
+  }
   NSString *bundleIdentifier = [sender bundleIdentifier];
   if (bundleIdentifier != nil && [bundleIdentifier length] > 0) {
     clientBundle_.assign([bundleIdentifier UTF8String]);
+    if (imkClientForTest_) {
+      applicationName_ = clientBundle_;
+      return;
+    }
+    NSRunningApplication *matchedApp = nil;
+    NSRunningApplication *frontmostApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
+    if (frontmostApp != nil && frontmostApp.bundleIdentifier != nil &&
+        [frontmostApp.bundleIdentifier isEqualToString:bundleIdentifier]) {
+      matchedApp = frontmostApp;
+    } else {
+      NSArray<NSRunningApplication *> *apps =
+          [NSRunningApplication runningApplicationsWithBundleIdentifier:bundleIdentifier];
+      if ([apps count] > 0) {
+        matchedApp = [apps objectAtIndex:0];
+      }
+    }
+    if (matchedApp != nil) {
+      clientPid_ = matchedApp.processIdentifier;
+      NSString *appBundleName =
+          [[[matchedApp bundleURL] lastPathComponent] stringByDeletingPathExtension];
+      if (appBundleName != nil && [appBundleName length] > 0) {
+        applicationName_.assign([appBundleName UTF8String]);
+      } else if (matchedApp.localizedName != nil && [matchedApp.localizedName length] > 0) {
+        applicationName_.assign([matchedApp.localizedName UTF8String]);
+      } else {
+        applicationName_ = clientBundle_;
+      }
+    } else {
+      clientPid_ = 0;
+      applicationName_ = clientBundle_;
+    }
+  }
+}
+
+- (void)refreshWindowId {
+  if (imkClientForTest_) {
+    return;
+  }
+  const uint32_t cg_win_id = mozc::MacUtil::GetFrontmostWindowId(clientPid_);
+  if (cg_win_id > 0) {
+    windowId_ = absl::StrCat("mac:", cg_win_id);
+  } else {
+    windowId_.clear();
+  }
+}
+
+- (void)fillClientContext:(mozc::commands::Context *)context {
+  if (context == nullptr) {
+    return;
+  }
+  if (!imkClientForTest_ && windowId_.empty() && !clientBundle_.empty()) {
+    [self refreshWindowId];
+  }
+  if (!applicationName_.empty()) {
+    context->set_application_name(applicationName_);
+  } else if (!clientBundle_.empty()) {
+    context->set_application_name(clientBundle_);
+  }
+  if (!windowId_.empty()) {
+    context->set_window_id(windowId_);
   }
 }
 
@@ -512,7 +578,9 @@ bool CanSurroundingText(absl::string_view bundle_id) {
     sending_command.set_text([text UTF8String]);
   }
 
-  if (mozcClient_->SendCommand(sending_command, &output)) {
+  mozc::commands::Context context;
+  [self fillClientContext:&context];
+  if (mozcClient_->SendCommandWithContext(sending_command, context, &output)) {
     replacementRange_ = selectedRange;
     [self processOutput:&output client:sender];
   }
@@ -536,7 +604,9 @@ bool CanSurroundingText(absl::string_view bundle_id) {
   SessionCommand command;
   Output output;
   command.set_type(SessionCommand::UNDO);
-  if (mozcClient_->SendCommand(command, &output)) {
+  mozc::commands::Context context;
+  [self fillClientContext:&context];
+  if (mozcClient_->SendCommandWithContext(command, context, &output)) {
     [self processOutput:&output client:sender];
   }
 }
@@ -627,7 +697,10 @@ bool CanSurroundingText(absl::string_view bundle_id) {
       [self invokeUndo:sender];
     } else {
       Output output_for_callback;
-      if (mozcClient_->SendCommand(callback_command, &output_for_callback)) {
+      mozc::commands::Context context;
+      [self fillClientContext:&context];
+      if (mozcClient_->SendCommandWithContext(callback_command, context,
+                                              &output_for_callback)) {
         [self processOutput:&output_for_callback client:sender];
       }
     }
@@ -926,6 +999,7 @@ bool CanSurroundingText(absl::string_view bundle_id) {
   }
 
   mozc::commands::Context context;
+  [self fillClientContext:&context];
   if (suppressSuggestion_) {
     // TODO(komatsu, horo): Support Google Omnibox too.
     context.add_experimental_features("google_search_box");
@@ -947,7 +1021,9 @@ bool CanSurroundingText(absl::string_view bundle_id) {
 #pragma mark ControllerCallback
 - (void)sendCommand:(const SessionCommand &)command {
   Output output;
-  if (!mozcClient_->SendCommand(command, &output)) {
+  mozc::commands::Context context;
+  [self fillClientContext:&context];
+  if (!mozcClient_->SendCommandWithContext(command, context, &output)) {
     return;
   }
 

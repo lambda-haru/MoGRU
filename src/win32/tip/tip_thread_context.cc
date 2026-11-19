@@ -34,10 +34,14 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "absl/base/no_destructor.h"
+#include "absl/strings/str_format.h"
 #include "base/win32/wide_char.h"
 #include "base/win32/win_util.h"
 #include "config/gru_config.h"
@@ -86,13 +90,71 @@ const std::string& TipThreadContext::GetHostApplicationName() {
 }
 
 // static
-void TipThreadContext::FillApplicationContext(commands::Context* context) {
+void TipThreadContext::FillApplicationContext(commands::Context* context,
+                                              uintptr_t window_handle_value) {
   if (context == nullptr) {
     return;
   }
   const std::string& app_name = GetHostApplicationName();
   if (!app_name.empty()) {
     context->set_application_name(app_name);
+  }
+
+  HWND hwnd = reinterpret_cast<HWND>(window_handle_value);
+  if (hwnd == nullptr || !::IsWindow(hwnd)) {
+    hwnd = ::GetFocus();
+  }
+  if (hwnd == nullptr || !::IsWindow(hwnd)) {
+    hwnd = ::GetForegroundWindow();
+  }
+  HWND root_hwnd = nullptr;
+  DWORD window_pid = 0;
+  std::string current_win_id;
+  if (hwnd != nullptr && ::IsWindow(hwnd)) {
+    root_hwnd = ::GetAncestor(hwnd, GA_ROOTOWNER);
+    if (root_hwnd == nullptr || !::IsWindow(root_hwnd)) {
+      root_hwnd = hwnd;
+    }
+    ::GetWindowThreadProcessId(root_hwnd, &window_pid);
+    if (window_pid == 0) {
+      window_pid = ::GetCurrentProcessId();
+    }
+    current_win_id = absl::StrFormat(
+        "win:0x%llx:%lu",
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(root_hwnd)),
+        static_cast<unsigned long>(window_pid));
+    context->set_window_id(current_win_id);
+  }
+
+  struct SeenWindow {
+    HWND hwnd;
+    DWORD pid;
+    std::string id;
+  };
+  static std::mutex* const seen_mutex = new std::mutex();
+  static std::vector<SeenWindow>* const seen_windows =
+      new std::vector<SeenWindow>();
+  std::lock_guard<std::mutex> lock(*seen_mutex);
+  bool found_current = false;
+  for (auto it = seen_windows->begin(); it != seen_windows->end();) {
+    DWORD alive_pid = 0;
+    const bool alive =
+        ::IsWindow(it->hwnd) &&
+        ::GetWindowThreadProcessId(it->hwnd, &alive_pid) != 0 &&
+        alive_pid == it->pid;
+    if (!alive) {
+      context->add_experimental_features("close_window:" + it->id);
+      it = seen_windows->erase(it);
+      continue;
+    }
+    if (root_hwnd != nullptr && it->hwnd == root_hwnd &&
+        it->pid == window_pid) {
+      found_current = true;
+    }
+    ++it;
+  }
+  if (root_hwnd != nullptr && !current_win_id.empty() && !found_current) {
+    seen_windows->push_back(SeenWindow{root_hwnd, window_pid, current_win_id});
   }
 }
 

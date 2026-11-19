@@ -62,8 +62,11 @@ class TipThreadContext {
   // (e.g. "Code" for Code.exe).
   static const std::string& GetHostApplicationName();
 
-  // Populates `context->application_name` from the host process executable.
-  static void FillApplicationContext(commands::Context* context);
+  // Populates `context->application_name` from the host process executable and
+  // `context->window_id` from the root owner HWND (falling back to focus /
+  // foreground HWND when `window_handle_value` is 0).
+  static void FillApplicationContext(commands::Context* context,
+                                     uintptr_t window_handle_value = 0);
 
  private:
   TipInputModeManager input_mode_manager_;

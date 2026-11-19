@@ -36,10 +36,13 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <list>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "absl/base/no_destructor.h"
@@ -600,6 +603,39 @@ ActiveProfileCacheState& GetActiveProfileCacheState() {
   return *state;
 }
 
+constexpr size_t kMaxWindowProfileEntries = 1024;
+
+struct WindowProfileStoreState {
+  absl::Mutex mutex;
+  std::list<std::string> lru_order;
+  std::unordered_map<std::string,
+                     std::pair<std::string, std::list<std::string>::iterator>>
+      entries;
+};
+
+WindowProfileStoreState& GetWindowProfileStoreState() {
+  static absl::NoDestructor<WindowProfileStoreState> state;
+  return *state;
+}
+
+bool IsProfileAvailableForConfig(const GruPenaltyConfig& root_config,
+                                 const std::string& profile_name) {
+  if (profile_name.empty()) {
+    return false;
+  }
+  if (profile_name == "default") {
+    return true;
+  }
+  if (root_config.deleted_profiles.count(profile_name) > 0) {
+    return false;
+  }
+  if (root_config.profiles.count(profile_name) > 0) {
+    return true;
+  }
+  const auto builtins = GruConfigManager::GetBuiltinDefaultProfiles(root_config);
+  return builtins.count(profile_name) > 0;
+}
+
 }  // namespace
 
 std::string GruConfigManager::SanitizeProfileName(
@@ -967,6 +1003,16 @@ GruPenaltyConfig GruConfigManager::GetEffectiveProfileConfig(
 std::string GruConfigManager::ResolveActiveProfileForContext(
     const GruPenaltyConfig& root_config,
     const commands::Context* context) {
+  if (root_config.enable_window_profile_memory) {
+    const std::string window_id = GetCurrentWindowId(context);
+    if (!window_id.empty()) {
+      const std::string win_prof = GetWindowProfileOverride(window_id);
+      if (!win_prof.empty() &&
+          IsProfileAvailableForConfig(root_config, win_prof)) {
+        return win_prof;
+      }
+    }
+  }
   std::string prof = SanitizeProfileName(root_config.current_profile);
   if (root_config.enable_app_profile_switching) {
     const std::string app_name = GetCurrentApplicationName(context);
@@ -1073,6 +1119,234 @@ std::string GruConfigManager::GetCurrentApplicationName(
     return "";
   }
   return app_name;
+}
+
+std::string GruConfigManager::GetCurrentWindowId(
+    const commands::Context* context) {
+  if (context == nullptr) {
+    return "";
+  }
+  if (context->has_window_id() && !context->window_id().empty()) {
+    return std::string(absl::StripAsciiWhitespace(context->window_id()));
+  }
+  for (const auto& feat : context->experimental_features()) {
+    if (absl::StartsWith(feat, "win:")) {
+      return std::string(
+          absl::StripAsciiWhitespace(absl::string_view(feat).substr(4)));
+    }
+  }
+  return "";
+}
+
+std::string GruConfigManager::GetWindowProfileOverride(
+    absl::string_view window_id) {
+  const absl::string_view trimmed = absl::StripAsciiWhitespace(window_id);
+  if (trimmed.empty()) {
+    return "";
+  }
+  auto& store = GetWindowProfileStoreState();
+  absl::MutexLock lock(store.mutex);
+  auto it = store.entries.find(std::string(trimmed));
+  if (it == store.entries.end()) {
+    return "";
+  }
+  store.lru_order.splice(store.lru_order.begin(), store.lru_order,
+                         it->second.second);
+  return it->second.first;
+}
+
+void GruConfigManager::SetWindowProfileOverride(
+    absl::string_view window_id,
+    absl::string_view profile_name) {
+  const absl::string_view trimmed = absl::StripAsciiWhitespace(window_id);
+  if (trimmed.empty()) {
+    return;
+  }
+  const std::string sanitized_prof = SanitizeProfileName(profile_name);
+  const std::string key(trimmed);
+
+  auto& store = GetWindowProfileStoreState();
+  absl::MutexLock lock(store.mutex);
+  auto it = store.entries.find(key);
+  if (it != store.entries.end()) {
+    it->second.first = sanitized_prof;
+    store.lru_order.splice(store.lru_order.begin(), store.lru_order,
+                           it->second.second);
+    return;
+  }
+  while (store.entries.size() >= kMaxWindowProfileEntries &&
+         !store.lru_order.empty()) {
+    const std::string victim = store.lru_order.back();
+    store.lru_order.pop_back();
+    store.entries.erase(victim);
+  }
+  store.lru_order.push_front(key);
+  store.entries.emplace(key,
+                        std::make_pair(sanitized_prof, store.lru_order.begin()));
+}
+
+bool GruConfigManager::ClearWindowProfileOverride(absl::string_view window_id) {
+  const absl::string_view trimmed = absl::StripAsciiWhitespace(window_id);
+  if (trimmed.empty()) {
+    return false;
+  }
+  auto& store = GetWindowProfileStoreState();
+  absl::MutexLock lock(store.mutex);
+  auto it = store.entries.find(std::string(trimmed));
+  if (it == store.entries.end()) {
+    return false;
+  }
+  store.lru_order.erase(it->second.second);
+  store.entries.erase(it);
+  return true;
+}
+
+void GruConfigManager::ClearWindowProfileOverridesByPrefix(
+    absl::string_view prefix) {
+  if (prefix.empty()) {
+    return;
+  }
+  auto& store = GetWindowProfileStoreState();
+  absl::MutexLock lock(store.mutex);
+  for (auto it = store.entries.begin(); it != store.entries.end();) {
+    if (absl::StartsWith(it->first, prefix)) {
+      store.lru_order.erase(it->second.second);
+      it = store.entries.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void GruConfigManager::ClearAllWindowProfileOverrides() {
+  auto& store = GetWindowProfileStoreState();
+  absl::MutexLock lock(store.mutex);
+  store.entries.clear();
+  store.lru_order.clear();
+}
+
+void GruConfigManager::ProcessContextNotifications(
+    const commands::Context* context) {
+  if (context == nullptr) {
+    return;
+  }
+  constexpr absl::string_view kCloseWinPrefix = "close_window:";
+  for (const auto& feat : context->experimental_features()) {
+    if (absl::StartsWith(feat, kCloseWinPrefix)) {
+      ClearWindowProfileOverride(
+          absl::string_view(feat).substr(kCloseWinPrefix.size()));
+    }
+  }
+}
+
+InlineCommandResult GruConfigManager::ExecuteInlineCommandCandidate(
+    absl::string_view candidate_value,
+    const commands::Context* context,
+    const std::string& explicit_config_path,
+    GruPenaltyConfig* out_root_config) {
+  InlineCommandResult result;
+  const std::string config_path =
+      explicit_config_path.empty()
+          ? ResolveConfigFilePath("", /*allow_in_test=*/true)
+          : explicit_config_path;
+
+  constexpr absl::string_view kProfPrefix = "MoGRU: プロファイル切替 [";
+  if (absl::StartsWith(candidate_value, kProfPrefix) &&
+      absl::EndsWith(candidate_value, "]")) {
+    const std::string new_profile = SanitizeProfileName(
+        candidate_value.substr(kProfPrefix.size(),
+                               candidate_value.size() - kProfPrefix.size() - 1));
+    GruPenaltyConfig root_config = LoadConfig(config_path);
+    const std::string window_id = GetCurrentWindowId(context);
+    if (root_config.enable_window_profile_memory && !window_id.empty()) {
+      SetWindowProfileOverride(window_id, new_profile);
+      result.handled = true;
+      result.config_saved = false;
+      result.active_profile = new_profile;
+    } else {
+      root_config.current_profile = new_profile;
+      SaveConfig(root_config, config_path);
+      InvalidateConfigCache();
+      result.handled = true;
+      result.config_saved = true;
+      result.active_profile = new_profile;
+    }
+    if (out_root_config != nullptr) {
+      *out_root_config = root_config;
+    }
+    return result;
+  }
+
+  if (candidate_value == kWindowProfileResetCommand) {
+    GruPenaltyConfig root_config = LoadConfig(config_path);
+    const std::string window_id = GetCurrentWindowId(context);
+    if (!window_id.empty()) {
+      ClearWindowProfileOverride(window_id);
+    }
+    result.handled = true;
+    result.config_saved = false;
+    result.active_profile =
+        ResolveActiveProfileForContext(root_config, context);
+    if (out_root_config != nullptr) {
+      *out_root_config = root_config;
+    }
+    return result;
+  }
+
+  constexpr absl::string_view kAppBindPrefix = "MoGRU: 現在のアプリ (";
+  if (absl::StartsWith(candidate_value, kAppBindPrefix)) {
+    constexpr absl::string_view kMiddle = ") を [";
+    constexpr absl::string_view kSuffix = "] に登録";
+    const size_t app_start = kAppBindPrefix.size();
+    const size_t app_end = candidate_value.find(kMiddle, app_start);
+    if (app_end != std::string::npos) {
+      const std::string app_name(
+          candidate_value.substr(app_start, app_end - app_start));
+      const size_t prof_start = app_end + kMiddle.size();
+      const size_t prof_end = candidate_value.find(kSuffix, prof_start);
+      if (prof_end != std::string::npos) {
+        const std::string target_profile = SanitizeProfileName(
+            candidate_value.substr(prof_start, prof_end - prof_start));
+        GruPenaltyConfig root_config = LoadConfig(config_path);
+        AddOrUpdateAppProfileMapping(&root_config, app_name, target_profile);
+        root_config.enable_app_profile_switching = true;
+        const std::string window_id = GetCurrentWindowId(context);
+        if (!window_id.empty()) {
+          ClearWindowProfileOverride(window_id);
+        }
+        SaveConfig(root_config, config_path);
+        InvalidateConfigCache();
+        result.handled = true;
+        result.config_saved = true;
+        result.active_profile = target_profile;
+        if (out_root_config != nullptr) {
+          *out_root_config = root_config;
+        }
+        return result;
+      }
+    }
+  }
+
+  if (candidate_value == "MoGRU: インスタント速習モード ON" ||
+      candidate_value == "MoGRU: インスタント速習モード OFF") {
+    const bool enable =
+        (candidate_value == "MoGRU: インスタント速習モード ON");
+    GruPenaltyConfig root_config = LoadConfig(config_path);
+    const std::string active_prof =
+        ResolveActiveProfileForContext(root_config, context);
+    SetInstantModeEnabled(&root_config, active_prof, enable);
+    SaveConfig(root_config, config_path);
+    InvalidateConfigCache();
+    result.handled = true;
+    result.config_saved = true;
+    result.active_profile = active_prof;
+    if (out_root_config != nullptr) {
+      *out_root_config = root_config;
+    }
+    return result;
+  }
+
+  return result;
 }
 
 void GruConfigManager::AddOrUpdateAppProfileMapping(
@@ -1290,6 +1564,9 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       "# 【アプリケーション別プロファイル自動切り替えの有効化】 (初期値: true)\n"
       "enable_app_profile_switching = %s\n"
       "\n"
+      "# 【ウィンドウごとのプロファイル記憶の有効化】 (初期値: true)\n"
+      "enable_window_profile_memory = %s\n"
+      "\n"
       "# 【アプリケーション名とプロファイルの紐付け定義】 (app_name:profile_name)\n"
       "app_profile_map = %s\n"
       "\n"
@@ -1342,6 +1619,7 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       config.enable_conversion_history_log ? "true" : "false",
       config.current_profile.empty() ? "default" : config.current_profile.c_str(),
       config.enable_app_profile_switching ? "true" : "false",
+      config.enable_window_profile_memory ? "true" : "false",
       config.app_profile_map.c_str(),
       config.show_profile_in_mode_indicator ? "true" : "false",
       config.enable_instant_mode ? "true" : "false",
@@ -1665,6 +1943,11 @@ void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
         "\n# 【アプリケーション別プロファイル自動切り替えの有効化】 (初期値: true)\n"
         "enable_app_profile_switching = true\n";
   }
+  if (content.find("enable_window_profile_memory") == std::string::npos) {
+    append_content +=
+        "\n# 【ウィンドウごとのプロファイル記憶の有効化】 (初期値: true)\n"
+        "enable_window_profile_memory = true\n";
+  }
   if (content.find("app_profile_map") == std::string::npos) {
     append_content +=
         "\n# 【アプリケーション名とプロファイルの紐付け定義】 (app_name:profile_name)\n"
@@ -1875,6 +2158,11 @@ void ApplyConfigKeyValue(GruPenaltyConfig* config,
     if (absl::SimpleAtob(val, &b)) config->enable_app_profile_switching = b;
     return;
   }
+  if (key == "enable_window_profile_memory") {
+    bool b = true;
+    if (absl::SimpleAtob(val, &b)) config->enable_window_profile_memory = b;
+    return;
+  }
   if (key == "app_profile_map") {
     config->app_profile_map = std::string(val);
     return;
@@ -2028,6 +2316,12 @@ void GruConfigManager::ApplyEnvOverrides(GruPenaltyConfig* config) {
   if (const char* e = std::getenv("MOZC_GRU_PROFILE")) {
     if (e[0] != '\0') {
       config->current_profile = std::string(e);
+    }
+  }
+  if (const char* e = std::getenv("MOZC_GRU_ENABLE_WINDOW_PROFILE_MEMORY")) {
+    bool b = true;
+    if (absl::SimpleAtob(e, &b)) {
+      config->enable_window_profile_memory = b;
     }
   }
   if (const char* e = std::getenv("MOZC_GRU_INSTANT_MODE")) {

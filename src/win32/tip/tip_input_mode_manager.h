@@ -120,6 +120,10 @@ class TipInputModeManager : public TipInputModeManagerImpl {
   const std::string& pending_profile_change() const {
     return pending_profile_change_;
   }
+  const std::string& last_active_profile() const {
+    return last_active_profile_;
+  }
+  bool UpdateActiveProfile(absl::string_view active_profile);
   void ClearPendingProfileChange() { pending_profile_change_.clear(); }
 
   // Returns an IME open/close state that is visible from the Mozc session.

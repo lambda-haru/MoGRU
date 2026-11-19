@@ -539,6 +539,10 @@ message Context {
   // Client application name (e.g. "code", "slack", "discord").
   optional string application_name = 6;
 
+  // Platform window identifier used for per-window profile memory
+  // (e.g. "gnome:12345", "ic:<uuid>", "mac:6789", "win:0x1a2b3c").
+  optional string window_id = 7;
+
   // Repeated fields to be used for experimental features.
   repeated string experimental_features = 100;
 }

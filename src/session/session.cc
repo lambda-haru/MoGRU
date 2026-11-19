@@ -2932,6 +2932,9 @@ void Session::UpdateTime() {
 }
 
 void Session::TransformInput(commands::Input* input) {
+  if (input->has_context()) {
+    config::GruConfigManager::ProcessContextNotifications(&input->context());
+  }
   if (input->has_key()) {
     context_->key_event_transformer().TransformKeyEvent(input->mutable_key());
   }

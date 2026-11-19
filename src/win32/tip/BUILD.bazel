@@ -506,9 +506,11 @@ mozc_cc_library(
         ":tip_input_mode_manager",
         "//base:system_util",
         "//base/win32:wide_char",
+        "//bazel/win32:user32",
         "//config:gru_config",
         "//protocol:commands_cc_proto",
         "@com_google_absl//absl/base:no_destructor",
+        "@com_google_absl//absl/strings:str_format",
     ],
 )
 

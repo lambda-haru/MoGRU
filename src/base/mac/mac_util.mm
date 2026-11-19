@@ -340,6 +340,52 @@ bool MacUtil::GetFrontmostWindowNameAndOwner(std::string *name, std::string *own
   return false;
 }
 
+uint32_t MacUtil::GetFrontmostWindowId(pid_t preferred_pid) {
+  scoped_cftyperef<CFArrayRef> window_list(::CGWindowListCopyWindowInfo(
+      kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+  if (!window_list) {
+    return 0;
+  }
+  const CFIndex window_count = CFArrayGetCount(window_list.get());
+  uint32_t fallback_win_id = 0;
+  for (CFIndex i = 0; i < window_count; ++i) {
+    const NSDictionary *window_data =
+        static_cast<const NSDictionary *>(CFArrayGetValueAtIndex(window_list.get(), i));
+    if ([[window_data objectForKey:(id)kCGWindowSharingState] intValue] == kCGWindowSharingNone) {
+      continue;
+    }
+    NSNumber *window_layer = [window_data objectForKey:(id)kCGWindowLayer];
+    if (window_layer == nil || [window_layer intValue] != kCGNormalWindowLevel) {
+      continue;
+    }
+    NSNumber *window_number = [window_data objectForKey:(id)kCGWindowNumber];
+    if (window_number == nil) {
+      continue;
+    }
+    const uint32_t win_id = [window_number unsignedIntValue];
+    if (win_id == 0) {
+      continue;
+    }
+    NSString *window_name = [window_data objectForKey:(id)kCGWindowName];
+    NSString *owner_name = [window_data objectForKey:(id)kCGWindowOwnerName];
+    if (window_name != nil && owner_name != nil && [window_name isEqualToString:@""] &&
+        [owner_name isEqualToString:@"Google Chrome"]) {
+      continue;
+    }
+    if (preferred_pid <= 0) {
+      return win_id;
+    }
+    NSNumber *owner_pid = [window_data objectForKey:(id)kCGWindowOwnerPID];
+    if (owner_pid != nil && static_cast<pid_t>([owner_pid intValue]) == preferred_pid) {
+      return win_id;
+    }
+    if (fallback_win_id == 0) {
+      fallback_win_id = win_id;
+    }
+  }
+  return fallback_win_id;
+}
+
 bool MacUtil::IsSuppressSuggestionWindow(const std::string &name, const std::string &owner) {
   // TODO(horo): Make a function to check the name, then share it with the
   //             Windows client.

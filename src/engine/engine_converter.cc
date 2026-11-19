@@ -2176,67 +2176,16 @@ bool EngineConverter::MaybePerformCommandCandidate(
     const converter::Candidate& candidate =
         segments_.conversion_segment(i).candidate(id);
     if (candidate.attributes & converter::Attribute::COMMAND_CANDIDATE) {
-      const std::string& val = candidate.value;
-      constexpr absl::string_view kProfPrefix = "MoGRU: プロファイル切替 [";
-      if (absl::StartsWith(val, kProfPrefix) && absl::EndsWith(val, "]")) {
-        const std::string new_profile =
-            val.substr(kProfPrefix.size(), val.size() - kProfPrefix.size() - 1);
-        const std::string config_path =
-            config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
-        GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
-        cfg.current_profile = new_profile;
-        config::GruConfigManager::SaveConfig(cfg, config_path);
-        config::GruConfigManager::InvalidateConfigCache();
-        if (converter_) {
+      const config::InlineCommandResult cmd_res =
+          config::GruConfigManager::ExecuteInlineCommandCandidate(
+              candidate.value, &context);
+      if (cmd_res.handled) {
+        if (cmd_res.config_saved && converter_) {
           const_cast<ConverterInterface*>(converter_.get())->Reload();
         }
-        LOG(INFO) << "EngineConverter: Switched MoGRU profile to: " << new_profile;
-        return true;
-      }
-      constexpr absl::string_view kAppBindPrefix = "MoGRU: 現在のアプリ (";
-      if (absl::StartsWith(val, kAppBindPrefix)) {
-        constexpr absl::string_view kMiddle = ") を [";
-        constexpr absl::string_view kSuffix = "] に登録";
-        size_t app_start = kAppBindPrefix.size();
-        size_t app_end = val.find(kMiddle, app_start);
-        if (app_end != std::string::npos) {
-          std::string app_name = val.substr(app_start, app_end - app_start);
-          size_t prof_start = app_end + kMiddle.size();
-          size_t prof_end = val.find(kSuffix, prof_start);
-          if (prof_end != std::string::npos) {
-            std::string target_profile = val.substr(prof_start, prof_end - prof_start);
-            const std::string config_path =
-                config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
-            GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
-            config::GruConfigManager::AddOrUpdateAppProfileMapping(&cfg, app_name, target_profile);
-            cfg.enable_app_profile_switching = true;
-            config::GruConfigManager::SaveConfig(cfg, config_path);
-            config::GruConfigManager::InvalidateConfigCache();
-            if (converter_) {
-              const_cast<ConverterInterface*>(converter_.get())->Reload();
-            }
-            LOG(INFO) << "EngineConverter: Registered app '" << app_name
-                      << "' to profile '" << target_profile << "'";
-            return true;
-          }
-        }
-      }
-      if (val == "MoGRU: インスタント速習モード ON" ||
-          val == "MoGRU: インスタント速習モード OFF") {
-        const bool enable = (val == "MoGRU: インスタント速習モード ON");
-        const std::string config_path =
-            config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
-        GruPenaltyConfig cfg = config::GruConfigManager::LoadConfig(config_path);
-        const std::string active_prof =
-            config::GruConfigManager::ResolveActiveProfileForContext(cfg, &context);
-        config::GruConfigManager::SetInstantModeEnabled(&cfg, active_prof, enable);
-        config::GruConfigManager::SaveConfig(cfg, config_path);
-        config::GruConfigManager::InvalidateConfigCache();
-        if (converter_) {
-          const_cast<ConverterInterface*>(converter_.get())->Reload();
-        }
-        LOG(INFO) << "EngineConverter: " << (enable ? "Enabled" : "Disabled")
-                  << " MoGRU instant mode for profile: " << active_prof;
+        LOG(INFO) << "EngineConverter: Executed MoGRU inline command '"
+                  << candidate.value
+                  << "', active_profile=" << cmd_res.active_profile;
         return true;
       }
 

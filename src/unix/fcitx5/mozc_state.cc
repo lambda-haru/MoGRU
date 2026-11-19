@@ -53,6 +53,7 @@
 #include "base/vlog.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
+#include "unix/fcitx5/app_name_resolver.h"
 #include "unix/fcitx5/fcitx_key_event_handler.h"
 #include "unix/fcitx5/i18nwrapper.h"
 #include "unix/fcitx5/mozc_engine.h"
@@ -84,7 +85,17 @@ MozcState::MozcState(InputContext* ic, MozcEngine* engine)
   }
 }
 
-MozcState::~MozcState() { MOZC_VLOG(1) << "MozcState destroyed."; }
+MozcState::~MozcState() {
+  if (ic_ != nullptr && engine_ != nullptr) {
+    const auto uuid = ic_->uuid();
+    const std::string ic_win_id =
+        FormatInputContextWindowId(uuid.data(), uuid.size());
+    if (!ic_win_id.empty()) {
+      engine_->NotifyWindowClosed(ic_win_id);
+    }
+  }
+  MOZC_VLOG(1) << "MozcState destroyed.";
+}
 
 void MozcState::UpdatePreeditMethod() {
   mozc::config::Config config;
@@ -136,12 +147,7 @@ bool MozcState::TrySendKeyEvent(InputContext* ic,
   }
 
   mozc::commands::Context context;
-  const std::string app_name =
-      (engine_ != nullptr) ? engine_->ResolveApplicationName(ic) : "";
-  if (!app_name.empty()) {
-    context.set_application_name(app_name);
-    context.add_experimental_features(std::string("app:") + app_name);
-  }
+  FillContext(ic, &context);
   SurroundingTextInfo surrounding_text_info;
   if (GetSurroundingText(ic, &surrounding_text_info,
                          engine_->clipboardAddon())) {
@@ -198,17 +204,28 @@ bool MozcState::TrySendCommand(mozc::commands::SessionCommand::CommandType type,
   return TrySendRawCommand(command, out, out_error);
 }
 
+void MozcState::FillContext(InputContext* ic,
+                            mozc::commands::Context* context) const {
+  if (context == nullptr || engine_ == nullptr) {
+    return;
+  }
+  const std::string app_name = engine_->ResolveApplicationName(ic);
+  if (!app_name.empty()) {
+    context->set_application_name(app_name);
+    context->add_experimental_features(std::string("app:") + app_name);
+  }
+  const std::string window_id = engine_->ResolveWindowId(ic);
+  if (!window_id.empty()) {
+    context->set_window_id(window_id);
+  }
+}
+
 bool MozcState::TrySendRawCommand(const mozc::commands::SessionCommand& command,
                                   mozc::commands::Output* out,
                                   std::string* out_error) const {
   MOZC_VLOG(1) << "TrySendRawCommand: " << command.DebugString();
   mozc::commands::Context context;
-  const std::string app_name =
-      (engine_ != nullptr) ? engine_->ResolveApplicationName(ic_) : "";
-  if (!app_name.empty()) {
-    context.set_application_name(app_name);
-    context.add_experimental_features(std::string("app:") + app_name);
-  }
+  FillContext(ic_, &context);
   if (!GetClient()->SendCommandWithContext(command, context, out)) {
     *out_error = "SendCommand failed";
     MOZC_VLOG(1) << "ERROR";
