@@ -244,6 +244,12 @@
  */
 - (void)setupClientBundle:(id)sender;
 
+/** Refreshes the cached root CGWindowID (`"mac:<id>"`) for the active client. */
+- (void)refreshWindowId;
+
+/** Populates `application_name` and `window_id` on `context`. */
+- (void)fillClientContext:(mozc::commands::Context *)context;
+
 /** Launches the word register tool with the current selection range.
  *
  * @param client The host application. The selection data in this client is used as an input.

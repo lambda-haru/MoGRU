@@ -343,7 +343,7 @@ bool MacUtil::GetFrontmostWindowNameAndOwner(std::string *name, std::string *own
 uint32_t MacUtil::GetFrontmostWindowId(pid_t preferred_pid) {
   scoped_cftyperef<CFArrayRef> window_list(::CGWindowListCopyWindowInfo(
       kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
-  if (!window_list) {
+  if (!window_list.get()) {
     return 0;
   }
   const CFIndex window_count = CFArrayGetCount(window_list.get());

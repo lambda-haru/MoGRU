@@ -374,6 +374,7 @@ bool CanSurroundingText(absl::string_view bundle_id) {
 }
 
 - (void)setupClientBundle:(id)sender {
+  windowId_.clear();
   if (sender == nil || ![sender respondsToSelector:@selector(bundleIdentifier)]) {
     return;
   }
@@ -477,13 +478,16 @@ bool CanSurroundingText(absl::string_view bundle_id) {
     return;
   }
 
+  mozc::commands::Context context;
+  [self fillClientContext:&context];
+
   if (new_mode == mozc::commands::DIRECT) {
     // Turn off the IME and commit the composing text.
     DLOG(INFO) << "Mode switch: HIRAGANA, KATAKANA, etc. -> DIRECT";
     KeyEvent keyEvent;
     Output output;
     keyEvent.set_special_key(mozc::commands::KeyEvent::OFF);
-    mozcClient_->SendKey(keyEvent, &output);
+    mozcClient_->SendKeyWithContext(keyEvent, context, &output);
     if (output.has_result()) {
       [self commitText:output.result().value().c_str() client:sender];
     }
@@ -501,7 +505,7 @@ bool CanSurroundingText(absl::string_view bundle_id) {
     KeyEvent keyEvent;
     Output output;
     keyEvent.set_special_key(mozc::commands::KeyEvent::ON);
-    mozcClient_->SendKey(keyEvent, &output);
+    mozcClient_->SendKeyWithContext(keyEvent, context, &output);
   }
 
   // Switch composition mode.
@@ -510,7 +514,7 @@ bool CanSurroundingText(absl::string_view bundle_id) {
   command.set_type(mozc::commands::SessionCommand::SWITCH_COMPOSITION_MODE);
   command.set_composition_mode(new_mode);
   Output output;
-  mozcClient_->SendCommand(command, &output);
+  mozcClient_->SendCommandWithContext(command, context, &output);
   mode_ = new_mode;
 }
 
@@ -770,7 +774,9 @@ bool CanSurroundingText(absl::string_view bundle_id) {
   SessionCommand command;
   Output output;
   command.set_type(SessionCommand::SUBMIT);
-  mozcClient_->SendCommand(command, &output);
+  mozc::commands::Context context;
+  [self fillClientContext:&context];
+  mozcClient_->SendCommandWithContext(command, context, &output);
   [self clearCandidates];
   [self updateComposedString:nullptr];
 }

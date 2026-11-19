@@ -816,5 +816,16 @@ TEST_F(MozcImkInputControllerTest, fillSurroundingContext) {
   EXPECT_EQ([mock_client_ getCounter:"markedRange"], 0);
 }
 
+TEST_F(MozcImkInputControllerTest, FillClientContextSetsApplicationName) {
+  commands::Context context;
+  [controller_ fillClientContext:&context];
+  EXPECT_EQ(context.application_name(), "com.google.exampleBundle");
+
+  ResetClientBundleIdentifier(@"com.microsoft.Word");
+  commands::Context word_context;
+  [controller_ fillClientContext:&word_context];
+  EXPECT_EQ(word_context.application_name(), "com.microsoft.Word");
+}
+
 }  // namespace
 }  // namespace mozc
