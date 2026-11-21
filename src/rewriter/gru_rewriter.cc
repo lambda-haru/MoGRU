@@ -131,6 +131,38 @@ bool IsAlphabetCandidate(const Segment::Candidate& cand) {
   return Util::ContainsScriptType(cand.value, Util::ALPHABET);
 }
 
+bool IsNumericSeparator(char32_t cp) {
+  return cp == U',' || cp == U'.' || cp == U'，' || cp == U'．';
+}
+
+bool IsPureNumberCandidate(const Segment::Candidate& cand) {
+  if (cand.value.empty()) {
+    return false;
+  }
+  bool has_digit = false;
+  bool prev_was_separator = false;
+  for (ConstChar32Iterator iter(cand.value); !iter.Done(); iter.Next()) {
+    const char32_t cp = iter.Get();
+    if (Util::GetScriptType(cp) == Util::NUMBER) {
+      has_digit = true;
+      prev_was_separator = false;
+    } else if (IsNumericSeparator(cp)) {
+      // Separators (',' / '.' / '，' / '．') are only allowed between digits.
+      if (!has_digit || prev_was_separator) {
+        return false;
+      }
+      prev_was_separator = true;
+    } else {
+      return false;
+    }
+  }
+  return has_digit && !prev_was_separator;
+}
+
+bool IsAlphanumericPenaltyTarget(const Segment::Candidate& cand) {
+  return IsAlphabetCandidate(cand) || IsPureNumberCandidate(cand);
+}
+
 bool IsEnglishFallbackSegment(const Segment& seg) {
   return seg.candidates_size() > 0 &&
          (seg.candidate(0).attributes &
@@ -167,7 +199,7 @@ float ScoreCandidateWithContext(const gruscorer::GruModel& model,
                                 const GruPenaltyConfig& config) {
   float score =
       model.ScoreStringWithContext(indexer, cand.value, context, true);
-  if (IsAlphabetCandidate(cand)) {
+  if (IsAlphanumericPenaltyTarget(cand)) {
     score *= static_cast<float>(config.alphabet_multiplier);
   } else if (IsKatakanaCandidate(cand)) {
     score *= static_cast<float>(config.katakana_multiplier);

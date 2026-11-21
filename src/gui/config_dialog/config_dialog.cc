@@ -982,7 +982,7 @@ void ConfigDialog::SetupMogruUi() {
     gruHiraganaLengthPowerLabel->setText(
         QString::fromUtf8("ひらがな 連続長指数 (hiragana_length_power):"));
     gruAlphabetMultiplierLabel->setText(
-        QString::fromUtf8("半角英字 ペナルティ倍率 (alphabet_multiplier):"));
+        QString::fromUtf8("半角英数字 ペナルティ倍率 (alphabet_multiplier):"));
     gruEmojiPenaltyLabel->setText(
         QString::fromUtf8("絵文字・記号 固定ペナルティ (emoji_penalty):"));
 

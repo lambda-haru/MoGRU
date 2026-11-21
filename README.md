@@ -104,7 +104,7 @@ GUI 設定ツール（Linux: Fcitx5 設定、macOS: 環境設定、Windows: プ�
 
 - **文節区切り再編成（Resegmentation）** (`enable_resegmentation = true`, `resegment_threshold = 600.0`): 3〜60文字の変換に対し、形態素解析（Viterbi）の不自然な文節境界を GRU の文全体スコアで評価・再分割します。
 - **文節移動・候補変更時の動的再評価（Focus 再ランキング）**: 複数文節の変換中に前の文節で別候補を選択すると、選択内容を文脈として後続文節の候補順位および文節区切りを動的に再計算します。先行確定テキスト（最大32文字）も文脈に利用されます。
-- **文字種ペナルティ調整**: 変換の傾向を細かく調整できます（`katakana_multiplier = 1.30`, `hiragana_multiplier = 1.10`, `hiragana_length_power = 1.00`, `alphabet_multiplier = 2.00`, `emoji_penalty = 15000.0`）。なお、1文字のひらがな助詞はひらがなペナルティから自動免除されます。
+- **文字種ペナルティ調整**: 変換の傾向を細かく調整できます（`katakana_multiplier = 1.30`, `hiragana_multiplier = 1.10`, `hiragana_length_power = 1.00`, 英数字・数値向けの `alphabet_multiplier = 2.00`, `emoji_penalty = 15000.0`）。なお、1文字のひらがな助詞はひらがなペナルティから自動免除されます。`alphabet_multiplier` は英字を含む候補および純粋な数値表記（`2`, `２`, `1,000`, `3.14` 等）に適用されます。
 - **GRU スコア内訳表示** (`show_gru_score = true`): 候補ウィンドウの説明欄に `GRU:<score>[E:<combined_cost>]*` などのスコア内訳を表示します。
 
 ### 3. 英語自動フォールバック

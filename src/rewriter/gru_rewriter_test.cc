@@ -3062,6 +3062,157 @@ TEST_F(GruRewriterTest, WindowProfileMemoryPerWindowAndFocusSwitch) {
   }
 }
 
+TEST_F(GruRewriterTest, AlphabetMultiplierAppliesToPureNumbersAndReranks) {
+  const std::string test_config = FileUtil::JoinPath(
+      std::filesystem::temp_directory_path().string(),
+      "gru_number_multiplier_config.ini");
+  std::error_code ec;
+  std::filesystem::remove(test_config, ec);
+
+  auto write_cfg = [&](double alphabet_mult) {
+    GruPenaltyConfig cfg;
+    cfg.enable_gru_rewriter = true;
+    cfg.show_gru_score = true;
+    cfg.enable_auto_alpha = false;
+    cfg.gru_score_weight = 800.0;
+    cfg.katakana_multiplier = 1.0;
+    cfg.hiragana_multiplier = 1.0;
+    cfg.alphabet_multiplier = alphabet_mult;
+    ASSERT_TRUE(config::GruConfigManager::SaveConfig(cfg, test_config));
+    config::GruConfigManager::InvalidateConfigCache();
+  };
+
+  auto find_cand = [](const Segment& seg,
+                      absl::string_view value) -> const converter::Candidate* {
+    for (size_t i = 0; i < seg.candidates_size(); ++i) {
+      if (seg.candidate(i).value == value) {
+        return &seg.candidate(i);
+      }
+    }
+    return nullptr;
+  };
+  auto parse_gru_score = [](const std::string& desc) -> double {
+    const size_t pos = desc.find("GRU:");
+    EXPECT_NE(pos, std::string::npos) << "Missing GRU: in " << desc;
+    if (pos == std::string::npos) return 0.0;
+    size_t end_pos = desc.find('[', pos + 4);
+    if (end_pos == std::string::npos) {
+      end_pos = desc.size();
+    }
+    double val = 0.0;
+    EXPECT_TRUE(absl::SimpleAtod(desc.substr(pos + 4, end_pos - (pos + 4)), &val))
+        << "Failed parsing GRU score from " << desc;
+    return val;
+  };
+
+  auto evaluate_scores = [&](double alphabet_mult, absl::string_view key,
+                             const std::vector<std::string>& values) {
+    write_cfg(alphabet_mult);
+    absl::SetFlag(&FLAGS_gru_config_path, test_config);
+    EXPECT_TRUE(rewriter_->Reload());
+
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key(key);
+    for (const auto& v : values) {
+      AddCandidate(key, v, 1000, seg);
+    }
+    ConversionRequest req;
+    rewriter_->Rewrite(req, &segments);
+
+    std::vector<double> scores;
+    scores.reserve(values.size());
+    for (const auto& v : values) {
+      const auto* cand = find_cand(segments.conversion_segment(0), v);
+      EXPECT_NE(cand, nullptr) << "Missing candidate " << v;
+      scores.push_back(cand ? parse_gru_score(cand->description) : 0.0);
+    }
+    return scores;
+  };
+
+  // 1. Pure numbers (halfwidth, fullwidth, comma-separated, decimal) and
+  // alphabet-containing candidates scale by alphabet_multiplier.
+  const std::vector<std::string> penalized_values = {
+      "2", "２", "1,000", "１，０００", "3.14", "３．１４", "3D", "A2"};
+  const std::vector<double> scores_1x =
+      evaluate_scores(1.0, "に", penalized_values);
+  const std::vector<double> scores_3x =
+      evaluate_scores(3.0, "に", penalized_values);
+  ASSERT_EQ(scores_1x.size(), penalized_values.size());
+  ASSERT_EQ(scores_3x.size(), penalized_values.size());
+  for (size_t i = 0; i < penalized_values.size(); ++i) {
+    EXPECT_LT(scores_1x[i], -0.1) << "cand=" << penalized_values[i];
+    EXPECT_NEAR(scores_3x[i], scores_1x[i] * 3.0, 0.05)
+        << "cand=" << penalized_values[i];
+  }
+
+  // 2. Non-pure-numeric candidates (counter compounds, circled/roman numerals,
+  // and malformed separators) must NOT be scaled by alphabet_multiplier.
+  const std::vector<std::string> exempt_values = {
+      "2月", "100円", "3人", "②", "Ⅱ", "2.", "2,", ".5", "1..2"};
+  const std::vector<double> exempt_1x =
+      evaluate_scores(1.0, "に", exempt_values);
+  const std::vector<double> exempt_3x =
+      evaluate_scores(3.0, "に", exempt_values);
+  ASSERT_EQ(exempt_1x.size(), exempt_values.size());
+  ASSERT_EQ(exempt_3x.size(), exempt_values.size());
+  for (size_t i = 0; i < exempt_values.size(); ++i) {
+    EXPECT_NEAR(exempt_3x[i], exempt_1x[i], 0.02)
+        << "cand=" << exempt_values[i];
+  }
+
+  // 3. Reranking check: typing "に" with "2", "２", "二" at equal cost must
+  // demote both "2" and "２" below "二" when alphabet_multiplier = 3.0.
+  {
+    write_cfg(3.0);
+    absl::SetFlag(&FLAGS_gru_config_path, test_config);
+    ASSERT_TRUE(rewriter_->Reload());
+
+    Segments segments;
+    Segment* seg = segments.add_segment();
+    seg->set_key("に");
+    AddCandidate("に", "2", 1000, seg);
+    AddCandidate("に", "２", 1000, seg);
+    AddCandidate("に", "二", 1000, seg);
+
+    ConversionRequest req;
+    EXPECT_TRUE(rewriter_->Rewrite(req, &segments));
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "二");
+  }
+
+  // 4. Direct numeric key input ("2") still bypasses GruRewriter via
+  // IsSymbolSegment, and DISABLE_RESCORING on numeric candidate does not treat
+  // it as an English fallback segment.
+  {
+    write_cfg(3.0);
+    absl::SetFlag(&FLAGS_gru_config_path, test_config);
+    ASSERT_TRUE(rewriter_->Reload());
+
+    Segments direct_num;
+    Segment* sym_seg = direct_num.add_segment();
+    sym_seg->set_key("2");
+    AddCandidate("2", "2", 1000, sym_seg);
+    AddCandidate("2", "２", 1000, sym_seg);
+    ConversionRequest req;
+    EXPECT_FALSE(rewriter_->Rewrite(req, &direct_num));
+    EXPECT_EQ(sym_seg->candidate(0).description.find("GRU:"), std::string::npos);
+
+    Segments disable_rescoring_num;
+    Segment* num_seg = disable_rescoring_num.add_segment();
+    num_seg->set_key("に");
+    AddCandidate("に", "2", 1000, num_seg);
+    num_seg->mutable_candidate(0)->attributes |=
+        converter::Attribute::DISABLE_RESCORING;
+    AddCandidate("に", "二", 1000, num_seg);
+    EXPECT_TRUE(rewriter_->Rewrite(req, &disable_rescoring_num));
+    EXPECT_EQ(num_seg->candidate(0).value, "二");
+    EXPECT_NE(num_seg->candidate(0).description.find("GRU:"), std::string::npos);
+  }
+
+  std::filesystem::remove(test_config, ec);
+  absl::SetFlag(&FLAGS_gru_config_path, "");
+}
+
 }  // namespace
 }  // namespace mozc
 

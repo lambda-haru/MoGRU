@@ -2422,7 +2422,7 @@
                 <item row="3" column="0">
                  <widget class="QLabel" name="gruAlphabetMultiplierLabel">
                   <property name="text">
-                   <string>Alphabet Penalty Multiplier:</string>
+                   <string>Alphanumeric Penalty Multiplier:</string>
                   </property>
                  </widget>
                 </item>

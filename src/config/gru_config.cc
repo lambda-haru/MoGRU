@@ -1492,9 +1492,9 @@ std::string GruConfigManager::FormatConfigIni(const GruPenaltyConfig& config) {
       "# - 文脈予測で絵文字が上位に割り込んでくるのを防ぐための固定加算コストです。\n"
       "emoji_penalty = %.1f\n"
       "\n"
-      "# 【英単語候補に対するスコア乗数】 (初期値: 2.0)\n"
-      "# - 「とうきょう」に「TOKYO」や「Tokyo」が誤って第1候補に昇格するのを防ぎます。\n"
-      "# - 負の対数尤度スコアを乗算（2.0 = コスト実質2倍加算）します。\n"
+      "# 【英数字・数値候補に対するスコア乗数】 (初期値: 2.0)\n"
+      "# - 「とうきょう」に「TOKYO」や「Tokyo」、「に」に「2」「２」が誤って第1候補に昇格するのを防ぎます。\n"
+      "# - 英字を含む候補および数字のみの表記（「2」「２」「1,000」「3.14」等）に対し、負の対数尤度スコアを乗算（2.0 = コスト実質2倍加算）します。\n"
       "alphabet_multiplier = %.2f\n"
       "\n"
       "# 【文節区切り再編成（Resegmentation）の有効化】 (初期値: true)\n"
@@ -1853,7 +1853,7 @@ void GruConfigManager::EnsureConfigFileExists(const std::string& path) {
   }
   if (content.find("alphabet_multiplier") == std::string::npos) {
     append_content +=
-        "\n# 【英単語候補に対するスコア乗数】 (初期値: 2.0)\n"
+        "\n# 【英数字・数値候補に対するスコア乗数】 (初期値: 2.0)\n"
         "alphabet_multiplier = 2.0\n";
   }
   if (content.find("enable_resegmentation") == std::string::npos) {
