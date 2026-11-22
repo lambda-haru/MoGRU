@@ -125,6 +125,7 @@ void InsertCorrectedNodes(size_t pos, absl::string_view key,
                           const ConversionOptions& options,
                           const KeyCorrector* key_corrector,  // nullable
                           const DictionaryInterface& dictionary,
+                          absl::Span<const uint8_t> forbidden_boundaries,
                           Lattice* lattice) {
   if (key_corrector == nullptr) {
     return;
@@ -136,7 +137,34 @@ void InsertCorrectedNodes(size_t pos, absl::string_view key,
   KeyCorrectedNodeListBuilder builder(pos, key, *key_corrector,
                                       lattice->node_allocator());
   dictionary.LookupPrefix(prefix, options, &builder);
-  lattice->Insert(pos, builder.result_view());
+  if (forbidden_boundaries.empty()) {
+    lattice->Insert(pos, builder.result_view());
+    return;
+  }
+  for (Node* node : builder.result_view()) {
+    const size_t end_pos = pos + node->key.size();
+    if (end_pos < forbidden_boundaries.size() &&
+        forbidden_boundaries[end_pos] != 0) {
+      continue;
+    }
+    lattice->Insert(pos, node);
+  }
+}
+
+void FilterForbiddenEndNodes(size_t pos,
+                             absl::Span<const uint8_t> forbidden_boundaries,
+                             std::vector<Node*>* nodes) {
+  if (forbidden_boundaries.empty()) {
+    return;
+  }
+  nodes->erase(
+      std::remove_if(nodes->begin(), nodes->end(),
+                     [&](const Node* node) {
+                       const size_t end_pos = pos + node->key.size();
+                       return end_pos < forbidden_boundaries.size() &&
+                              forbidden_boundaries[end_pos] != 0;
+                     }),
+      nodes->end());
 }
 
 bool IsNumber(const char c) { return c >= '0' && c <= '9'; }
@@ -403,19 +431,20 @@ void ImmutableConverter::InsertDummyCandidates(Segment* segment,
   DCHECK_GT(segment->candidates_size(), 0);
 }
 
-void ImmutableConverter::ApplyResegmentRules(size_t pos,
-                                             Lattice* lattice) const {
-  if (ResegmentArabicNumberAndSuffix(pos, lattice)) {
+void ImmutableConverter::ApplyResegmentRules(
+    size_t pos, const AtomicSpanConstraint& constraint,
+    Lattice* lattice) const {
+  if (ResegmentArabicNumberAndSuffix(pos, constraint, lattice)) {
     MOZC_VLOG(1) << "ResegmentArabicNumberAndSuffix returned true";
     return;
   }
 
-  if (ResegmentPrefixAndArabicNumber(pos, lattice)) {
+  if (ResegmentPrefixAndArabicNumber(pos, constraint, lattice)) {
     MOZC_VLOG(1) << "ResegmentArabicNumberAndSuffix returned true";
     return;
   }
 
-  if (ResegmentPersonalName(pos, lattice)) {
+  if (ResegmentPersonalName(pos, constraint, lattice)) {
     MOZC_VLOG(1) << "ResegmentPersonalName returned true";
     return;
   }
@@ -424,7 +453,8 @@ void ImmutableConverter::ApplyResegmentRules(size_t pos,
 // Currently, only arabic_number + suffix patterns are resegmented
 // TODO(taku): consider kanji number into consideration
 bool ImmutableConverter::ResegmentArabicNumberAndSuffix(
-    size_t pos, Lattice* lattice) const {
+    size_t pos, const AtomicSpanConstraint& constraint,
+    Lattice* lattice) const {
   ScopedLatticeNodeInserter inserter(lattice);
 
   for (const Node* compound_node : lattice->begin_nodes(pos)) {
@@ -445,6 +475,10 @@ bool ImmutableConverter::ResegmentArabicNumberAndSuffix(
       // not compatible
       if (number_value != number_key) {
         LOG(WARNING) << "Incompatible key/value number pair";
+        continue;
+      }
+
+      if (constraint.IsForbiddenBoundary(pos + number_key.size())) {
         continue;
       }
 
@@ -484,7 +518,8 @@ bool ImmutableConverter::ResegmentArabicNumberAndSuffix(
 }
 
 bool ImmutableConverter::ResegmentPrefixAndArabicNumber(
-    size_t pos, Lattice* lattice) const {
+    size_t pos, const AtomicSpanConstraint& constraint,
+    Lattice* lattice) const {
   ScopedLatticeNodeInserter inserter(lattice);
 
   for (const Node* compound_node : lattice->begin_nodes(pos)) {
@@ -507,6 +542,10 @@ bool ImmutableConverter::ResegmentPrefixAndArabicNumber(
       // not compatible
       if (number_value != number_key) {
         LOG(WARNING) << "Incompatible key/value number pair";
+        continue;
+      }
+
+      if (constraint.IsForbiddenBoundary(pos + prefix_key.size())) {
         continue;
       }
 
@@ -545,8 +584,9 @@ bool ImmutableConverter::ResegmentPrefixAndArabicNumber(
   return inserter.IsInserted();
 }
 
-bool ImmutableConverter::ResegmentPersonalName(size_t pos,
-                                               Lattice* lattice) const {
+bool ImmutableConverter::ResegmentPersonalName(
+    size_t pos, const AtomicSpanConstraint& constraint,
+    Lattice* lattice) const {
   ScopedLatticeNodeInserter inserter(lattice);
 
   // find a combination of last_name and first_name, e.g. "田中麗奈".
@@ -607,6 +647,11 @@ bool ImmutableConverter::ResegmentPersonalName(size_t pos,
 
     // No valid first/last names are found
     if (best_first_name_node == nullptr || best_last_name_node == nullptr) {
+      continue;
+    }
+
+    if (constraint.IsForbiddenBoundary(pos +
+                                       best_last_name_node->key.size())) {
       continue;
     }
 
@@ -1212,6 +1257,62 @@ bool ImmutableConverter::MakeLattice(const ConversionOptions& options,
     dictionary_.PopulateReverseLookupCache(lattice->key());
   }
 
+  AtomicSpanConstraint atomic_constraint;
+  if (!is_reverse && !segments->atomic_romaji_spans().empty() &&
+      !conversion_key.empty()) {
+    const size_t base_byte = history_key.size();
+    const size_t total_key_bytes = base_byte + conversion_key.size();
+    std::vector<size_t> char_bytes;
+    char_bytes.reserve(conversion_key.size() + 1);
+    size_t rel_byte = 0;
+    const Utf8AsChars32 utf8_chars(conversion_key);
+    for (auto it = utf8_chars.begin(); it != utf8_chars.end(); ++it) {
+      char_bytes.push_back(base_byte + rel_byte);
+      rel_byte += it.view().size();
+    }
+    char_bytes.push_back(base_byte + rel_byte);
+    const size_t conv_chars = char_bytes.size() - 1;
+
+    std::vector<uint8_t> explicit_fixed(total_key_bytes + 1, 0);
+    size_t seg_byte = base_byte;
+    for (size_t i = 0; i + 1 < segments->conversion_segments_size(); ++i) {
+      const Segment& cur = segments->conversion_segment(i);
+      const Segment& next = segments->conversion_segment(i + 1);
+      seg_byte += cur.key().size();
+      if (cur.segment_type() != Segment::FREE ||
+          next.segment_type() != Segment::FREE) {
+        if (seg_byte <= total_key_bytes) {
+          explicit_fixed[seg_byte] = 1;
+        }
+      }
+    }
+
+    atomic_constraint.forbidden_boundaries.assign(total_key_bytes + 1, 0);
+    atomic_constraint.whole_span_ends.assign(total_key_bytes, 0);
+    for (const auto& [span_start_char, span_len] :
+         segments->atomic_romaji_spans()) {
+      if (span_len < 2 || span_start_char + span_len > conv_chars) {
+        continue;
+      }
+      size_t run_start_char = span_start_char;
+      for (size_t c = span_start_char + 1; c <= span_start_char + span_len;
+           ++c) {
+        const size_t b = char_bytes[c];
+        const bool is_end = (c == span_start_char + span_len);
+        const bool is_fixed = (!is_end && explicit_fixed[b] != 0);
+        if (is_end || is_fixed) {
+          if (c - run_start_char >= 2) {
+            atomic_constraint.whole_span_ends[char_bytes[run_start_char]] =
+                static_cast<uint16_t>(b);
+          }
+          run_start_char = c;
+        } else {
+          atomic_constraint.forbidden_boundaries[b] = 1;
+        }
+      }
+    }
+  }
+
   bool is_valid_lattice = true;
   // Perform the main part of lattice construction.
   if (!MakeLatticeNodesForHistorySegments(*segments, options, lattice) ||
@@ -1222,7 +1323,7 @@ bool ImmutableConverter::MakeLattice(const ConversionOptions& options,
   // Can not apply key corrector to invalid lattice.
   if (is_valid_lattice) {
     MakeLatticeNodesForConversionSegments(*segments, options, history_key,
-                                          lattice);
+                                          atomic_constraint, lattice);
   }
 
   if (is_reverse) {
@@ -1244,7 +1345,7 @@ bool ImmutableConverter::MakeLattice(const ConversionOptions& options,
 
   // Re-segment personal-names, numbers ...etc
   if (options.request_type == RequestType::CONVERSION) {
-    Resegment(*segments, history_key, conversion_key, lattice);
+    Resegment(*segments, history_key, conversion_key, atomic_constraint, lattice);
   }
 
   return true;
@@ -1395,7 +1496,8 @@ bool ImmutableConverter::MakeLatticeNodesForHistorySegments(
 
 void ImmutableConverter::MakeLatticeNodesForConversionSegments(
     const Segments& segments, const ConversionOptions& options,
-    absl::string_view history_key, Lattice* lattice) const {
+    absl::string_view history_key, const AtomicSpanConstraint& constraint,
+    Lattice* lattice) const {
   absl::string_view key = lattice->key();
   const bool is_conversion = (options.request_type == RequestType::CONVERSION);
   // Do not use KeyCorrector if user changes the boundary.
@@ -1413,9 +1515,24 @@ void ImmutableConverter::MakeLatticeNodesForConversionSegments(
   const bool is_reverse =
       (options.request_type == RequestType::REVERSE_CONVERSION);
   for (size_t pos = history_key.size(); pos < key.size(); ++pos) {
+    if (constraint.IsForbiddenBoundary(pos)) continue;
     if (lattice->end_nodes(pos).empty()) continue;
 
     std::vector<Node*> rnodes = Lookup(pos, options, is_reverse, lattice);
+    FilterForbiddenEndNodes(pos, constraint.forbidden_boundaries, &rnodes);
+    if (const size_t whole_end = constraint.WholeSpanEnd(pos);
+        whole_end > pos && whole_end <= key.size()) {
+      const absl::string_view atomic_key = key.substr(pos, whole_end - pos);
+      Node* absl_nonnull fallback_node = lattice->NewNode();
+      fallback_node->Init();
+      fallback_node->lid = unknown_id_;
+      fallback_node->rid = unknown_id_;
+      fallback_node->wcost = kMaxCost;
+      fallback_node->key.assign(atomic_key);
+      fallback_node->value.assign(atomic_key);
+      fallback_node->node_type = Node::NOR_NODE;
+      rnodes.push_back(fallback_node);
+    }
     // If history key is NOT empty and user input seems to starts with
     // a particle ("はにで..."), mark the node as STARTS_WITH_PARTICLE.
     // We change the segment boundary if STARTS_WITH_PARTICLE attribute
@@ -1430,7 +1547,7 @@ void ImmutableConverter::MakeLatticeNodesForConversionSegments(
     }
     lattice->Insert(pos, rnodes);
     InsertCorrectedNodes(pos, key, options, key_corrector.get(), dictionary_,
-                         lattice);
+                         constraint.forbidden_boundaries, lattice);
   }
 }
 
@@ -1461,10 +1578,13 @@ void ImmutableConverter::ApplyPrefixSuffixPenalty(
 void ImmutableConverter::Resegment(const Segments& segments,
                                    absl::string_view history_key,
                                    absl::string_view conversion_key,
+                                   const AtomicSpanConstraint& constraint,
                                    Lattice* lattice) const {
   for (size_t pos = history_key.size();
        pos < history_key.size() + conversion_key.size(); ++pos) {
-    ApplyResegmentRules(pos, lattice);
+    if (!constraint.IsForbiddenBoundary(pos)) {
+      ApplyResegmentRules(pos, constraint, lattice);
+    }
   }
 
   // Enable constrained node.

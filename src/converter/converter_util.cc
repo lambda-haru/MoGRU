@@ -42,6 +42,8 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "base/strings/assign.h"
+#include "base/util.h"
+#include "composer/composer.h"
 #include "converter/attribute.h"
 #include "converter/candidate.h"
 #include "converter/inner_segment.h"
@@ -215,8 +217,68 @@ Segments PrepareSegmentsFromRequest(const ConversionRequest& request) {
   }
 
   segments.add_segment()->set_key(request.key());
+  segments.set_atomic_romaji_spans(
+      ExtractAtomicRomajiSpans(request, request.key()));
 
   return segments;
+}
+
+std::vector<std::pair<size_t, size_t>> ExtractAtomicRomajiSpans(
+    const composer::ComposerData& composer, size_t base_preedit_offset,
+    absl::string_view conversion_key) {
+  std::vector<std::pair<size_t, size_t>> result;
+  if (conversion_key.empty() || composer.GetLength() == 0) {
+    return result;
+  }
+
+  const size_t key_chars = Util::CharsLen(conversion_key);
+  const size_t preedit_end = base_preedit_offset + key_chars;
+  for (const composer::ChunkSpan& span : composer.GetChunkSpans()) {
+    if (!span.is_romaji || span.atomic_subspans.empty()) {
+      continue;
+    }
+    for (const auto& [sub_start, sub_len] : span.atomic_subspans) {
+      if (sub_len < 2) {
+        continue;
+      }
+      const size_t abs_start = span.preedit_start + sub_start;
+      const size_t abs_end = abs_start + sub_len;
+      if (abs_start >= base_preedit_offset && abs_end <= preedit_end) {
+        result.emplace_back(abs_start - base_preedit_offset, sub_len);
+      }
+    }
+  }
+  return result;
+}
+
+std::vector<std::pair<size_t, size_t>> ExtractAtomicRomajiSpans(
+    const ConversionRequest& request, absl::string_view conversion_key) {
+  if (request.request_type() == ConversionRequest::REVERSE_CONVERSION) {
+    return {};
+  }
+  return ExtractAtomicRomajiSpans(request.composer(),
+                                  request.options().base_preedit_offset,
+                                  conversion_key);
+}
+
+std::vector<std::pair<size_t, size_t>> SliceAtomicRomajiSpans(
+    absl::Span<const std::pair<size_t, size_t>> spans, size_t slice_start_char,
+    size_t slice_char_len) {
+  std::vector<std::pair<size_t, size_t>> result;
+  if (slice_char_len == 0) {
+    return result;
+  }
+  const size_t slice_end = slice_start_char + slice_char_len;
+  for (const auto& [start, len] : spans) {
+    if (len < 2) {
+      continue;
+    }
+    const size_t end = start + len;
+    if (start >= slice_start_char && end <= slice_end) {
+      result.emplace_back(start - slice_start_char, len);
+    }
+  }
+  return result;
 }
 
 void ApplyResultToSegmentsMultiSegment(const prediction::Result& result,

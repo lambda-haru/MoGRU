@@ -35,6 +35,7 @@
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include "absl/base/attributes.h"
 #include "absl/container/btree_set.h"
@@ -161,7 +162,11 @@ class CharChunk final {
   template <typename String>
   void set_conversion(String&& conversion) {
     strings::Assign(conversion_, std::forward<String>(conversion));
+    atomic_spans_.clear();
     local_length_cache_ = std::string::npos;
+  }
+  const std::vector<std::pair<size_t, size_t>>& atomic_spans() const {
+    return atomic_spans_;
   }
 
   absl::string_view pending() const { return pending_; }
@@ -207,6 +212,8 @@ class CharChunk final {
   std::pair<bool, absl::string_view> AddInputInternal(absl::string_view input);
 
  private:
+  void AppendEntryResult(TableAttributes entry_attrs,
+                         absl::string_view entry_result);
   void AddInputAndConvertedChar(CompositionInput* composition_input);
 
   std::shared_ptr<const Table> table_;
@@ -239,6 +246,7 @@ class CharChunk final {
   // However it can be converted to "な", if the next input is "a".
   // In this case, "ん" is stored to `ambiguous_` instead of `conversion_`.
   std::string ambiguous_;
+  std::vector<std::pair<size_t, size_t>> atomic_spans_;
   Transliterators::Transliterator transliterator_;
   TableAttributes attributes_ = NO_TABLE_ATTRIBUTE;
   // for thread safety.

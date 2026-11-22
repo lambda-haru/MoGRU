@@ -2051,5 +2051,71 @@ TEST(CharChunkTest, GetTransliterator) {
   }
 }
 
+TEST(CharChunkTest, AtomicSpansTrackMultiCharRomajiEntriesOnly) {
+  auto table = std::make_shared<Table>();
+  table->AddRule("gwo", "ぐぉ", "");
+  table->AddRule("ss", "っ", "s");
+  table->AddRule("swo", "すぉ", "");
+  table->AddRule("tt", "っ", "t");
+  table->AddRule("ta", "た", "");
+  table->AddRule("ka", "か", "");
+
+  // Single multi-char Romaji entry "gwo" -> "ぐぉ" records atomic span (0, 2).
+  CharChunk gwo(Transliterators::HIRAGANA, table);
+  std::string input = "gwo";
+  gwo.AddInput(&input);
+  EXPECT_EQ(gwo.conversion(), "ぐぉ");
+  EXPECT_THAT(gwo.atomic_spans(),
+              ::testing::ElementsAre(std::make_pair<size_t, size_t>(0, 2)));
+
+  // Sequential single-char entries within one chunk ("tt"->"っ","t" then "ta"->"た")
+  // must NOT record any multi-char atomic span.
+  CharChunk tta(Transliterators::HIRAGANA, table);
+  input = "tta";
+  tta.AddInput(&input);
+  EXPECT_EQ(tta.conversion(), "った");
+  EXPECT_TRUE(tta.atomic_spans().empty());
+
+  // Multi-entry chunk ("ss" -> "っ"+"s", then "swo" -> "すぉ") records only
+  // the multi-char entry (1, 2), leaving the "っ|す" boundary splittable.
+  CharChunk sswo(Transliterators::HIRAGANA, table);
+  input = "ss";
+  sswo.AddInput(&input);
+  input = "wo";
+  sswo.AddInput(&input);
+  EXPECT_EQ(sswo.conversion(), "っすぉ");
+  EXPECT_THAT(sswo.atomic_spans(),
+              ::testing::ElementsAre(std::make_pair<size_t, size_t>(1, 2)));
+
+  // Combine preserves and shifts atomic spans.
+  CharChunk prefix(Transliterators::HIRAGANA, table);
+  input = "ka";
+  prefix.AddInput(&input);
+  CharChunk combined = sswo;
+  combined.Combine(prefix);
+  EXPECT_EQ(combined.conversion(), "かっすぉ");
+  EXPECT_THAT(combined.atomic_spans(),
+              ::testing::ElementsAre(std::make_pair<size_t, size_t>(2, 2)));
+
+  // SplitChunk before/inside/after atomic span updates spans cleanly.
+  CharChunk left_before = combined;
+  absl::StatusOr<CharChunk> lhs_ok =
+      left_before.SplitChunk(Transliterators::LOCAL, 2);
+  ASSERT_TRUE(lhs_ok.ok());
+  EXPECT_TRUE(lhs_ok->atomic_spans().empty());
+  EXPECT_THAT(left_before.atomic_spans(),
+              ::testing::ElementsAre(std::make_pair<size_t, size_t>(0, 2)));
+
+  CharChunk split_inside = combined;
+  absl::StatusOr<CharChunk> lhs_mid =
+      split_inside.SplitChunk(Transliterators::LOCAL, 3);
+  ASSERT_TRUE(lhs_mid.ok());
+  EXPECT_TRUE(lhs_mid->atomic_spans().empty());
+  EXPECT_TRUE(split_inside.atomic_spans().empty());
+
+  combined.Clear();
+  EXPECT_TRUE(combined.atomic_spans().empty());
+}
+
 }  // namespace composer
 }  // namespace mozc

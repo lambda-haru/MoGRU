@@ -3213,6 +3213,52 @@ TEST_F(GruRewriterTest, AlphabetMultiplierAppliesToPureNumbersAndReranks) {
   absl::SetFlag(&FLAGS_gru_config_path, "");
 }
 
+TEST(GruRewriterResegmentTest, DoesNotSplitAtomicRomajiSpans) {
+  absl::SetFlag(&FLAGS_enable_gru_rewriter, true);
+  absl::SetFlag(&FLAGS_enable_gru_resegmentation, true);
+  absl::SetFlag(&FLAGS_gru_resegment_cost_threshold, 1);
+
+  bool saw_atomic_span = false;
+  StubImmutableConverter stub_converter;
+  stub_converter.convert_fn_ = [&](const ConversionOptions& options,
+                                   Segments* segments) {
+    saw_atomic_span = !segments->atomic_romaji_spans().empty();
+    Segment* seg = segments->mutable_segment(segments->segments_size() - 1);
+    seg->clear_candidates();
+
+    // Candidate 1 has much lower cost and would otherwise win resegmentation,
+    // except its inner boundary (after "ぶぐ") splits the atomic span [1, 3)
+    // ("ぐぉ") in half.
+    converter::Candidate* cand0 = seg->add_candidate();
+    cand0->key = "ぶぐぉ";
+    cand0->value = "武具ぉ";
+    cand0->content_key = cand0->key;
+    cand0->content_value = cand0->value;
+    cand0->cost = 1000;
+    cand0->inner_segment_boundary = {
+        *converter::EncodeLengths(6, 6, 6, 6),
+        *converter::EncodeLengths(3, 3, 3, 3),
+    };
+    return true;
+  };
+
+  GruRewriter rewriter(&stub_converter);
+  rewriter.Reload();
+
+  ConversionRequest request;
+  Segments segments;
+  segments.set_atomic_romaji_spans({{1, 2}});  // "ぐぉ"
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("ぶ");
+  AddCandidate("ぶ", "部", 5000, seg0);
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("ぐぉ");
+  AddCandidate("ぐぉ", "ぐぉ", 30000, seg1);
+
+  EXPECT_FALSE(rewriter.CheckResizeSegmentsRequest(request, segments).has_value());
+  EXPECT_TRUE(saw_atomic_span);
+}
+
 }  // namespace
 }  // namespace mozc
 

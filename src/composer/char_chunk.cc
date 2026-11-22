@@ -128,7 +128,22 @@ void CharChunk::Clear() {
   conversion_.clear();
   pending_.clear();
   ambiguous_.clear();
+  atomic_spans_.clear();
   local_length_cache_ = std::string::npos;
+}
+
+void CharChunk::AppendEntryResult(const TableAttributes entry_attrs,
+                                  const absl::string_view entry_result) {
+  if ((entry_attrs & NO_TRANSLITERATION) == 0 && !entry_result.empty()) {
+    const size_t result_chars =
+        Util::CharsLen(DeleteSpecialKeys(entry_result));
+    if (result_chars >= 2) {
+      const size_t start_chars =
+          Util::CharsLen(DeleteSpecialKeys(conversion_));
+      atomic_spans_.emplace_back(start_chars, result_chars);
+    }
+  }
+  conversion_.append(entry_result);
 }
 
 size_t CharChunk::GetLength(Transliterators::Transliterator t12r) const {
@@ -282,6 +297,16 @@ bool CharChunk::IsConvertible(Transliterators::Transliterator t12r,
 }
 
 void CharChunk::Combine(const CharChunk& left_chunk) {
+  const size_t left_chars =
+      Util::CharsLen(DeleteSpecialKeys(left_chunk.conversion_));
+  std::vector<std::pair<size_t, size_t>> merged_spans =
+      left_chunk.atomic_spans_;
+  merged_spans.reserve(merged_spans.size() + atomic_spans_.size());
+  for (const auto& [start, len] : atomic_spans_) {
+    merged_spans.emplace_back(start + left_chars, len);
+  }
+  atomic_spans_ = std::move(merged_spans);
+
   conversion_ = left_chunk.conversion_ + conversion_;
   raw_ = left_chunk.raw_ + raw_;
   local_length_cache_ = std::string::npos;
@@ -388,7 +413,7 @@ std::pair<bool, absl::string_view> CharChunk::AddInputInternal(
     // A result was found. Ambiguity is resolved because `fixed` is true or
     // the key still remains. e.g. If the key is "nk", "n" is used for "ん"
     // because the next remaining character "k" is not used with "n".
-    conversion_.append(entry->result());
+    AppendEntryResult(entry->attributes(), entry->result());
     pending_ = entry->pending();
     ambiguous_.clear();
   } else {
@@ -472,7 +497,7 @@ void CharChunk::AddInputAndConvertedChar(CompositionInput* input) {
   if (key_length == key_input.size()) {
     raw_.append(input->raw());
     if (fixed) {
-      conversion_.append(entry->result());
+      AppendEntryResult(entry->attributes(), entry->result());
       pending_ = entry->pending();
       ambiguous_.clear();
     } else {  // !fixed
@@ -494,7 +519,7 @@ void CharChunk::AddInputAndConvertedChar(CompositionInput* input) {
 
   // The `input` is partially used.
   raw_.append(input->raw());
-  conversion_.append(entry->result());
+  AppendEntryResult(entry->attributes(), entry->result());
   pending_ = entry->pending();
   // While the whole `raw` is used in this char_chunk, the
   // `conversion` is separated to this char_chunk and the next
@@ -571,6 +596,10 @@ absl::StatusOr<CharChunk> CharChunk::SplitChunk(
   }
 
   local_length_cache_ = std::string::npos;
+  const std::vector<std::pair<size_t, size_t>> orig_atomic_spans =
+      std::move(atomic_spans_);
+  atomic_spans_.clear();
+
   std::string raw_lhs, raw_rhs, converted_lhs, converted_rhs;
   Transliterators::GetTransliterator(GetTransliterator(t12r))
       ->Split(position, DeleteSpecialKeys(raw_),
@@ -597,6 +626,16 @@ absl::StatusOr<CharChunk> CharChunk::SplitChunk(
     const size_t pending_pos = converted_rhs.size() - pending_.size();
     conversion_.assign(converted_rhs, 0, pending_pos);
     // pending_ = pending_;
+  }
+  if (!orig_atomic_spans.empty() &&
+      GetTransliterator(t12r) != Transliterators::HALF_KATAKANA) {
+    for (const auto& [start, len] : orig_atomic_spans) {
+      if (start + len <= position) {
+        left_new_chunk.atomic_spans_.emplace_back(start, len);
+      } else if (start >= position) {
+        atomic_spans_.emplace_back(start - position, len);
+      }
+    }
   }
   return left_new_chunk;
 }

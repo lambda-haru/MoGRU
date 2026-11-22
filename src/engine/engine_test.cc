@@ -33,15 +33,26 @@
 #include <string>
 #include <utility>
 
+#include "absl/flags/declare.h"
+#include "absl/flags/flag.h"
 #include "absl/log/check.h"
 #include "absl/strings/string_view.h"
+#include "composer/composer.h"
+#include "composer/table.h"
+#include "config/gru_config.h"
 #include "data_manager/data_manager.h"
 #include "data_manager/testing/mock_data_manager.h"
+#include "engine/engine_converter_interface.h"
+#include "engine/engine_factory.h"
 #include "engine/modules.h"
 #include "engine/supplemental_model_interface.h"
+#include "protocol/commands.pb.h"
+#include "protocol/config.pb.h"
 #include "protocol/engine_builder.pb.h"
 #include "testing/gunit.h"
 #include "testing/mozctest.h"
+
+ABSL_DECLARE_FLAG(bool, enable_live_conversion);
 
 namespace mozc {
 namespace engine {
@@ -226,6 +237,258 @@ TEST_F(EngineTest, SupplementalModelReloadTest) {
             mock_request_.file_path());
   engine_->ClearOldSupplementalModels();
   EXPECT_EQ(supplemental_model_ptr->clear_old_models_count(), 1);
+}
+
+TEST_F(EngineTest, BugWoEndToEndOssConversionAndLiveConversion) {
+  const std::string config_path = config::GruConfigManager::ResolveConfigFilePath(
+      "", /*allow_in_test=*/true);
+  GruPenaltyConfig cfg;
+  cfg.enable_english_fallback = true;
+  cfg.english_fallback_cost_threshold = 13000.0;
+  cfg.english_fallback_min_word_length = 3;
+  cfg.enable_live_conversion_english_fallback = true;
+  cfg.user_english_words = {"git"};
+  config::GruConfigManager::SaveConfig(cfg, config_path);
+  config::GruConfigManager::InvalidateConfigCache();
+
+  const bool orig_live = absl::GetFlag(FLAGS_enable_live_conversion);
+
+  std::unique_ptr<Engine> oss_engine = EngineFactory::Create().value();
+  auto table = std::make_shared<composer::Table>();
+  commands::Request client_request;
+  config::Config default_config;
+  ASSERT_TRUE(
+      table->InitializeWithRequestAndConfig(client_request, default_config));
+
+  auto type_raw = [&](absl::string_view raw) {
+    composer::Composer composer(table, client_request, default_config);
+    for (char c : raw) {
+      commands::KeyEvent key;
+      key.set_key_code(c);
+      composer.InsertCharacterKeyEvent(key);
+    }
+    return composer;
+  };
+
+  auto extract_output = [](const commands::Output& output) {
+    std::string text;
+    if (output.has_preedit()) {
+      for (const auto& seg : output.preedit().segment()) {
+        text.append(seg.value());
+      }
+    }
+    return text;
+  };
+
+  struct Case {
+    const char* raw;
+    const char* expected;
+  };
+  const Case cases[] = {
+      {"bugwo", "bugを"},
+      {"watashinobugwo", "私のbugを"},
+      {"tagwo", "tagを"},
+      {"logwo", "logを"},
+      {"dogwo", "dogを"},
+      {"bagwo", "bagを"},
+      {"debugwo", "debugを"},
+      {"gitwo", "gitを"},
+      {"testwo", "testを"},
+      {"classwo", "classを"},
+      {"passwo", "passを"},
+      {"wordwo", "wordを"},
+      {"buguwo", "武具を"},
+      {"fonto", "フォント"},
+      {"hwonto", "フォント"},
+      {"kyouwo", "今日を"},
+      {"syuwo", "種を"},
+      {"tsukatta", "使った"},
+  };
+
+  for (const Case& tc : cases) {
+    absl::SetFlag(&FLAGS_enable_live_conversion, false);
+    std::unique_ptr<EngineConverterInterface> ec =
+        oss_engine->CreateEngineConverter();
+    composer::Composer composer = type_raw(tc.raw);
+    ASSERT_TRUE(ec->Convert(composer)) << tc.raw;
+    ec->SyncComposerAfterConversion(&composer);
+    commands::Output output;
+    ec->FillOutput(composer, &output);
+    EXPECT_EQ(extract_output(output), tc.expected) << "Convert: " << tc.raw;
+  }
+
+  for (const Case& tc : cases) {
+    absl::SetFlag(&FLAGS_enable_live_conversion, true);
+    std::unique_ptr<EngineConverterInterface> ec =
+        oss_engine->CreateEngineConverter();
+    composer::Composer composer = type_raw(tc.raw);
+    ASSERT_TRUE(ec->Suggest(composer)) << tc.raw;
+    commands::Output output;
+    ec->FillOutput(composer, &output);
+    EXPECT_EQ(extract_output(output), tc.expected) << "Suggest: " << tc.raw;
+  }
+
+  absl::SetFlag(&FLAGS_enable_live_conversion, orig_live);
+  GruPenaltyConfig clean_cfg;
+  clean_cfg.enable_english_fallback = true;
+  config::GruConfigManager::SaveConfig(clean_cfg, config_path);
+  config::GruConfigManager::InvalidateConfigCache();
+}
+
+TEST_F(EngineTest, TrailingWEndToEndOssConversionAndLiveConversion) {
+  const std::string config_path = config::GruConfigManager::ResolveConfigFilePath(
+      "", /*allow_in_test=*/true);
+  const bool orig_live = absl::GetFlag(FLAGS_enable_live_conversion);
+
+  std::unique_ptr<Engine> oss_engine = EngineFactory::Create().value();
+  auto table = std::make_shared<composer::Table>();
+  commands::Request client_request;
+  config::Config default_config;
+  ASSERT_TRUE(
+      table->InitializeWithRequestAndConfig(client_request, default_config));
+
+  auto type_raw = [&](absl::string_view raw) {
+    composer::Composer composer(table, client_request, default_config);
+    for (char c : raw) {
+      commands::KeyEvent key;
+      key.set_key_code(c);
+      composer.InsertCharacterKeyEvent(key);
+    }
+    return composer;
+  };
+
+  auto extract_output = [](const commands::Output& output) {
+    std::string text;
+    if (output.has_preedit()) {
+      for (const auto& seg : output.preedit().segment()) {
+        text.append(seg.value());
+      }
+    }
+    return text;
+  };
+
+  for (const double threshold : {11000.0, 13000.0, 15000.0}) {
+    GruPenaltyConfig cfg;
+    cfg.enable_gru_rewriter = true;
+    cfg.enable_resegmentation = true;
+    cfg.enable_english_fallback = true;
+    cfg.english_fallback_cost_threshold = threshold;
+    cfg.english_fallback_min_word_length = 3;
+    cfg.enable_live_conversion_english_fallback = true;
+    config::GruConfigManager::SaveConfig(cfg, config_path);
+    config::GruConfigManager::InvalidateConfigCache();
+
+    struct Case {
+      const char* raw;
+      const char* expected;
+    };
+
+    const Case conv_cases[] = {
+        {"follow", "follow"},
+        {"followwo", "followを"},
+        {"followsuru", "followする"},
+        {"followshite", "followして"},
+        {"followsareta", "followされた"},
+        {"followsurutowindowwo", "followするとwindowを"},
+        {"watashinofollow", "私のfollow"},
+        {"watashinofollowwo", "私のfollowを"},
+        {"watashinofollowsuru", "私のfollowする"},
+        {"followni", "followに"},
+        {"followga", "followが"},
+        {"followha", "followは"},
+        {"followno", "followの"},
+        {"showsuru", "showする"},
+        {"worksuru", "workする"},
+        {"mergesuru", "mergeする"},
+        {"viewsuru", "viewする"},
+        {"reviewsuru", "reviewする"},
+        {"window", "window"},
+        {"windowwo", "windowを"},
+        {"watashinowindow", "私のwindow"},
+        {"allow", "allow"},
+        {"allowwo", "allowを"},
+        {"arrow", "arrow"},
+        {"arrowwo", "arrowを"},
+        {"show", "show"},
+        {"showwo", "showを"},
+        {"low", "low"},
+        {"below", "below"},
+        {"yellow", "yellow"},
+        {"hollow", "hollow"},
+        {"narrow", "narrow"},
+        {"review", "review"},
+        {"view", "view"},
+        {"new", "new"},
+        {"now", "now"},
+        {"how", "how"},
+        {"few", "few"},
+        {"know", "know"},
+        {"flow", "flow"},
+        {"slow", "slow"},
+        {"follows", "follows"},
+        // Japanese + slang 'w' must not be misconverted to English words.
+        {"w", "w"},
+        {"watashiw", "私w"},
+        {"watashinow", "私のw"},
+        {"kusaw", "草w"},
+        {"majiw", "マジw"},
+        {"hontow", "ほんとw"},
+        {"korewow", "これをw"},
+        {"sorewow", "それをw"},
+        {"korenew", "これねw"},
+        {"sugoinew", "すごいねw"},
+        {"koresaw", "これさw"},
+        {"aresaw", "あれさw"},
+        {"nanikoresaw", "なにこれさw"},
+        {"soudeshow", "そうでしょw"},
+        {"majideshow", "マジでしょw"},
+        {"koremirow", "これ見ろw"},
+        {"nandarow", "何だろw"},
+    };
+
+    for (const Case& tc : conv_cases) {
+      absl::SetFlag(&FLAGS_enable_live_conversion, false);
+      std::unique_ptr<EngineConverterInterface> ec =
+          oss_engine->CreateEngineConverter();
+      composer::Composer composer = type_raw(tc.raw);
+      ASSERT_TRUE(ec->Convert(composer)) << tc.raw;
+      ec->SyncComposerAfterConversion(&composer);
+      commands::Output output;
+      ec->FillOutput(composer, &output);
+      EXPECT_EQ(extract_output(output), tc.expected)
+          << "Convert(thresh=" << threshold << "): " << tc.raw;
+    }
+
+    const Case live_cases[] = {
+        {"followwo", "followを"},
+        {"watashinofollowwo", "私のfollowを"},
+        {"followsuru", "followする"},
+        {"watashinofollowsuru", "私のfollowする"},
+        {"windowwo", "windowを"},
+        {"allowwo", "allowを"},
+        {"arrowwo", "arrowを"},
+        {"showwo", "showを"},
+        {"follows", "follows"},
+    };
+
+    for (const Case& tc : live_cases) {
+      absl::SetFlag(&FLAGS_enable_live_conversion, true);
+      std::unique_ptr<EngineConverterInterface> ec =
+          oss_engine->CreateEngineConverter();
+      composer::Composer composer = type_raw(tc.raw);
+      ASSERT_TRUE(ec->Suggest(composer)) << tc.raw;
+      commands::Output output;
+      ec->FillOutput(composer, &output);
+      EXPECT_EQ(extract_output(output), tc.expected)
+          << "Suggest(thresh=" << threshold << "): " << tc.raw;
+    }
+  }
+
+  absl::SetFlag(&FLAGS_enable_live_conversion, orig_live);
+  GruPenaltyConfig clean_cfg;
+  clean_cfg.enable_english_fallback = true;
+  config::GruConfigManager::SaveConfig(clean_cfg, config_path);
+  config::GruConfigManager::InvalidateConfigCache();
 }
 }  // namespace engine
 }  // namespace mozc

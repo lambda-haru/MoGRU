@@ -56,6 +56,7 @@
 #include "base/vlog.h"
 #include "converter/attribute.h"
 #include "converter/candidate.h"
+#include "converter/converter_util.h"
 #include "converter/immutable_converter_interface.h"
 #include "gru_scorer/charindex.hh"
 #include "gru_scorer/gru_model.hh"
@@ -2024,6 +2025,7 @@ std::optional<GruRewriter::ResegmentResult> GruRewriter::EvaluateResegmentation(
 
   // Build simulation Segments
   Segments tmp_segments;
+  size_t target_conv_char_offset = 0;
   for (size_t i = 0; i < start_seg_idx; ++i) {
     Segment* copy_seg = tmp_segments.add_segment();
     *copy_seg = segments.segment(i);
@@ -2032,10 +2034,20 @@ std::optional<GruRewriter::ResegmentResult> GruRewriter::EvaluateResegmentation(
         focused_cand_idx < copy_seg->candidates_size()) {
       copy_seg->move_candidate(focused_cand_idx, 0);
     }
+    if (i >= segments.history_segments_size()) {
+      target_conv_char_offset += Util::CharsLen(segments.segment(i).key());
+    }
   }
   Segment* target_seg = tmp_segments.add_segment();
   target_seg->set_key(target_key);
   target_seg->set_segment_type(Segment::FREE);
+  tmp_segments.set_atomic_romaji_spans(converter::SliceAtomicRomajiSpans(
+      segments.atomic_romaji_spans(), 0,
+      target_conv_char_offset + total_char_len));
+  const std::vector<std::pair<size_t, size_t>> target_atomic_spans =
+      converter::SliceAtomicRomajiSpans(segments.atomic_romaji_spans(),
+                                        target_conv_char_offset,
+                                        total_char_len);
 
   ConversionOptions options;
   options.request_type = RequestType::PREDICTION;
@@ -2101,6 +2113,23 @@ std::optional<GruRewriter::ResegmentResult> GruRewriter::EvaluateResegmentation(
       cand_sizes_sum += len;
     }
     if (cand_sizes.empty() || cand_sizes_sum != total_char_len) {
+      continue;
+    }
+    bool splits_atomic_span = false;
+    size_t boundary = 0;
+    for (size_t bi = 0; bi + 1 < cand_sizes.size(); ++bi) {
+      boundary += cand_sizes[bi];
+      for (const auto& [span_start, span_len] : target_atomic_spans) {
+        if (boundary > span_start && boundary < span_start + span_len) {
+          splits_atomic_span = true;
+          break;
+        }
+      }
+      if (splits_atomic_span) {
+        break;
+      }
+    }
+    if (splits_atomic_span) {
       continue;
     }
 

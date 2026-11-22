@@ -3411,6 +3411,24 @@ TEST_F(ComposerTest, SeparateChunksAtRawBoundaries) {
                   std::string("あぷり").size()),
               "あぷり");
   }
+
+  // ChunkSpan::atomic_subspans identifies only multi-char Romaji entries and
+  // drops them once SeparateChunksAtRawBoundaries splits the entry.
+  {
+    Composer composer = create_default_composer("bugwo");
+    const std::vector<ChunkSpan> spans = composer.GetChunkSpans();
+    ASSERT_EQ(spans.size(), 2);
+    EXPECT_TRUE(spans[0].atomic_subspans.empty());
+    ASSERT_EQ(spans[1].atomic_subspans.size(), 1);
+    EXPECT_EQ(spans[1].atomic_subspans[0].first, 0);
+    EXPECT_EQ(spans[1].atomic_subspans[0].second, 2);
+
+    EXPECT_TRUE(composer.SeparateChunksAtRawBoundaries({3}));
+    EXPECT_EQ(composer.GetStringForPreedit(), "ぶｇを");
+    for (const ChunkSpan& span : composer.GetChunkSpans()) {
+      EXPECT_TRUE(span.atomic_subspans.empty());
+    }
+  }
 }
 
 }  // namespace composer

@@ -847,4 +847,58 @@ TEST(ImmutableConverterTest, FixedValueSegmentIsNotSplitInternally) {
             Segment::FIXED_VALUE);
 }
 
+TEST(ImmutableConverterTest, AtomicRomajiSpanIsNotSplitByLatticeOrViterbi) {
+  auto data_and_converter = std::make_unique<MockDataAndImmutableConverter>();
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+
+  // "よろしくおねがい" with atomic span over "くお" [3, 5) must never place
+  // any segment boundary between "く" and "お".
+  Segments segments;
+  segments.InitForConvert("よろしくおねがい");
+  segments.set_atomic_romaji_spans({{3, 2}});
+  ASSERT_TRUE(
+      data_and_converter->GetConverter()->Convert(request.options(), &segments));
+  size_t char_pos = 0;
+  for (size_t i = 0; i + 1 < segments.conversion_segments_size(); ++i) {
+    char_pos += Util::CharsLen(segments.conversion_segment(i).key());
+    EXPECT_NE(char_pos, 4) << "Split inside atomic span [3, 5): "
+                           << segments.DebugString();
+  }
+
+  // Whole-chunk unknown fallback node keeps lattice valid for out-of-dict
+  // atomic 2-char sequences and assigns high unknown word cost.
+  Segments oov_segments;
+  oov_segments.InitForConvert("わたしのすぉ");
+  oov_segments.set_atomic_romaji_spans({{4, 2}});
+  ASSERT_TRUE(data_and_converter->GetConverter()->Convert(request.options(),
+                                                          &oov_segments));
+  bool found_unsplit_swo = false;
+  for (const Segment& seg : oov_segments.conversion_segments()) {
+    if (seg.key().find("すぉ") != absl::string_view::npos) {
+      found_unsplit_swo = true;
+      ASSERT_GT(seg.candidates_size(), 0);
+      EXPECT_GE(seg.candidate(0).wcost, 32767);
+    }
+  }
+  EXPECT_TRUE(found_unsplit_swo) << oov_segments.DebugString();
+
+  // Explicit caller FIXED_BOUNDARY inside an atomic span remains valid.
+  Segments fixed_segments;
+  Segment* s0 = fixed_segments.add_segment();
+  s0->set_key("ぐ");
+  s0->set_segment_type(Segment::FIXED_BOUNDARY);
+  Segment* s1 = fixed_segments.add_segment();
+  s1->set_key("ぉ");
+  s1->set_segment_type(Segment::FREE);
+  fixed_segments.set_atomic_romaji_spans({{0, 2}});
+  EXPECT_TRUE(data_and_converter->GetConverter()->Convert(request.options(),
+                                                          &fixed_segments));
+  ASSERT_EQ(fixed_segments.conversion_segments_size(), 2);
+  EXPECT_EQ(fixed_segments.conversion_segment(0).key(), "ぐ");
+  EXPECT_EQ(fixed_segments.conversion_segment(1).key(), "ぉ");
+}
+
 }  // namespace mozc

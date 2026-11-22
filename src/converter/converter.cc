@@ -200,6 +200,8 @@ bool Converter::StartConversion(const ConversionRequest& request,
   }
 
   segments->InitForConvert(key);
+  segments->set_atomic_romaji_spans(
+      converter::ExtractAtomicRomajiSpans(request, key));
   segments->set_preceding_text(request.GetSurroundingContext().first);
   const int additional_resize_budget =
       segments->resized() ? 0 : kMaxAdditionalRewriterResizes;

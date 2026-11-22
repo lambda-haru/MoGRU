@@ -270,6 +270,7 @@ std::string Segment::DebugString() const {
 Segments::Segments(const Segments& x)
     : pool_(32),
       preceding_text_(x.preceding_text_),
+      atomic_romaji_spans_(x.atomic_romaji_spans_),
       revert_id_(x.revert_id_),
       max_history_segments_size_(x.max_history_segments_size_),
       resized_(x.resized_) {
@@ -283,6 +284,7 @@ Segments& Segments::operator=(const Segments& x) {
   Clear();
 
   preceding_text_ = x.preceding_text_;
+  atomic_romaji_spans_ = x.atomic_romaji_spans_;
   max_history_segments_size_ = x.max_history_segments_size_;
   resized_ = x.resized_;
   // Deep-copy segments.
@@ -432,6 +434,7 @@ void Segments::InitForCommit(absl::string_view key, absl::string_view value) {
 void Segments::Clear() {
   clear_segments();
   preceding_text_.clear();
+  atomic_romaji_spans_.clear();
   revert_id_ = 0;
 }
 
@@ -521,6 +524,7 @@ bool Segments::Resize(size_t start_index, absl::Span<const uint8_t> new_sizes) {
 void Segments::clear_segments() {
   pool_.Clear();
   resized_ = false;
+  atomic_romaji_spans_.clear();
   segments_.clear();
 }
 
@@ -537,6 +541,7 @@ void Segments::clear_history_segments() {
 
 void Segments::clear_conversion_segments() {
   resized_ = false;
+  atomic_romaji_spans_.clear();
   erase_segments(history_segments_end(), end());
 }
 

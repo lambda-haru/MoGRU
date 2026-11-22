@@ -63,6 +63,9 @@ struct ChunkSpan {
   size_t raw_len = 0;
   std::string raw;
   bool is_romaji = false;
+  // Character spans [offset_in_chunk, len) emitted by a single multi-character
+  // Romaji table entry (e.g., "gwo" -> "ぐぉ").
+  std::vector<std::pair<size_t, size_t>> atomic_subspans;
 };
 
 // ComposerData is a data structure that represents the current state of the

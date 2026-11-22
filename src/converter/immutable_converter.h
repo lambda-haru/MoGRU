@@ -70,6 +70,20 @@ class ImmutableConverter : public ImmutableConverterInterface {
  private:
   friend class ImmutableConverterTestPeer;
 
+  struct AtomicSpanConstraint {
+    std::vector<uint8_t> forbidden_boundaries;
+    std::vector<uint16_t> whole_span_ends;
+
+    bool IsForbiddenBoundary(size_t pos) const {
+      return pos < forbidden_boundaries.size() &&
+             forbidden_boundaries[pos] != 0;
+    }
+
+    size_t WholeSpanEnd(size_t pos) const {
+      return pos < whole_span_ends.size() ? whole_span_ends[pos] : 0;
+    }
+  };
+
   enum InsertCandidatesType {
     MULTI_SEGMENTS,      // Normal conversion ("私の|名前は|中野です")
     SINGLE_SEGMENT,      // Realtime conversion ("私の名前は中野です")
@@ -88,23 +102,31 @@ class ImmutableConverter : public ImmutableConverterInterface {
                                   BaseNodeListBuilder* builder) const;
 
   void Resegment(const Segments& segments, absl::string_view history_key,
-                 absl::string_view conversion_key, Lattice* lattice) const;
+                 absl::string_view conversion_key,
+                 const AtomicSpanConstraint& constraint,
+                 Lattice* lattice) const;
 
-  void ApplyResegmentRules(size_t pos, Lattice* lattice) const;
+  void ApplyResegmentRules(size_t pos, const AtomicSpanConstraint& constraint,
+                           Lattice* lattice) const;
   // Returns true resegmentation happened
-  bool ResegmentArabicNumberAndSuffix(size_t pos, Lattice* lattice) const;
-  bool ResegmentPrefixAndArabicNumber(size_t pos, Lattice* lattice) const;
-  bool ResegmentPersonalName(size_t pos, Lattice* lattice) const;
+  bool ResegmentArabicNumberAndSuffix(
+      size_t pos, const AtomicSpanConstraint& constraint,
+      Lattice* lattice) const;
+  bool ResegmentPrefixAndArabicNumber(
+      size_t pos, const AtomicSpanConstraint& constraint,
+      Lattice* lattice) const;
+  bool ResegmentPersonalName(size_t pos, const AtomicSpanConstraint& constraint,
+                             Lattice* lattice) const;
 
   bool MakeLattice(const ConversionOptions& options, Segments* segments,
                    Lattice* lattice) const;
   bool MakeLatticeNodesForHistorySegments(const Segments& segments,
                                           const ConversionOptions& options,
                                           Lattice* lattice) const;
-  void MakeLatticeNodesForConversionSegments(const Segments& segments,
-                                             const ConversionOptions& options,
-                                             absl::string_view history_key,
-                                             Lattice* lattice) const;
+  void MakeLatticeNodesForConversionSegments(
+      const Segments& segments, const ConversionOptions& options,
+      absl::string_view history_key, const AtomicSpanConstraint& constraint,
+      Lattice* lattice) const;
   // Fixes for "好む" vs "この|無", "大|代" vs "代々" preferences.
   // If the last node ends with "prefix", give an extra
   // wcost penalty. In this case  "無" doesn't tend to appear at

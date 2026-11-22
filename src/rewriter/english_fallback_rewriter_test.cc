@@ -1699,5 +1699,223 @@ TEST_F(EnglishFallbackRewriterTest,
                   .empty());
 }
 
+TEST_F(EnglishFallbackRewriterTest,
+       FindCrossBoundarySplitOffsetsHandlesPreRewrittenEnglishTrailingChunk) {
+  const std::string config_path =
+      config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+  GruPenaltyConfig cfg;
+  cfg.enable_english_fallback = true;
+  cfg.user_english_words = {"git"};
+  config::GruConfigManager::SaveConfig(cfg, config_path);
+
+  EnglishFallbackRewriter rewriter(*pos_matcher_);
+  composer::Composer composer = CreateComposer("gitwo");
+  ASSERT_EQ(composer.GetQueryForConversion(), "ぎとぉ");
+
+  // Simulate Pass 1 conversion where "ぎ" is healthy ("技") and "とぉ" is
+  // unknown high-cost.
+  Segments segments;
+  Segment* seg0 = segments.add_segment();
+  seg0->set_key("ぎ");
+  auto* c0 = seg0->add_candidate();
+  c0->key = "ぎ";
+  c0->value = "技";
+  c0->cost = 6993;
+  c0->wcost = 4575;
+
+  Segment* seg1 = segments.add_segment();
+  seg1->set_key("とぉ");
+  auto* c1 = seg1->add_candidate();
+  c1->key = "とぉ";
+  c1->value = "とぉ";
+  c1->cost = 34000;
+  c1->wcost = 33067;
+
+  const ConversionRequest request =
+      ConversionRequestBuilder()
+          .SetComposer(composer)
+          .SetRequestType(ConversionRequest::CONVERSION)
+          .Build();
+
+  // Pass 1 Rewrite promotes "two" (low synthetic wcost) over "とぉ" (33067).
+  ASSERT_TRUE(rewriter.Rewrite(request, &segments));
+  EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "two");
+
+  // Cross-boundary detection must still recognize seg1 as fallback-eligible so
+  // "git|wo" is split, yielding "git" + "を".
+  const std::vector<size_t> offsets =
+      EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
+          request.composer(), segments, request);
+  ASSERT_EQ(offsets.size(), 1);
+  EXPECT_EQ(offsets[0], 3);
+
+  GruPenaltyConfig clean_cfg;
+  clean_cfg.enable_english_fallback = true;
+  config::GruConfigManager::SaveConfig(clean_cfg, config_path);
+}
+
+TEST_F(EnglishFallbackRewriterTest, UnresolvedRomajiWTakesFallbackAtLowWCost) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("follow");
+  dict.AddWord("follows");
+  dict.AddWord("window");
+  dict.AddWord("show");
+  dict.AddWord("saw");
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  auto add_seg = [](Segments* segs, absl::string_view key, absl::string_view val,
+                    int32_t cost, int32_t wcost) {
+    Segment* seg = segs->add_segment();
+    seg->set_key(key);
+    auto* c = seg->add_candidate();
+    c->key = std::string(key);
+    c->value = std::string(val);
+    c->cost = cost;
+    c->wcost = wcost;
+  };
+
+  // 1. "follow" -> [ふぉ][っぉ][w] with OSS low wcost=1 on 'w' triggers resize
+  // and rewrites to "follow" even when all wcosts are below threshold.
+  {
+    composer::Composer composer = CreateComposer("follow");
+    Segments segments;
+    add_seg(&segments, "ふぉ", "フォ", 12663, 6838);
+    add_seg(&segments, "っぉ", "っぉ", 12240, 4552);
+    add_seg(&segments, "w", "w", 2930, 1);
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    const auto resize_req =
+        rewriter.CheckResizeSegmentsRequest(request, segments);
+    ASSERT_TRUE(resize_req.has_value());
+    EXPECT_EQ(resize_req->segment_index, 0);
+    EXPECT_EQ(resize_req->segment_sizes[0], 5);
+
+    EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+    ASSERT_EQ(segments.conversion_segments_size(), 1);
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "follow");
+  }
+
+  // 2. "window" has total wcost < kMinSymbolSpanTotalWCost (5823 < 10000), yet
+  // unresolved Romaji 'w' still bypasses the custom-symbol total-wcost floor.
+  {
+    composer::Composer composer = CreateComposer("window");
+    Segments segments;
+    add_seg(&segments, "うぃんど", "ウィンド", 11421, 5822);
+    add_seg(&segments, "w", "w", 4534, 1);
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_TRUE(rewriter.CheckResizeSegmentsRequest(request, segments).has_value());
+    EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+    ASSERT_EQ(segments.conversion_segments_size(), 1);
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "window");
+  }
+
+  // 3. "followsuru": longer dictionary word "follows" slices mid-Romaji "su",
+  // so matcher falls back to "follow" on the clean chunk boundary.
+  {
+    composer::Composer composer = CreateComposer("followsuru");
+    Segments segments;
+    add_seg(&segments, "ふぉ", "フォ", 12663, 6838);
+    add_seg(&segments, "っぉ", "っぉ", 12240, 4552);
+    add_seg(&segments, "w", "w", 8352, 1);
+    add_seg(&segments, "する", "する", 5422, 0);
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    const auto resize_req =
+        rewriter.CheckResizeSegmentsRequest(request, segments);
+    ASSERT_TRUE(resize_req.has_value());
+    EXPECT_EQ(resize_req->segment_index, 0);
+    EXPECT_EQ(resize_req->segment_sizes[0], 5);
+
+    EXPECT_TRUE(rewriter.Rewrite(request, &segments));
+    ASSERT_EQ(segments.conversion_segments_size(), 2);
+    EXPECT_EQ(segments.conversion_segment(0).candidate(0).value, "follow");
+    EXPECT_EQ(segments.conversion_segment(1).key(), "する");
+  }
+
+  // 4. Real OSS particle + slang 'w' ("これ|さ|w",さ wcost=0, cost=7342) must
+  // NOT be rewritten to "これ|saw".
+  {
+    composer::Composer composer = CreateComposer("koresaw");
+    Segments segments;
+    add_seg(&segments, "これ", "これ", 8223, 451);
+    add_seg(&segments, "さ", "さ", 7342, 0);
+    add_seg(&segments, "w", "w", 2588, 1);
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_FALSE(
+        rewriter.CheckResizeSegmentsRequest(request, segments).has_value());
+    EXPECT_FALSE(rewriter.Rewrite(request, &segments));
+    EXPECT_EQ(segments.conversion_segment(1).candidate(0).value, "さ");
+  }
+
+  // 5. Cross-boundary "wwo" ("っを") triggers split even below cost threshold,
+  // allowing Pass 2 on separated chunks to yield "follow" + "を".
+  {
+    const std::string config_path =
+        config::GruConfigManager::ResolveConfigFilePath("", /*allow_in_test=*/true);
+    GruPenaltyConfig cfg;
+    cfg.enable_english_fallback = true;
+    cfg.english_fallback_cost_threshold = 15000.0;
+    cfg.user_english_words = {"follow"};
+    config::GruConfigManager::SaveConfig(cfg, config_path);
+
+    EnglishFallbackRewriter oss_rewriter(*pos_matcher_);
+    composer::Composer composer = CreateComposer("followwo");
+    Segments segments;
+    add_seg(&segments, "ふぉ", "フォ", 12663, 6838);
+    add_seg(&segments, "っぉっを", "っぉっを", 16389, 11630);
+
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    const std::vector<size_t> offsets =
+        EnglishFallbackRewriter::FindCrossBoundarySplitOffsets(
+            request.composer(), segments, request);
+    ASSERT_EQ(offsets.size(), 1);
+    EXPECT_EQ(offsets[0], 6);
+
+    ASSERT_TRUE(composer.SeparateChunksAtRawBoundaries(offsets));
+    ASSERT_EQ(composer.GetQueryForConversion(), "ふぉっぉwを");
+    Segments sep_segments;
+    add_seg(&sep_segments, "ふぉ", "フォ", 12663, 6838);
+    add_seg(&sep_segments, "っぉ", "っぉ", 12240, 4552);
+    add_seg(&sep_segments, "w", "w", 2930, 1);
+    add_seg(&sep_segments, "を", "を", 3500, 0);
+
+    const ConversionRequest sep_request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_TRUE(oss_rewriter.Rewrite(sep_request, &sep_segments));
+    ASSERT_EQ(sep_segments.conversion_segments_size(), 2);
+    EXPECT_EQ(sep_segments.conversion_segment(0).candidate(0).value, "follow");
+    EXPECT_EQ(sep_segments.conversion_segment(1).key(), "を");
+
+    GruPenaltyConfig clean;
+    clean.enable_english_fallback = true;
+    config::GruConfigManager::SaveConfig(clean, config_path);
+  }
+}
+
 }  // namespace
 }  // namespace mozc

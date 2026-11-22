@@ -467,6 +467,15 @@ std::vector<ChunkSpan> BuildChunkSpans(const Composition& composition) {
         (t12r == Transliterators::HIRAGANA ||
          t12r == Transliterators::FULL_KATAKANA ||
          t12r == Transliterators::HALF_KATAKANA);
+    std::vector<std::pair<size_t, size_t>> atomic_subspans;
+    if (is_romaji && (t12r == Transliterators::HIRAGANA ||
+                      t12r == Transliterators::FULL_KATAKANA)) {
+      for (const auto& [sub_start, sub_len] : chunk.atomic_spans()) {
+        if (sub_len >= 2 && sub_start + sub_len <= preedit_len) {
+          atomic_subspans.emplace_back(sub_start, sub_len);
+        }
+      }
+    }
     spans.push_back(ChunkSpan{
         .preedit_start = preedit_offset,
         .preedit_len = preedit_len,
@@ -474,6 +483,7 @@ std::vector<ChunkSpan> BuildChunkSpans(const Composition& composition) {
         .raw_len = raw_len,
         .raw = std::string(chunk.raw()),
         .is_romaji = is_romaji,
+        .atomic_subspans = std::move(atomic_subspans),
     });
     preedit_offset += preedit_len;
     raw_offset += raw_len;

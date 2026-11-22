@@ -456,6 +456,17 @@ class Segments final {
   }
   void clear_preceding_text() { preceding_text_.clear(); }
 
+  // Character spans [start, len) within the concatenated conversion segments
+  // that were produced by a single multi-character Romaji table entry and
+  // must not be split internally by automatic segmentation.
+  const std::vector<std::pair<size_t, size_t>>& atomic_romaji_spans() const {
+    return atomic_romaji_spans_;
+  }
+  void set_atomic_romaji_spans(std::vector<std::pair<size_t, size_t>> spans) {
+    atomic_romaji_spans_ = std::move(spans);
+  }
+  void clear_atomic_romaji_spans() { atomic_romaji_spans_.clear(); }
+
  private:
   friend class SegmentsPoolAccessorTestPeer;
 
@@ -466,6 +477,7 @@ class Segments final {
   ObjectPool<Segment> pool_;
   std::deque<Segment*> segments_;
   std::string preceding_text_;
+  std::vector<std::pair<size_t, size_t>> atomic_romaji_spans_;
   uint64_t revert_id_ = 0;
   uint32_t max_history_segments_size_ = 0;
   bool resized_ = false;

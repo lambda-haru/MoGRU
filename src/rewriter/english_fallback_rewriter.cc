@@ -51,6 +51,7 @@
 #include "config/gru_config.h"
 #include "converter/attribute.h"
 #include "converter/candidate.h"
+#include "converter/converter_util.h"
 #include "converter/immutable_converter_interface.h"
 #include "converter/segments.h"
 #include "dictionary/english_dictionary.h"
@@ -232,21 +233,40 @@ bool IsExcludedFallbackPunctuation(char32_t codepoint) {
          codepoint == 0xFF61;    // '｡'  (HALFWIDTH IDEOGRAPHIC FULL STOP)
 }
 
-// Returns true if `seg` covers a symbol/punctuation character (e.g. ";" when
-// custom Romaji maps "b" -> ";") produced from ASCII alphabet raw input in
-// `spans`, excluding Japanese sentence punctuation ('。', '．', '.', '｡',
-// '、', '，', ',', '､').
-// Such segments get low dictionary cost in Mozc, so cost alone cannot detect
-// that the input may actually be a typed English word.
-bool IsSymbolFromAlphaInputSegment(
+// Classification of how a segment overlaps ASCII-alphabet-driven Romaji input.
+struct AlphaInputSegmentKind {
+  bool has_symbol_from_alpha = false;
+  bool has_unresolved_romaji_alpha = false;
+};
+
+// Returns true if `span` is a Romaji chunk formed by an accidental "ww" +
+// vowel boundary (e.g. "wwo" -> "っを" in "followwo"). Native Japanese never
+// geminates 'w' before particles like "を", and Mozc assigns low Viterbi cost
+// to "っ" + "を", so cost alone misses cross-boundary English words ending in 'w'.
+bool IsDoubleWBoundaryChunk(const composer::ChunkSpan& span) {
+  if (!span.is_romaji || span.raw_len != 3) {
+    return false;
+  }
+  const std::string lower_raw = absl::AsciiStrToLower(span.raw);
+  return lower_raw == "wwo" || lower_raw == "wwa" || lower_raw == "wwi" ||
+         lower_raw == "wwu" || lower_raw == "wwe";
+}
+
+// Classifies whether `seg` covers:
+// 1. A symbol/punctuation character (e.g. ";" from custom Romaji "b" -> ";")
+//    excluding Japanese sentence punctuation, or
+// 2. An unresolved Romaji Latin character (notably 'w', which OSS dictionaries
+//    register with wcost=1 as slang) or a "ww"+vowel boundary chunk ("っを").
+AlphaInputSegmentKind ClassifyAlphaInputSegment(
     const Segment& seg, size_t seg_preedit_start, size_t seg_preedit_end,
     const std::vector<composer::ChunkSpan>& spans) {
+  AlphaInputSegmentKind kind;
   if (seg_preedit_end <= seg_preedit_start) {
-    return false;
+    return kind;
   }
   const std::u32string key_u32 = Util::Utf8ToUtf32(seg.key());
   if (key_u32.size() != seg_preedit_end - seg_preedit_start) {
-    return false;
+    return kind;
   }
   for (const auto& span : spans) {
     const size_t span_end = span.preedit_start + span.preedit_len;
@@ -270,24 +290,50 @@ bool IsSymbolFromAlphaInputSegment(
         std::max(seg_preedit_start, span.preedit_start) - seg_preedit_start;
     const size_t overlap_end =
         std::min(seg_preedit_end, span_end) - seg_preedit_start;
+    if (overlap_start < overlap_end && IsDoubleWBoundaryChunk(span)) {
+      kind.has_unresolved_romaji_alpha = true;
+    }
     for (size_t k = overlap_start; k < overlap_end; ++k) {
       const char32_t codepoint = key_u32[k];
-      if (!IsExcludedFallbackPunctuation(codepoint) &&
-          Util::GetScriptType(codepoint) == Util::UNKNOWN_SCRIPT) {
+      if (span.is_romaji &&
+          Util::GetScriptType(codepoint) == Util::ALPHABET) {
+        kind.has_unresolved_romaji_alpha = true;
+      } else if (!IsExcludedFallbackPunctuation(codepoint) &&
+                 Util::GetScriptType(codepoint) == Util::UNKNOWN_SCRIPT) {
+        kind.has_symbol_from_alpha = true;
+      }
+    }
+  }
+  return kind;
+}
+
+constexpr int32_t kProtectedHealthyWCostThreshold = 4000;
+constexpr int32_t kProtectedParticleStrictWCostThreshold = 500;
+constexpr int32_t kLowPathCostParticleThreshold = 5000;
+constexpr int32_t kMaxParticleWithSuffixPathCost = 8500;
+constexpr int32_t kMinSymbolSpanTotalWCost = 10000;
+
+bool IsHighWCostSegment(const Segment& seg, double cost_threshold) {
+  if (seg.candidates_size() == 0) {
+    return false;
+  }
+  if (seg.candidate(0).wcost >= cost_threshold) {
+    return true;
+  }
+  // If EnglishFallbackRewriter already replaced a single high-wcost segment's
+  // top candidate with an English fallback (e.g. "とぉ" -> "two" in "gitwo"),
+  // preserve its high-wcost eligibility for cross-boundary matching so an
+  // overlapping earlier word (e.g. "git" + "wo") can still trigger separation.
+  constexpr uint32_t kFallbackMask =
+      converter::Attribute::ENGLISH | converter::Attribute::DISABLE_RESCORING;
+  if ((seg.candidate(0).attributes & kFallbackMask) == kFallbackMask) {
+    for (size_t i = 1; i < seg.candidates_size(); ++i) {
+      if (seg.candidate(i).wcost >= cost_threshold) {
         return true;
       }
     }
   }
   return false;
-}
-
-constexpr int32_t kProtectedHealthyWCostThreshold = 4000;
-constexpr int32_t kLowPathCostParticleThreshold = 5000;
-constexpr int32_t kMinSymbolSpanTotalWCost = 10000;
-
-bool IsHighWCostSegment(const Segment& seg, double cost_threshold) {
-  return seg.candidates_size() > 0 &&
-         seg.candidate(0).wcost >= cost_threshold;
 }
 
 bool IsSegmentFallbackEligible(const Segment& seg, size_t seg_preedit_start,
@@ -297,8 +343,9 @@ bool IsSegmentFallbackEligible(const Segment& seg, size_t seg_preedit_start,
   if (IsHighWCostSegment(seg, cost_threshold)) {
     return true;
   }
-  return IsSymbolFromAlphaInputSegment(seg, seg_preedit_start, seg_preedit_end,
-                                       spans);
+  const AlphaInputSegmentKind kind = ClassifyAlphaInputSegment(
+      seg, seg_preedit_start, seg_preedit_end, spans);
+  return kind.has_unresolved_romaji_alpha || kind.has_symbol_from_alpha;
 }
 
 bool BoundarySplitsSingleRomajiChunk(
@@ -324,10 +371,16 @@ struct SegmentEligibilityMetrics {
   int32_t wcost = 0;
   bool is_free = false;
   bool is_high_wcost = false;
+  bool is_unresolved_romaji_alpha = false;
   bool is_symbol_eligible = false;
 
   size_t preedit_end() const { return preedit_start + preedit_len; }
-  bool is_eligible() const { return is_high_wcost || is_symbol_eligible; }
+  bool is_eligible() const {
+    return is_high_wcost || is_unresolved_romaji_alpha || is_symbol_eligible;
+  }
+  bool has_strong_anomaly() const {
+    return is_high_wcost || is_unresolved_romaji_alpha;
+  }
 };
 
 SegmentEligibilityMetrics BuildSegmentMetrics(
@@ -343,8 +396,10 @@ SegmentEligibilityMetrics BuildSegmentMetrics(
   }
   m.is_free = (seg.segment_type() == Segment::FREE);
   m.is_high_wcost = IsHighWCostSegment(seg, cost_threshold);
-  m.is_symbol_eligible = IsSymbolFromAlphaInputSegment(
+  const AlphaInputSegmentKind kind = ClassifyAlphaInputSegment(
       seg, seg_preedit_start, seg_preedit_start + len, spans);
+  m.is_unresolved_romaji_alpha = kind.has_unresolved_romaji_alpha;
+  m.is_symbol_eligible = kind.has_symbol_from_alpha;
   return m;
 }
 
@@ -356,14 +411,14 @@ bool CanCoverSegmentSpan(const std::vector<SegmentEligibilityMetrics>& covered,
     return false;
   }
   bool any_eligible = false;
-  bool any_high_wcost = false;
+  bool any_strong_anomaly = false;
   int64_t total_wcost = 0;
   for (const auto& s : covered) {
     if (s.is_eligible()) {
       any_eligible = true;
     }
-    if (s.is_high_wcost) {
-      any_high_wcost = true;
+    if (s.has_strong_anomaly()) {
+      any_strong_anomaly = true;
     }
     total_wcost += s.wcost;
   }
@@ -392,19 +447,23 @@ bool CanCoverSegmentSpan(const std::vector<SegmentEligibilityMetrics>& covered,
   // Multi-segment fallbacks triggered purely by low-cost custom Romaji symbol
   // mappings must still accumulate substantial total wcost (blocking ";あん",
   // "か;", "まけ;" while keeping "ぎてゅ;").
-  if (!any_high_wcost && total_wcost < kMinSymbolSpanTotalWCost) {
+  if (!any_strong_anomaly && total_wcost < kMinSymbolSpanTotalWCost) {
     return false;
   }
 
   // Prevent a 2-segment merge from rewriting a smoothly connected low-wcost
   // single-kana Japanese particle/word following an earlier segment (e.g.,
-  // "これ|と|ｐ", "私|の|ｗ") just because 1 trailing character is eligible,
-  // while still allowing standalone "と|p" ("top") and multi-char prefixes like
-  // "あん|d" ("and") or "あっ|pぇ" ("apple").
+  // "これ|と|ｐ", "私|の|ｗ", "これ|さ|ｗ") just because 1 trailing character is
+  // eligible, while still allowing standalone "と|p" ("top") and multi-char
+  // prefixes like "あん|d" ("and") or "あっ|pぇ" ("apple").
+  const bool covered0_looks_like_particle =
+      (covered[0].wcost < kProtectedHealthyWCostThreshold &&
+       covered[0].cost < kLowPathCostParticleThreshold) ||
+      (covered[0].wcost < kProtectedParticleStrictWCostThreshold &&
+       covered[0].cost < kMaxParticleWithSuffixPathCost);
   if (has_preceding_segment && covered.size() == 2 &&
       !covered[0].is_eligible() && covered[0].preedit_len == 1 &&
-      covered[0].wcost < kProtectedHealthyWCostThreshold &&
-      covered[0].cost < kLowPathCostParticleThreshold && last_seg.is_eligible()) {
+      covered0_looks_like_particle && last_seg.is_eligible()) {
     const size_t used_last_chars =
         last_seg.preedit_len > extra_chars
             ? (last_seg.preedit_len - extra_chars)
@@ -524,6 +583,7 @@ converter::Candidate MakePlainJapaneseCandidate(const std::string& key,
 
 bool TryPopulateCandidatesViaConverter(
     const ConversionRequest& request, const std::string& key,
+    size_t key_preedit_offset,
     const ImmutableConverterInterface* immutable_converter, Segment* seg) {
   if (immutable_converter == nullptr) {
     return false;
@@ -532,6 +592,8 @@ bool TryPopulateCandidatesViaConverter(
   Segment* temp_seg = temp_segments.add_segment();
   temp_seg->set_key(key);
   temp_seg->set_segment_type(Segment::FIXED_BOUNDARY);
+  temp_segments.set_atomic_romaji_spans(converter::ExtractAtomicRomajiSpans(
+      request.composer(), key_preedit_offset, key));
   if (!immutable_converter->Convert(request.options(), &temp_segments) ||
       temp_segments.conversion_segments_size() == 0 ||
       temp_segments.conversion_segment(0).candidates_size() == 0) {
@@ -546,15 +608,15 @@ bool TryPopulateCandidatesViaConverter(
 
 void PopulateExtraSegmentCandidates(
     const ConversionRequest& request, const std::string& extra_key,
-    uint16_t extra_lid, uint16_t extra_rid,
+    size_t extra_preedit_offset, uint16_t extra_lid, uint16_t extra_rid,
     const ImmutableConverterInterface* immutable_converter,
     Segment* extra_seg) {
   extra_seg->set_key(extra_key);
   extra_seg->clear_candidates();
   extra_seg->clear_meta_candidates();
 
-  if (TryPopulateCandidatesViaConverter(request, extra_key, immutable_converter,
-                                        extra_seg)) {
+  if (TryPopulateCandidatesViaConverter(request, extra_key, extra_preedit_offset,
+                                        immutable_converter, extra_seg)) {
     return;
   }
 
@@ -564,11 +626,11 @@ void PopulateExtraSegmentCandidates(
 
 void AppendJapaneseFallbackCandidates(
     const ConversionRequest& request, const std::string& merged_key,
-    const std::string& fallback_value, uint16_t fallback_lid,
-    uint16_t fallback_rid,
+    size_t merged_preedit_offset, const std::string& fallback_value,
+    uint16_t fallback_lid, uint16_t fallback_rid,
     const ImmutableConverterInterface* immutable_converter, Segment* seg) {
   const bool converted = TryPopulateCandidatesViaConverter(
-      request, merged_key, immutable_converter, seg);
+      request, merged_key, merged_preedit_offset, immutable_converter, seg);
   if (!fallback_value.empty()) {
     AppendUniqueCandidate(
         seg, MakePlainJapaneseCandidate(merged_key, fallback_value, fallback_lid,
@@ -687,7 +749,8 @@ void EnglishFallbackRewriter::AddEnglishCandidates(
     cand->rid = unknown_id_;
     cand->converted_segment_count = 1;
     cand->attributes = converter::Attribute::NO_VARIANTS_EXPANSION |
-                       converter::Attribute::DISABLE_RESCORING;
+                       converter::Attribute::DISABLE_RESCORING |
+                       converter::Attribute::ENGLISH;
     cost += 100;
   }
 }
@@ -741,48 +804,58 @@ bool EnglishFallbackRewriter::MatchWordAtOffset(
     return false;
   }
 
-  size_t matched_raw_len = 0;
-  std::string orig_word;
-  {
-    absl::MutexLock lock(mutex_);
-    matched_raw_len = MatchLongestWordInDictionaries(
-        base_dictionary_, user_dictionary_, remaining_raw, min_word_length,
-        &orig_word);
-  }
-  if (matched_raw_len == 0) {
-    return false;
-  }
-
-  const std::string word = remaining_raw.substr(0, matched_raw_len);
-  const size_t target_raw_end = spans[start_idx].raw_start + matched_raw_len;
-
-  for (size_t j = start_idx; j < spans.size(); ++j) {
-    const size_t chunk_raw_end = spans[j].raw_start + spans[j].raw_len;
-    if (chunk_raw_end < target_raw_end) {
-      continue;
+  // Try longest dictionary match first, stepping down past longer words whose raw
+  // boundary cuts strictly inside a Romaji chunk (e.g. "follows" inside "su" in
+  // "followsuru") so the valid prefix ending on a chunk boundary ("follow") is
+  // still found.
+  absl::string_view search_raw = remaining_raw;
+  while (search_raw.size() >= min_word_length) {
+    size_t matched_raw_len = 0;
+    std::string orig_word;
+    {
+      absl::MutexLock lock(mutex_);
+      matched_raw_len = MatchLongestWordInDictionaries(
+          base_dictionary_, user_dictionary_, search_raw, min_word_length,
+          &orig_word);
     }
-    if (chunk_raw_end == target_raw_end) {
+    if (matched_raw_len == 0) {
+      return false;
+    }
+
+    const std::string word(search_raw.substr(0, matched_raw_len));
+    const size_t target_raw_end = spans[start_idx].raw_start + matched_raw_len;
+
+    bool split_inside_romaji_chunk = false;
+    for (size_t j = start_idx; j < spans.size(); ++j) {
+      const size_t chunk_raw_end = spans[j].raw_start + spans[j].raw_len;
+      if (chunk_raw_end < target_raw_end) {
+        continue;
+      }
+      size_t end_preedit_pos = 0;
+      if (chunk_raw_end == target_raw_end) {
+        end_preedit_pos = spans[j].preedit_start + spans[j].preedit_len;
+      } else if (!spans[j].is_romaji &&
+                 spans[j].preedit_len == spans[j].raw_len) {
+        // `target_raw_end` falls strictly inside a 1:1 non-Romaji (e.g.
+        // HALF_ASCII) chunk, which can be sliced cleanly on character units.
+        end_preedit_pos =
+            spans[j].preedit_start + (target_raw_end - spans[j].raw_start);
+      } else {
+        // Never split mid-Romaji chunk (handled via Composer chunk separation).
+        split_inside_romaji_chunk = true;
+        break;
+      }
       *matched_word = word;
       if (matched_original_word != nullptr) {
         *matched_original_word = orig_word;
       }
-      *matched_preedit_chars =
-          (spans[j].preedit_start + spans[j].preedit_len) - offset;
+      *matched_preedit_chars = end_preedit_pos - offset;
       return true;
     }
-    // `target_raw_end` falls strictly inside `spans[j]`. Only allow splitting
-    // inside non-Romaji (e.g. HALF_ASCII) 1:1 chunks; never split mid-Romaji
-    // chunk (that must be handled via Composer chunk separation).
-    if (!spans[j].is_romaji && spans[j].preedit_len == spans[j].raw_len) {
-      const size_t inner_raw = target_raw_end - spans[j].raw_start;
-      *matched_word = word;
-      if (matched_original_word != nullptr) {
-        *matched_original_word = orig_word;
-      }
-      *matched_preedit_chars = (spans[j].preedit_start + inner_raw) - offset;
-      return true;
+    if (!split_inside_romaji_chunk) {
+      return false;
     }
-    return false;
+    search_raw = search_raw.substr(0, matched_raw_len - 1);
   }
   return false;
 }
@@ -1302,8 +1375,9 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
             }
           } else {
             AppendJapaneseFallbackCandidates(
-                request, merged_key, concat_fallback_value, fallback_lid,
-                fallback_rid, immutable_converter_, seg);
+                request, merged_key, current_preedit_offset,
+                concat_fallback_value, fallback_lid, fallback_rid,
+                immutable_converter_, seg);
             const size_t raw_idx =
                 segments->history_segments_size() + current_seg_idx;
             segments->erase_segments(raw_idx + 1, covered_segments - 1);
@@ -1337,8 +1411,8 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
           AddEnglishCandidates(matched_word, matched_original_word, merged_key,
                                seg);
           AppendJapaneseFallbackCandidates(
-              request, merged_key, merged_key, fallback_lid, fallback_rid,
-              immutable_converter_, seg);
+              request, merged_key, current_preedit_offset, merged_key,
+              fallback_lid, fallback_rid, immutable_converter_, seg);
 
           Segment* extra_seg = nullptr;
           if (covered_segments == 1) {
@@ -1350,9 +1424,9 @@ bool EnglishFallbackRewriter::Rewrite(const ConversionRequest& request,
             extra_seg =
                 segments->mutable_conversion_segment(current_seg_idx + 1);
           }
-          PopulateExtraSegmentCandidates(request, extra_key, extra_lid,
-                                         extra_rid, immutable_converter_,
-                                         extra_seg);
+          PopulateExtraSegmentCandidates(
+              request, extra_key, current_preedit_offset + matched_preedit_chars,
+              extra_lid, extra_rid, immutable_converter_, extra_seg);
         }
 
         modified = true;

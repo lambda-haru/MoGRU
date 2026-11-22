@@ -28,15 +28,18 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <memory>
+#include <string>
 
 #include "absl/log/check.h"
 #include "absl/strings/string_view.h"
 #include "composer/composer.h"
+#include "composer/table.h"
 #include "converter/converter_interface.h"
 #include "converter/segments.h"
 #include "engine/engine.h"
 #include "engine/engine_factory.h"
 #include "protocol/commands.pb.h"
+#include "protocol/config.pb.h"
 #include "request/conversion_request.h"
 #include "testing/gunit.h"
 #include "testing/mozctest.h"
@@ -134,6 +137,81 @@ TEST_F(ConverterRegressionTest, PunctuationTest) {
     EXPECT_EQ(segments.conversion_segment(2).candidate(0).value, "良い天気ですね");
     EXPECT_EQ(segments.conversion_segment(2).candidate(0).cost, 11632);
     EXPECT_EQ(segments.conversion_segment(3).candidate(0).value, "．");
+  }
+}
+
+TEST_F(ConverterRegressionTest, AtomicMultiCharRomajiChunkNotSplitOnOss) {
+  std::unique_ptr<Engine> engine = EngineFactory::Create().value();
+  std::shared_ptr<const ConverterInterface> converter = engine->GetConverter();
+
+  auto table = std::make_shared<composer::Table>();
+  commands::Request client_request;
+  config::Config default_config;
+  ASSERT_TRUE(
+      table->InitializeWithRequestAndConfig(client_request, default_config));
+
+  auto type_raw = [&](absl::string_view raw) {
+    composer::Composer composer(table, client_request, default_config);
+    for (char c : raw) {
+      commands::KeyEvent key;
+      key.set_key_code(c);
+      composer.InsertCharacterKeyEvent(key);
+    }
+    return composer;
+  };
+
+  // Multi-char Romaji entries ("gwo" -> "ぐぉ", "swo" -> "すぉ", "two" -> "とぉ")
+  // must stay together in a single segment rather than being split as "武具/ぉ".
+  for (const char* raw : {"bugwo", "watashinobugwo", "bagwo", "debugwo"}) {
+    composer::Composer composer = type_raw(raw);
+    const ConversionRequest req =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    Segments segments;
+    ASSERT_TRUE(converter->StartConversion(req, &segments)) << raw;
+    bool has_atomic_gwo = false;
+    for (const Segment& seg : segments.conversion_segments()) {
+      EXPECT_NE(seg.key(), "ぉ") << raw << ": " << segments.DebugString();
+      if (seg.key().find("ぐぉ") != absl::string_view::npos) {
+        has_atomic_gwo = true;
+      }
+    }
+    EXPECT_TRUE(has_atomic_gwo) << raw << ": " << segments.DebugString();
+  }
+
+  // Normal Japanese words (including double consonants like "tsukatta" where
+  // "っ" and "た" belong to two sequential table entries within one chunk)
+  // convert normally.
+  struct ControlCase {
+    const char* raw;
+    const char* expected_surface;
+  };
+  const ControlCase controls[] = {
+      {"buguwo", "武具を"},
+      {"fonto", "フォント"},
+      {"hwonto", "フォント"},
+      {"fuxonto", "フォント"},
+      {"kyouwo", "今日を"},
+      {"syuwo", "種を"},
+      {"tsukatta", "使った"},
+  };
+  for (const ControlCase& tc : controls) {
+    composer::Composer composer = type_raw(tc.raw);
+    const ConversionRequest req =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    Segments segments;
+    ASSERT_TRUE(converter->StartConversion(req, &segments)) << tc.raw;
+    std::string surface;
+    for (const Segment& seg : segments.conversion_segments()) {
+      ASSERT_GT(seg.candidates_size(), 0) << tc.raw;
+      surface.append(seg.candidate(0).value);
+    }
+    EXPECT_EQ(surface, tc.expected_surface) << tc.raw;
   }
 }
 

@@ -33,8 +33,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <vector>
 
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "converter/candidate.h"
 #include "converter/segments.h"
 #include "prediction/result.h"
@@ -117,6 +120,22 @@ void PopulateCandidateFromResult(prediction::Result result,
 // inner segment into an independent HISTORY Segment with its respective key,
 // value, content_key, and content_value.
 Segments PrepareSegmentsFromRequest(const ConversionRequest& request);
+
+// Extracts atomic multi-character Romaji spans [start_char, len) relative to
+// `conversion_key` from `request.composer().GetChunkSpans()` starting at
+// `request.options().base_preedit_offset`.
+std::vector<std::pair<size_t, size_t>> ExtractAtomicRomajiSpans(
+    const composer::ComposerData& composer, size_t base_preedit_offset,
+    absl::string_view conversion_key);
+
+std::vector<std::pair<size_t, size_t>> ExtractAtomicRomajiSpans(
+    const ConversionRequest& request, absl::string_view conversion_key);
+
+// Returns subsets of `spans` fully contained in [slice_start_char,
+// slice_start_char + slice_char_len), shifted by `-slice_start_char`.
+std::vector<std::pair<size_t, size_t>> SliceAtomicRomajiSpans(
+    absl::Span<const std::pair<size_t, size_t>> spans, size_t slice_start_char,
+    size_t slice_char_len);
 
 // Merges user history prediction results and post-correction (supplemental
 // model) results into a single list with deduplication.
