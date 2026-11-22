@@ -490,5 +490,137 @@ TEST_F(EngineTest, TrailingWEndToEndOssConversionAndLiveConversion) {
   config::GruConfigManager::SaveConfig(clean_cfg, config_path);
   config::GruConfigManager::InvalidateConfigCache();
 }
+
+TEST_F(EngineTest, ProfileWoAndTrailingParticleEndToEnd) {
+  const std::string config_path = config::GruConfigManager::ResolveConfigFilePath(
+      "", /*allow_in_test=*/true);
+  const bool orig_live = absl::GetFlag(FLAGS_enable_live_conversion);
+
+  std::unique_ptr<Engine> oss_engine = EngineFactory::Create().value();
+  auto table = std::make_shared<composer::Table>();
+  commands::Request client_request;
+  config::Config default_config;
+  ASSERT_TRUE(
+      table->InitializeWithRequestAndConfig(client_request, default_config));
+
+  auto type_raw = [&](absl::string_view raw) {
+    composer::Composer composer(table, client_request, default_config);
+    for (char c : raw) {
+      commands::KeyEvent key;
+      key.set_key_code(c);
+      composer.InsertCharacterKeyEvent(key);
+    }
+    return composer;
+  };
+
+  auto extract_output = [](const commands::Output& output) {
+    std::string text;
+    if (output.has_preedit()) {
+      for (const auto& seg : output.preedit().segment()) {
+        text.append(seg.value());
+      }
+    }
+    return text;
+  };
+
+  for (const double threshold : {11000.0, 13000.0, 15000.0}) {
+    GruPenaltyConfig cfg;
+    cfg.enable_gru_rewriter = true;
+    cfg.enable_resegmentation = true;
+    cfg.resegment_threshold = 300.0;
+    cfg.gru_score_weight = 1000.0;
+    cfg.katakana_multiplier = 2.0;
+    cfg.hiragana_multiplier = 1.2;
+    cfg.enable_english_fallback = true;
+    cfg.english_fallback_cost_threshold = threshold;
+    cfg.english_fallback_min_word_length = 3;
+    cfg.enable_live_conversion_english_fallback = true;
+    config::GruConfigManager::SaveConfig(cfg, config_path);
+    config::GruConfigManager::InvalidateConfigCache();
+
+    struct Case {
+      const char* raw;
+      const char* expected;
+    };
+
+    const Case conv_cases[] = {
+        {"profile", "profile"},
+        {"profilewo", "profileを"},
+        {"profilega", "profileが"},
+        {"profileni", "profileに"},
+        {"profileha", "profileは"},
+        {"profilede", "profileで"},
+        {"profileto", "profileと"},
+        {"profileno", "profileの"},
+        {"profilemo", "profileも"},
+        {"profilekara", "profileから"},
+        {"profilemade", "profileまで"},
+        {"profiledesu", "profileです"},
+        {"watashinoprofilewo", "私のprofileを"},
+        {"Profilewo", "Profileを"},
+        {"applewo", "appleを"},
+        {"tablewo", "tableを"},
+        {"stylewo", "styleを"},
+        {"updatewo", "updateを"},
+        {"mergewo", "mergeを"},
+        // Explicit Shift ASCII prefix before healthy Japanese must stay intact.
+        {"Bannnara", "B案なら"},
+        {"Bannna", "Bあんな"},
+        {"Bannni", "B案に"},
+        {"Pannwo", "P案を"},
+    };
+
+    for (const Case& tc : conv_cases) {
+      absl::SetFlag(&FLAGS_enable_live_conversion, false);
+      std::unique_ptr<EngineConverterInterface> ec =
+          oss_engine->CreateEngineConverter();
+      composer::Composer composer = type_raw(tc.raw);
+      ASSERT_TRUE(ec->Convert(composer)) << tc.raw;
+      ec->SyncComposerAfterConversion(&composer);
+      commands::Output output;
+      ec->FillOutput(composer, &output);
+      EXPECT_EQ(extract_output(output), tc.expected)
+          << "Convert(thresh=" << threshold << "): " << tc.raw;
+    }
+
+    const Case live_cases[] = {
+        {"profilewo", "profileを"},
+        {"profilega", "profileが"},
+        {"profileni", "profileに"},
+        {"watashinoprofilewo", "私のprofileを"},
+        {"Profilewo", "Profileを"},
+        {"applewo", "appleを"},
+        {"tablewo", "tableを"},
+        {"stylewo", "styleを"},
+        {"updatewo", "updateを"},
+        {"mergewo", "mergeを"},
+        {"Bannnara", "B案なら"},
+        {"Pannwo", "P案を"},
+    };
+
+    for (const Case& tc : live_cases) {
+      absl::SetFlag(&FLAGS_enable_live_conversion, true);
+      std::unique_ptr<EngineConverterInterface> ec =
+          oss_engine->CreateEngineConverter();
+      composer::Composer composer(table, client_request, default_config);
+      for (char ch : absl::string_view(tc.raw)) {
+        commands::KeyEvent key;
+        key.set_key_code(ch);
+        composer.InsertCharacterKeyEvent(key);
+        ec->Suggest(composer);
+      }
+      commands::Output output;
+      ec->FillOutput(composer, &output);
+      EXPECT_EQ(extract_output(output), tc.expected)
+          << "LiveStep(thresh=" << threshold << "): " << tc.raw;
+    }
+  }
+
+  absl::SetFlag(&FLAGS_enable_live_conversion, orig_live);
+  GruPenaltyConfig clean;
+  clean.enable_english_fallback = true;
+  config::GruConfigManager::SaveConfig(clean, config_path);
+  config::GruConfigManager::InvalidateConfigCache();
+}
 }  // namespace engine
 }  // namespace mozc

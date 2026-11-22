@@ -348,22 +348,6 @@ bool IsSegmentFallbackEligible(const Segment& seg, size_t seg_preedit_start,
   return kind.has_unresolved_romaji_alpha || kind.has_symbol_from_alpha;
 }
 
-bool BoundarySplitsSingleRomajiChunk(
-    size_t boundary_preedit_pos,
-    const std::vector<composer::ChunkSpan>& spans) {
-  for (const auto& span : spans) {
-    if (!span.is_romaji || span.preedit_len <= 1) {
-      continue;
-    }
-    const size_t span_end = span.preedit_start + span.preedit_len;
-    if (span.preedit_start < boundary_preedit_pos &&
-        boundary_preedit_pos < span_end) {
-      return true;
-    }
-  }
-  return false;
-}
-
 struct SegmentEligibilityMetrics {
   size_t preedit_start = 0;
   size_t preedit_len = 0;
@@ -403,6 +387,34 @@ SegmentEligibilityMetrics BuildSegmentMetrics(
   return m;
 }
 
+// Returns true if `seg` is a 1-character non-Romaji ASCII chunk (such as an
+// explicit Shift-entered uppercase prefix like "B" in "B案なら").
+bool IsSingleNonRomajiAlphaChunk(
+    const SegmentEligibilityMetrics& seg,
+    const std::vector<composer::ChunkSpan>& spans) {
+  if (seg.preedit_len != 1) {
+    return false;
+  }
+  const size_t seg_end = seg.preedit_end();
+  bool matched = false;
+  for (const auto& span : spans) {
+    const size_t span_end = span.preedit_start + span.preedit_len;
+    if (span_end <= seg.preedit_start) {
+      continue;
+    }
+    if (span.preedit_start >= seg_end) {
+      break;
+    }
+    if (span.preedit_start != seg.preedit_start || span_end != seg_end ||
+        span.is_romaji || span.raw.size() != 1 ||
+        !absl::ascii_isalpha(static_cast<unsigned char>(span.raw[0]))) {
+      return false;
+    }
+    matched = true;
+  }
+  return matched;
+}
+
 bool CanCoverSegmentSpan(const std::vector<SegmentEligibilityMetrics>& covered,
                          bool has_preceding_segment, size_t leading_chars,
                          size_t extra_chars,
@@ -434,13 +446,15 @@ bool CanCoverSegmentSpan(const std::vector<SegmentEligibilityMetrics>& covered,
   }
 
   const SegmentEligibilityMetrics& last_seg = covered.back();
-  const bool romaji_chunk_tail_split =
-      (extra_chars > 0 &&
-       BoundarySplitsSingleRomajiChunk(last_seg.preedit_start, spans));
-  // When a multi-segment match truncates the trailing segment (extra_chars > 0),
-  // require that the trailing segment itself is eligible or splits inside a
-  // single Romaji CharChunk bridging into it (e.g. "be" -> "ｂう" + "に").
-  if (extra_chars > 0 && !last_seg.is_eligible() && !romaji_chunk_tail_split) {
+  // When an English word ends on a valid kana syllable (e.g. "ぇ" in
+  // "profile"), ImmutableConverter often attaches the following particle to
+  // that final kana ("ぇを", "ぇが", "だてを"), leaving `last_seg` healthy with
+  // `extra_chars > 0`. Allow slicing `last_seg`, except guard against a single
+  // Shift-entered non-Romaji ASCII prefix accidentally swallowing a healthy
+  // Japanese content word (e.g. "B|案なら" / "P|案を" falsely matching
+  // "ban" / "pan").
+  if (covered.size() == 2 && extra_chars > 0 && !last_seg.is_eligible() &&
+      IsSingleNonRomajiAlphaChunk(covered[0], spans)) {
     return false;
   }
 

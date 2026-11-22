@@ -1917,5 +1917,118 @@ TEST_F(EnglishFallbackRewriterTest, UnresolvedRomajiWTakesFallbackAtLowWCost) {
   }
 }
 
+TEST_F(EnglishFallbackRewriterTest,
+       EnglishWordEndingInHealthyKanaWithAttachedParticle) {
+  dictionary::EnglishDictionary dict;
+  dict.AddWord("profile");
+  dict.AddWord("update");
+  dict.AddWord("ban");
+  dict.AddWord("pan");
+  EnglishFallbackRewriter rewriter(*pos_matcher_, std::move(dict));
+
+  auto add_seg = [](Segments* segs, absl::string_view key, absl::string_view val,
+                    int32_t cost, int32_t wcost) {
+    Segment* seg = segs->add_segment();
+    seg->set_key(key);
+    auto* c = seg->add_candidate();
+    c->key = std::string(key);
+    c->value = std::string(val);
+    c->cost = cost;
+    c->wcost = wcost;
+  };
+
+  // 1. "profilewo": "ぇ" merges with particle "を" into healthy last_seg "ぇを".
+  {
+    composer::Composer composer = CreateComposer("profilewo");
+    auto make_segs = [&]() {
+      Segments segs;
+      add_seg(&segs, "p", "p", 34000, 32767);
+      add_seg(&segs, "ろ", "ロ", 6000, 3640);
+      add_seg(&segs, "ふぃ", "フィ", 9000, 6492);
+      add_seg(&segs, "ぇを", "ぇを", 5500, 3449);
+      return segs;
+    };
+
+    Segments resize_segs = make_segs();
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    const auto resize_req =
+        rewriter.CheckResizeSegmentsRequest(request, resize_segs);
+    ASSERT_TRUE(resize_req.has_value());
+    EXPECT_EQ(resize_req->segment_index, 0);
+    EXPECT_EQ(resize_req->segment_sizes[0], 5);
+
+    Segments rw_segs = make_segs();
+    EXPECT_TRUE(rewriter.Rewrite(request, &rw_segs));
+    ASSERT_EQ(rw_segs.conversion_segments_size(), 2);
+    EXPECT_EQ(rw_segs.conversion_segment(0).candidate(0).value, "profile");
+    EXPECT_EQ(rw_segs.conversion_segment(1).key(), "を");
+  }
+
+  // 2. "updatewo": "だて" + "を" forms healthy last_seg "だてを".
+  {
+    composer::Composer composer = CreateComposer("updatewo");
+    auto make_segs = [&]() {
+      Segments segs;
+      add_seg(&segs, "う", "う", 3500, 1869);
+      add_seg(&segs, "p", "p", 34000, 32767);
+      add_seg(&segs, "だてを", "建てを", 7500, 5300);
+      return segs;
+    };
+
+    Segments resize_segs = make_segs();
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    const auto resize_req =
+        rewriter.CheckResizeSegmentsRequest(request, resize_segs);
+    ASSERT_TRUE(resize_req.has_value());
+    EXPECT_EQ(resize_req->segment_index, 0);
+    EXPECT_EQ(resize_req->segment_sizes[0], 4);
+
+    Segments rw_segs = make_segs();
+    EXPECT_TRUE(rewriter.Rewrite(request, &rw_segs));
+    ASSERT_EQ(rw_segs.conversion_segments_size(), 2);
+    EXPECT_EQ(rw_segs.conversion_segment(0).candidate(0).value, "update");
+    EXPECT_EQ(rw_segs.conversion_segment(1).key(), "を");
+  }
+
+  // 3. Explicit Shift-entered ASCII prefix before a healthy Japanese word must
+  // NOT slice into "ban" / "pan" (e.g. "B|案なら", "P|案を").
+  {
+    composer::Composer composer = CreateComposer("Bannnara");
+    Segments segs;
+    add_seg(&segs, "B", "B", 34000, 32767);
+    add_seg(&segs, "あんなら", "案なら", 8590, 7100);
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_FALSE(rewriter.CheckResizeSegmentsRequest(request, segs).has_value());
+    EXPECT_FALSE(rewriter.Rewrite(request, &segs));
+    EXPECT_EQ(segs.conversion_segment(1).candidate(0).value, "案なら");
+  }
+  {
+    composer::Composer composer = CreateComposer("Pannwo");
+    Segments segs;
+    add_seg(&segs, "P", "P", 34000, 32767);
+    add_seg(&segs, "あんを", "案を", 6107, 4617);
+    const ConversionRequest request =
+        ConversionRequestBuilder()
+            .SetComposer(composer)
+            .SetRequestType(ConversionRequest::CONVERSION)
+            .Build();
+    EXPECT_FALSE(rewriter.CheckResizeSegmentsRequest(request, segs).has_value());
+    EXPECT_FALSE(rewriter.Rewrite(request, &segs));
+    EXPECT_EQ(segs.conversion_segment(1).candidate(0).value, "案を");
+  }
+}
+
 }  // namespace
 }  // namespace mozc
